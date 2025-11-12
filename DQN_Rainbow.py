@@ -70,6 +70,7 @@ class RainbowDQN:
         l: float = -1.0,
         soft: bool = False,
         munchausen: bool = False,
+        Thompson: bool = False,
     ):
         self.online = Q_Network(
             input_dim,
@@ -92,6 +93,7 @@ class RainbowDQN:
         self.l = l
         self.soft = soft
         self.munchausen = munchausen
+        self.Thompson = Thompson
         self.target.requires_grad_(False)
         self.target.load_state_dict(self.online.state_dict())
 
@@ -109,29 +111,63 @@ class RainbowDQN:
                 tp.data.mul_(1.0 - self.tau).add_(op.data, alpha=self.tau)
 
     @torch.no_grad()
-    def _project_next_distribution(self, b_r, b_term, b_next_obs, hist_logits=None):
+    def _project_next_distribution(
+        self, b_r, b_term, b_next_obs, hist_logits=None, hist_actions=None
+    ):
         # Prepare atom view
         atom_view_dim = [1] * (b_next_obs.ndim - 1)
         atom_view_dim.append(self.n_atoms)
         expanded_atoms = self.online.atoms.view(atom_view_dim)
 
-        # Double DQN action selection via online, evaluation via target
+        # Double DQN-style: policy from online expected values, evaluation by target
         online_next_logits = self.online(b_next_obs)
         next_ev_online = self.online.expected_value(online_next_logits, probs=False)
-        next_actions = (
-            torch.argmax(next_ev_online, dim=-1, keepdim=True)
-            .unsqueeze(-1)
-            .expand((b_next_obs.shape[0], 1, self.n_atoms))
-        )
-
         eval_logits = self.target(b_next_obs)
-        next_probs = torch.softmax(eval_logits, dim=-1)
-        max_value_probs = torch.gather(next_probs, dim=1, index=next_actions).squeeze()
+        next_probs = torch.softmax(eval_logits, dim=-1)  # [B, A, N]
+
+        if self.soft or self.munchausen:
+            # Soft policy over actions using expected values
+            pi_next = torch.softmax(next_ev_online / self.tau, dim=-1)  # [B, A]
+            # Mixture distribution across actions
+            next_value_probs = (pi_next.unsqueeze(-1) * next_probs).sum(dim=1)  # [B, N]
+            # Munchausen entropy term for next state: -tau * sum_a pi(a) log pi(a)
+            logpi_next = torch.log_softmax(next_ev_online / self.tau, dim=-1)
+            ent_bonus = -self.tau * (pi_next * logpi_next).sum(dim=-1)  # [B]
+        else:
+            # Greedy backup as fallback
+            next_actions = (
+                torch.argmax(next_ev_online, dim=-1, keepdim=True)
+                .unsqueeze(-1)
+                .expand((b_next_obs.shape[0], 1, self.n_atoms))
+            )
+            next_value_probs = torch.gather(
+                next_probs, dim=1, index=next_actions
+            ).squeeze()  # [B, N]
+            ent_bonus = torch.zeros(b_next_obs.shape[0], device=b_next_obs.device)
+
+        # Munchausen reward augmentation on current transition
+        r_aug = b_r
+        if self.munchausen and (hist_logits is not None) and (hist_actions is not None):
+            # Compute policy log-prob for taken actions at (s_t, a_t)
+            ev_hist = self.online.expected_value(hist_logits, probs=False)  # [B, A]
+            logpi_hist = torch.log_softmax(ev_hist / self.tau, dim=-1)  # [B, A]
+            logpi_a = torch.gather(
+                logpi_hist, dim=1, index=hist_actions.view(-1, 1)
+            ).squeeze(
+                1
+            )  # [B]
+            logpi_a = torch.clamp(logpi_a, min=self.l)
+            r_aug = r_aug + self.alpha * self.tau * logpi_a
 
         # Bellman update on the support (C51 projection pre-step)
-        shifted_atoms = (
-            b_r.unsqueeze(-1) + (1 - b_term.unsqueeze(-1)) * self.gamma * expanded_atoms
+        shifted_atoms = r_aug.unsqueeze(-1) + (1 - b_term.unsqueeze(-1)) * (
+            self.gamma * expanded_atoms
         )
+        if self.munchausen or self.soft:
+            # Add soft-entropy correction as a constant shift
+            shifted_atoms = shifted_atoms + (1 - b_term.unsqueeze(-1)) * (
+                self.gamma * ent_bonus.unsqueeze(-1)
+            )
 
         # Project to support indices
         float_index = (
@@ -145,8 +181,8 @@ class RainbowDQN:
         upper_weight = 1.0 - lower_weight
 
         target_dist = torch.zeros_like(shifted_atoms)
-        target_dist.scatter_add_(-1, lower_idx.long(), max_value_probs * lower_weight)
-        target_dist.scatter_add_(-1, upper_idx.long(), max_value_probs * upper_weight)
+        target_dist.scatter_add_(-1, lower_idx.long(), next_value_probs * lower_weight)
+        target_dist.scatter_add_(-1, upper_idx.long(), next_value_probs * upper_weight)
         return target_dist
 
     def update(self, obs, a, r, next_obs, term, batch_size, step=0):
@@ -160,14 +196,10 @@ class RainbowDQN:
         logits = self.online(b_obs)
         with torch.no_grad():
             target_dist = self._project_next_distribution(
-                b_r, b_term, b_next_obs, logits
+                b_r, b_term, b_next_obs, hist_logits=logits, hist_actions=b_actions
             )
 
         # Current logits for chosen actions
-        selected_logits = torch.gather(
-            logits, dim=1, index=b_actions.view(-1, 1, 1).expand(-1, 1, self.n_atoms)
-        ).squeeze()
-
         actions_viewed = b_actions.view(batch_size, 1, 1).expand(
             (batch_size, 1, self.n_atoms)
         )
@@ -187,8 +219,19 @@ class RainbowDQN:
         self, obs: torch.Tensor, eps: float, step: int, n_steps: int = 100000
     ):
         # linear annealing from 1.0 -> 0.0 across n_steps
-
-        if self.soft or self.munchausen:
+        if self.Thompson:
+            with torch.no_grad():
+                logits = self.online(obs)  # [A, N]
+                probs = torch.softmax(logits, dim=-1)  # [A, N]
+                # Sample one atom per action
+                sampled_indices = torch.distributions.Categorical(
+                    probs=probs
+                ).sample()  # [A]
+                # Map indices to support values
+                atoms = self.online.atoms  # [N]
+                sampled_values = atoms[sampled_indices]  # [A]
+                action = torch.argmax(sampled_values).item()
+        elif self.soft or self.munchausen:
             logits = self.online(obs)
             ev = self.online.expected_value(logits)
             action = (
@@ -229,7 +272,16 @@ if __name__ == "__main__":
     obs_dim = env.observation_space.shape[0]
     assert obs_dim is not None
 
-    dqn = RainbowDQN(obs_dim, 2, zmin=0, zmax=200, n_atoms=51)
+    dqn = RainbowDQN(
+        obs_dim,
+        2,
+        zmin=0,
+        zmax=200,
+        n_atoms=51,
+        soft=False,
+        munchausen=False,
+        Thompson=False,
+    )
 
     n_steps = 100000
     rhist = []
