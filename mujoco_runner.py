@@ -38,6 +38,7 @@ if __name__ == "__main__":
         Thompson=False,
         Beta=0.0,
         dueling=True,
+        ent_reg_coef=0.02,
     )
 
     n_steps = 50000

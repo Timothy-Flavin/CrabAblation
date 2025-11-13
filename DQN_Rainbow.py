@@ -102,6 +102,8 @@ class RainbowDQN:
         Thompson: bool = False,
         dueling: bool = False,
         Beta: float = 0.0,
+        # Entropy regularization on current policy (online net)
+        ent_reg_coef: float = 0.0,
         # Intrinsic/RND configs
         rnd_output_dim: int = 128,
         rnd_lr: float = 1e-3,
@@ -163,6 +165,7 @@ class RainbowDQN:
         self.zmax = zmax
         self.n_actions = n_actions
         self.Beta = Beta
+        self.ent_reg_coef = ent_reg_coef
 
         # RND intrinsic reward model and normalizers
         self.rnd = RNDModel(input_dim, rnd_output_dim).float()
@@ -325,6 +328,17 @@ class RainbowDQN:
         current_l_probs = torch.log_softmax(selected_logits, dim=-1)
         loss = -torch.sum(target_dist * current_l_probs, dim=-1).mean()
 
+        # Optional entropy regularization for current policy over actions at b_obs
+        entropy_val = 0.0
+        if self.ent_reg_coef > 0.0:
+            # Policy over actions from expected values
+            ev_all = self.online.expected_value(logits, probs=False)  # [B, A]
+            pi = torch.softmax(ev_all / self.tau, dim=-1)
+            logpi = torch.log_softmax(ev_all / self.tau, dim=-1)
+            entropy = -(pi * logpi).sum(dim=-1).mean()
+            entropy_val = float(entropy.item())
+            loss = loss - self.ent_reg_coef * entropy
+
         self.optim.zero_grad()
         loss.backward()
         self.optim.step()
@@ -360,6 +374,7 @@ class RainbowDQN:
             "intrinsic": float(int_loss.item()),
             "rnd": float(rnd_loss.item()),
             "avg_r_int": r_int,
+            "entropy_reg": entropy_val,
         }
 
         return loss.item()
