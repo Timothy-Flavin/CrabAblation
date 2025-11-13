@@ -40,7 +40,7 @@ if __name__ == "__main__":
         dueling=True,
     )
 
-    n_steps = 100000
+    n_steps = 50000
     rhist = []
     smooth_rhist = []
     lhist = []

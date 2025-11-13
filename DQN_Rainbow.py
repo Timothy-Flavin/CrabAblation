@@ -242,9 +242,10 @@ class RainbowDQN:
             r_aug = r_aug + self.alpha * self.tau * logpi_a
 
         # Bellman update on the support (C51 projection pre-step)
-        shifted_atoms = r_aug.unsqueeze(-1) + (1 - b_term.unsqueeze(-1)) * (
-            self.gamma * expanded_atoms
-        )
+        ra = r_aug
+        if isinstance(ra, torch.Tensor):
+            ra = r_aug.unsqueeze(-1)
+        shifted_atoms = ra + (1 - b_term.unsqueeze(-1)) * (self.gamma * expanded_atoms)
         if self.munchausen or self.soft:
             # Add soft-entropy correction as a constant shift
             shifted_atoms = shifted_atoms + (1 - b_term.unsqueeze(-1)) * (
@@ -351,12 +352,14 @@ class RainbowDQN:
         int_loss.backward()
         self.int_optim.step()
 
+        if isinstance(r_int, torch.Tensor):
+            r_int = float(r_int.mean().item())
         # Store last auxiliary losses for logging (optional)
         self.last_losses = {
             "extrinsic": float(loss.item()),
             "intrinsic": float(int_loss.item()),
             "rnd": float(rnd_loss.item()),
-            "avg_r_int": float(r_int.mean().item()),
+            "avg_r_int": r_int,
         }
 
         return loss.item()
