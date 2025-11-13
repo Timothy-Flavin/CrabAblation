@@ -1,4 +1,5 @@
 from time import time
+import os
 import torch
 import gymnasium as gym
 import matplotlib.pyplot as plt
@@ -58,7 +59,7 @@ def setup_config():
             "Beta": 0.1,  # pillar (3)
             "dueling": False,  # pillar (4)
             "distributional": True,  # pillar (4)
-            "ent_reg_coef": 0.02,  # pillar (2)
+            "ent_reg_coef": 0.01,  # pillar (2)
             "delayed": True,  # pillar (5)
         }
     }
@@ -262,13 +263,34 @@ if __name__ == "__main__":
 
         obs = next_obs
 
-    np.save(f"results/dqn_mujoco_train_scores_{args.run}_{args.ablation}.npy", rhist)
-    np.save(f"results/dqn_mujoco_eval_scores_{args.run}_{args.ablation}.npy", eval_hist)
-    np.save(f"results/dqn_mujoco_loss_hist_{args.run}_{args.ablation}.npy", lhist)
+    end_time = time()
+    print(f"Training completed in {end_time - start_time:.2f} seconds.")
+    # Save artifacts under results/{runner_name}/
+    runner_name = "cartpole"
+    results_dir = os.path.join("results", runner_name)
+    os.makedirs(results_dir, exist_ok=True)
+
     np.save(
-        f"results/dqn_mujoco_smooth_train_scores_{args.run}_{args.ablation}.npy",
+        os.path.join(results_dir, f"train_time_{args.run}_{args.ablation}.npy"),
+        end_time - start_time,
+    )
+    np.save(
+        os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}.npy"), rhist
+    )
+    np.save(
+        os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}.npy"),
+        eval_hist,
+    )
+    np.save(
+        os.path.join(results_dir, f"loss_hist_{args.run}_{args.ablation}.npy"), lhist
+    )
+    np.save(
+        os.path.join(
+            results_dir, f"smooth_train_scores_{args.run}_{args.ablation}.npy"
+        ),
         smooth_rhist,
     )
+
     plt.plot(rhist)
     plt.plot(smooth_rhist)
     plt.legend(["R hist", "Smooth R hist"])
@@ -276,10 +298,10 @@ if __name__ == "__main__":
     plt.ylabel("Training Episode Reward")
     plt.grid()
     plt.title(f"Training rewards, run {args.run} ablated: {args.ablation}")
-    plt.savefig(f"results/dqn_mujoco_train_scores_{args.run}_{args.ablation}")
+    plt.savefig(os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}"))
     plt.show()
     plt.plot(eval_hist)
     plt.grid()
     plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
-    plt.savefig(f"results/dqn_mujoco_eval_scores_{args.run}_{args.ablation}")
+    plt.savefig(os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}"))
     plt.show()

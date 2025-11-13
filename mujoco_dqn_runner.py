@@ -1,4 +1,5 @@
 from time import time
+import os
 import torch
 import gymnasium as gym
 import matplotlib.pyplot as plt
@@ -272,13 +273,29 @@ if __name__ == "__main__":
 
         obs = next_obs
 
-    np.save(f"results/dqn_mujoco_train_scores_{args.run}_{args.ablation}.npy", rhist)
-    np.save(f"results/dqn_mujoco_eval_scores_{args.run}_{args.ablation}.npy", eval_hist)
-    np.save(f"results/dqn_mujoco_loss_hist_{args.run}_{args.ablation}.npy", lhist)
+    # Legacy flat saves removed in favor of structured directory below
+    # Save artifacts under results/{runner_name}/
+    runner_name = "mujoco"
+    results_dir = os.path.join("results", runner_name)
+    os.makedirs(results_dir, exist_ok=True)
+
     np.save(
-        f"results/dqn_mujoco_smooth_train_scores_{args.run}_{args.ablation}.npy",
+        os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}.npy"), rhist
+    )
+    np.save(
+        os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}.npy"),
+        eval_hist,
+    )
+    np.save(
+        os.path.join(results_dir, f"loss_hist_{args.run}_{args.ablation}.npy"), lhist
+    )
+    np.save(
+        os.path.join(
+            results_dir, f"smooth_train_scores_{args.run}_{args.ablation}.npy"
+        ),
         smooth_rhist,
     )
+
     plt.plot(rhist)
     plt.plot(smooth_rhist)
     plt.legend(["R hist", "Smooth R hist"])
@@ -286,10 +303,10 @@ if __name__ == "__main__":
     plt.ylabel("Training Episode Reward")
     plt.grid()
     plt.title(f"Training rewards, run {args.run} ablated: {args.ablation}")
-    plt.savefig(f"results/dqn_mujoco_train_scores_{args.run}_{args.ablation}")
+    plt.savefig(os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}"))
     plt.show()
     plt.plot(eval_hist)
     plt.grid()
     plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
-    plt.savefig(f"results/dqn_mujoco_eval_scores_{args.run}_{args.ablation}")
+    plt.savefig(os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}"))
     plt.show()

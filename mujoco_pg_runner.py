@@ -1,3 +1,4 @@
+import os
 import torch
 import gymnasium as gym
 import matplotlib.pyplot as plt
@@ -268,10 +269,14 @@ if __name__ == "__main__":
     plt.ylabel("Training Episode Reward")
     plt.grid()
     plt.title(f"Training rewards, run {args.run} ablated: {args.ablation}")
-    plt.savefig(f"results/dqn_mujoco_train_scores_{args.run}_{args.ablation}")
+    # Save artifacts under results/{runner_name}/
+    runner_name = "mujoco"
+    results_dir = os.path.join("results", runner_name)
+    os.makedirs(results_dir, exist_ok=True)
+    plt.savefig(os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}"))
     plt.show()
     plt.plot(eval_hist)
     plt.grid()
     plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
-    plt.savefig(f"results/dqn_mujoco_eval_scores_{args.run}_{args.ablation}")
+    plt.savefig(os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}"))
     plt.show()

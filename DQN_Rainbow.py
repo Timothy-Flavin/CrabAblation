@@ -482,6 +482,8 @@ class RainbowDQN:
                 sampled_values = sampled_values_ext + self.Beta * sampled_values_int
                 action = torch.argmax(sampled_values).item()
         elif self.soft or self.munchausen:
+            if random.random() <= 0.05:
+                return random.randint(0, self.n_actions - 1)
             logits_ext = self.online(obs)
             ev_ext = self.online.expected_value(logits_ext)
             ev_int = 0.0
