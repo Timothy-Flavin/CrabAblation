@@ -360,6 +360,7 @@ class RainbowDQN:
                 r_int = norm_int.to(dtype=torch.float32)
 
         # Combine rewards for extrinsic head
+
         b_r_total = b_r + self.Beta * r_int
 
         # 2) Update extrinsic Q network on combined rewards

@@ -3,6 +3,7 @@ import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
+import argparse
 
 
 def discrete_to_continuous(action):
@@ -15,6 +16,24 @@ def discrete_to_continuous(action):
 
 if __name__ == "__main__":
 
+    # Parse CLI arguments
+    parser = argparse.ArgumentParser(description="MuJoCo DQN Runner")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Torch device to use (e.g., cpu, cuda, cuda:0)",
+    )
+    args = parser.parse_args()
+
+    # Resolve torch device; allow cuda or cuda:0 while safely falling back to cpu
+    requested_device = args.device.strip()
+    if requested_device.startswith("cuda") and not torch.cuda.is_available():
+        print("CUDA requested but not available. Falling back to CPU.")
+        device = torch.device("cpu")
+    else:
+        device = torch.device(requested_device)
+
     def eval(agent):
         lenv = gym.make("HalfCheetah-v5")
         obs, info = lenv.reset()
@@ -22,7 +41,7 @@ if __name__ == "__main__":
         reward = 0.0
         while not done:
             with torch.no_grad():
-                logits = agent.online(torch.from_numpy(obs).float())
+                logits = agent.online(torch.from_numpy(obs).to(device).float())
                 ev = agent.online.expected_value(logits)
                 action = torch.argmax(ev, dim=-1).item()
             obs, r, term, trunc, info = lenv.step(discrete_to_continuous(action))
@@ -48,7 +67,7 @@ if __name__ == "__main__":
             "soft": True,  # pillar (3) always enabled if munchausen on
             "Beta": 0.1,  # pillar (3)
             "dueling": True,  # pillar (4)
-            "distributional": False,  # pillar (4)
+            "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.02,  # pillar (2)
             "delayed": True,  # pillar (5)
         }
@@ -82,6 +101,36 @@ if __name__ == "__main__":
             **common_kwargs,
         )
 
+    # Move all agent submodules to the selected device and reinitialize optimizers
+    # Note: Optimizers need to be recreated after moving parameters across devices.
+    # Capture learning rates prior to reinitialization
+    main_lr = dqn.optim.param_groups[0]["lr"] if hasattr(dqn, "optim") else 1e-3
+    int_lr = dqn.int_optim.param_groups[0]["lr"] if hasattr(dqn, "int_optim") else 1e-3
+    rnd_lr = dqn.rnd_optim.param_groups[0]["lr"] if hasattr(dqn, "rnd_optim") else 1e-3
+
+    # Move networks/RND to device
+    if hasattr(dqn, "online"):
+        dqn.online.to(device)
+    if hasattr(dqn, "target"):
+        dqn.target.to(device)
+        dqn.target.requires_grad_(False)
+    if hasattr(dqn, "int_online"):
+        dqn.int_online.to(device)
+    if hasattr(dqn, "int_target"):
+        dqn.int_target.to(device)
+        dqn.int_target.requires_grad_(False)
+    if hasattr(dqn, "rnd") and hasattr(dqn.rnd, "to"):
+        dqn.rnd.to(device)
+        dqn.int_rms.to(device)
+
+    # Recreate optimizers on moved parameters
+    if hasattr(dqn, "online"):
+        dqn.optim = torch.optim.Adam(dqn.online.parameters(), lr=main_lr)
+    if hasattr(dqn, "int_online"):
+        dqn.int_optim = torch.optim.Adam(dqn.int_online.parameters(), lr=int_lr)
+    if hasattr(dqn, "rnd"):
+        dqn.rnd_optim = torch.optim.Adam(dqn.rnd.predictor.parameters(), lr=rnd_lr)
+
     n_steps = 50000
     rhist = []
     smooth_rhist = []
@@ -94,25 +143,32 @@ if __name__ == "__main__":
     update_every = 1
 
     # Memory buffer
-    buff_actions = torch.zeros((blen,), dtype=torch.long)
-    buff_obs = torch.zeros(size=(blen, int(obs_dim)), dtype=torch.float32)
-    buff_next_obs = torch.zeros(size=(blen, int(obs_dim)), dtype=torch.float32)
-    buff_term = torch.zeros(size=(blen,), dtype=torch.float32)
-    buff_r = torch.zeros(size=(blen,), dtype=torch.float32)
+    buff_actions = torch.zeros((blen,), dtype=torch.long, device=device)
+    buff_obs = torch.zeros(
+        size=(blen, int(obs_dim)), dtype=torch.float32, device=device
+    )
+    buff_next_obs = torch.zeros(
+        size=(blen, int(obs_dim)), dtype=torch.float32, device=device
+    )
+    buff_term = torch.zeros((blen,), dtype=torch.float32, device=device)
+    buff_r = torch.zeros((blen,), dtype=torch.float32, device=device)
 
     for i in range(n_steps):
         eps_current = 1 - i / n_steps
         action = dqn.sample_action(
-            torch.from_numpy(obs).float(), eps=eps_current, step=i, n_steps=n_steps
+            torch.from_numpy(obs).to(device).float(),
+            eps=eps_current,
+            step=i,
+            n_steps=n_steps,
         )
         next_obs, r, term, trunc, info = env.step(discrete_to_continuous(action))
         # Update running stats with the freshly collected transition (single step)
-        dqn.update_running_stats(torch.from_numpy(next_obs).float())
+        dqn.update_running_stats(torch.from_numpy(next_obs).to(device).float())
 
         # Save transition to memory buffer
         buff_actions[i % blen] = action
-        buff_obs[i % blen] = torch.from_numpy(obs).float()
-        buff_next_obs[i % blen] = torch.from_numpy(next_obs).float()
+        buff_obs[i % blen] = torch.from_numpy(obs).to(device).float()
+        buff_next_obs[i % blen] = torch.from_numpy(next_obs).to(device).float()
         buff_term[i % blen] = term
         buff_r[i % blen] = float(r)
 

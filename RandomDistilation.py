@@ -21,8 +21,24 @@ class RNDModel(nn.Module):
             nn.Linear(256, output_dim),
         )
 
+    def _device(self):
+        # Helper to get current device of the module's parameters
+        try:
+            return next(self.parameters()).device
+        except StopIteration:
+            # Fallback if there are no parameters (shouldn't happen here)
+            return torch.device("cpu")
+
     def forward(self, next_obs):
         # Returns the intrinsic reward for a batch of observations
+        # Ensure input is on the same device as the module
+        if not isinstance(next_obs, torch.Tensor):
+            next_obs = torch.tensor(
+                next_obs, dtype=torch.float32, device=self._device()
+            )
+        else:
+            next_obs = next_obs.to(self._device())
+
         target_feature = self.target(next_obs)
         predict_feature = self.predictor(next_obs)
 
