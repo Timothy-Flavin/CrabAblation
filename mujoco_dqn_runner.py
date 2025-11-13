@@ -1,3 +1,4 @@
+from time import time
 import torch
 import gymnasium as gym
 import matplotlib.pyplot as plt
@@ -76,6 +77,7 @@ def setup_config():
     if args.ablation == 1:
         # Mirror Descent / Munchausen off
         cfg["munchausen"] = False
+        cfg["soft"] = False
     elif args.ablation == 2:
         # Magnet policy regularization off
         cfg["ent_reg_coef"] = 0.0
@@ -85,6 +87,7 @@ def setup_config():
     elif args.ablation == 4:
         # Distributional off (use EV agent)
         cfg["distributional"] = False
+        cfg["dueling"] = False
     elif args.ablation == 5:
         # Delayed target off
         cfg["delayed"] = False
@@ -178,7 +181,7 @@ if __name__ == "__main__":
     if hasattr(dqn, "rnd"):
         dqn.rnd_optim = torch.optim.Adam(dqn.rnd.predictor.parameters(), lr=rnd_lr)
 
-    n_steps = 50000
+    n_steps = 500000
     rhist = []
     smooth_rhist = []
     lhist = []
@@ -200,6 +203,8 @@ if __name__ == "__main__":
     buff_term = torch.zeros((blen,), dtype=torch.float32, device=device)
     buff_r = torch.zeros((blen,), dtype=torch.float32, device=device)
 
+    start_time = time()
+    n_updates = 0
     for i in range(n_steps):
         eps_current = 1 - i / n_steps
         action = dqn.sample_action(
@@ -219,7 +224,7 @@ if __name__ == "__main__":
         buff_term[i % blen] = term
         buff_r[i % blen] = float(r)
 
-        if i > 512:
+        if i > 512 and i % 8 == 0:
             lhist.append(
                 dqn.update(
                     buff_obs,
@@ -231,15 +236,8 @@ if __name__ == "__main__":
                     step=min(i, blen),
                 )
             )
-            if i % update_every == 0:
-                dqn.update_target()
-
-        if i % 1000 == 0:
-            evalr = 0.0
-            for k in range(10):
-                evalr += eval(dqn)
-            print(f"eval mean: {evalr/10}")
-            eval_hist.append(evalr / 10)
+            n_updates += 1
+            dqn.update_target()
 
         r_ep += float(r)
 
@@ -247,7 +245,10 @@ if __name__ == "__main__":
             next_obs, info = env.reset()
             rhist.append(r_ep)
             if len(rhist) < 20:
-                print(f"reward for episode: {ep}: {r_ep}")
+                dt = time() - start_time
+                print(
+                    f"reward for episode: {ep}: {r_ep} at {i/dt:.2f} steps/sec {n_updates/dt:.2f} updates/s {100*i/n_steps:.2f}%"
+                )
                 smooth_r = sum(rhist) / len(rhist)
             else:
                 smooth_r = 0.05 * rhist[-1] + 0.95 * smooth_r
@@ -258,6 +259,13 @@ if __name__ == "__main__":
             smooth_rhist.append(smooth_r)
             r_ep = 0.0
             ep += 1
+
+            if ep % 5 == 0:
+                evalr = 0.0
+                for k in range(5):
+                    evalr += eval(dqn)
+                print(f"eval mean: {evalr/5}")
+                eval_hist.append(evalr / 5)
 
         obs = next_obs
 
