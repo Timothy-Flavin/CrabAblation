@@ -14,8 +14,7 @@ def discrete_to_continuous(action):
     return env_action
 
 
-if __name__ == "__main__":
-
+def setup_config():
     # Parse CLI arguments
     parser = argparse.ArgumentParser(description="MuJoCo DQN Runner")
     parser.add_argument(
@@ -23,6 +22,25 @@ if __name__ == "__main__":
         type=str,
         default="cpu",
         help="Torch device to use (e.g., cpu, cuda, cuda:0)",
+    )
+    parser.add_argument(
+        "--ablation",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3, 4, 5],
+        help=(
+            "Which pillar to ablate: 0=None, 1=Mirror Descent (munchausen), "
+            "2=Magnet Regularization (entropy reg), 3=Optimism (Beta), "
+            "4=Distributional (use EV agent), 5=Delayed targets"
+        ),
+    )
+    parser.add_argument(
+        "--run",
+        "--run_id",
+        dest="run",
+        type=int,
+        default=1,
+        help="Run id index for distinguishing multiple trials",
     )
     args = parser.parse_args()
 
@@ -34,27 +52,6 @@ if __name__ == "__main__":
     else:
         device = torch.device(requested_device)
 
-    def eval(agent):
-        lenv = gym.make("HalfCheetah-v5")
-        obs, info = lenv.reset()
-        done = False
-        reward = 0.0
-        while not done:
-            with torch.no_grad():
-                logits = agent.online(torch.from_numpy(obs).to(device).float())
-                ev = agent.online.expected_value(logits)
-                action = torch.argmax(ev, dim=-1).item()
-            obs, r, term, trunc, info = lenv.step(discrete_to_continuous(action))
-            reward += float(r)
-            done = term or trunc
-        return reward
-
-    env = gym.make("HalfCheetah-v5")
-    obs, info = env.reset()
-    action_dim = 729  # 3^6 because 6 actions with bang-0-bang control
-    assert env.observation_space.shape is not None
-    obs_dim = env.observation_space.shape[0]
-    assert obs_dim is not None
     # Five pillars of RL to be tested
     # (1) Mirror Descent / Bregman Proximal Optimization
     # (2) Magnet Policy Regularization
@@ -73,7 +70,25 @@ if __name__ == "__main__":
         }
     }
 
-    cfg = configurations["all"]
+    cfg = dict(configurations["all"])  # copy base config
+
+    # Apply single pillar ablation based on CLI
+    if args.ablation == 1:
+        # Mirror Descent / Munchausen off
+        cfg["munchausen"] = False
+    elif args.ablation == 2:
+        # Magnet policy regularization off
+        cfg["ent_reg_coef"] = 0.0
+    elif args.ablation == 3:
+        # Optimism off (no intrinsic Beta)
+        cfg["Beta"] = 0.0
+    elif args.ablation == 4:
+        # Distributional off (use EV agent)
+        cfg["distributional"] = False
+    elif args.ablation == 5:
+        # Delayed target off
+        cfg["delayed"] = False
+
     AgentClass = RainbowDQN if cfg.get("distributional", True) else EVRainbowDQN
     # Common args
     common_kwargs = dict(
@@ -101,6 +116,34 @@ if __name__ == "__main__":
             **common_kwargs,
         )
 
+    return dqn, device, configurations, args
+
+
+if __name__ == "__main__":
+
+    def eval(agent):
+        lenv = gym.make("HalfCheetah-v5")
+        obs, info = lenv.reset()
+        done = False
+        reward = 0.0
+        while not done:
+            with torch.no_grad():
+                logits = agent.online(torch.from_numpy(obs).to(device).float())
+                ev = agent.online.expected_value(logits)
+                action = torch.argmax(ev, dim=-1).item()
+            obs, r, term, trunc, info = lenv.step(discrete_to_continuous(action))
+            reward += float(r)
+            done = term or trunc
+        return reward
+
+    env = gym.make("HalfCheetah-v5")
+    obs, info = env.reset()
+    action_dim = 729  # 3^6 because 6 actions with bang-0-bang control
+    assert env.observation_space.shape is not None
+    obs_dim = env.observation_space.shape[0]
+    assert obs_dim is not None
+
+    dqn, device, configurations, args = setup_config()
     # Move all agent submodules to the selected device and reinitialize optimizers
     # Note: Optimizers need to be recreated after moving parameters across devices.
     # Capture learning rates prior to reinitialization
@@ -108,7 +151,7 @@ if __name__ == "__main__":
     int_lr = dqn.int_optim.param_groups[0]["lr"] if hasattr(dqn, "int_optim") else 1e-3
     rnd_lr = dqn.rnd_optim.param_groups[0]["lr"] if hasattr(dqn, "rnd_optim") else 1e-3
 
-    # Move networks/RND to device
+    # Move networks/RND and normalizers to device
     if hasattr(dqn, "online"):
         dqn.online.to(device)
     if hasattr(dqn, "target"):
@@ -121,6 +164,10 @@ if __name__ == "__main__":
         dqn.int_target.requires_grad_(False)
     if hasattr(dqn, "rnd") and hasattr(dqn.rnd, "to"):
         dqn.rnd.to(device)
+    # Running stats modules
+    if hasattr(dqn, "obs_rms") and hasattr(dqn.obs_rms, "to"):
+        dqn.obs_rms.to(device)
+    if hasattr(dqn, "int_rms") and hasattr(dqn.int_rms, "to"):
         dqn.int_rms.to(device)
 
     # Recreate optimizers on moved parameters
@@ -220,8 +267,11 @@ if __name__ == "__main__":
     plt.xlabel("Episode")
     plt.ylabel("Training Episode Reward")
     plt.grid()
+    plt.title(f"Training rewards, run {args.run} ablated: {args.ablation}")
+    plt.savefig(f"results/dqn_mujoco_train_scores_{args.run}_{args.ablation}")
     plt.show()
     plt.plot(eval_hist)
     plt.grid()
-    plt.title("eval scores")
+    plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
+    plt.savefig(f"results/dqn_mujoco_eval_scores_{args.run}_{args.ablation}")
     plt.show()
