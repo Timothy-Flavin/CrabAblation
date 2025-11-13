@@ -1,20 +1,33 @@
 from time import time
 import torch
 import gymnasium as gym
+from minigrid.wrappers import FlatObsWrapper
 import matplotlib.pyplot as plt
 import numpy as np
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 import argparse
 
 
-# Mujoco is a continuous action env so we need to transform
-# the joint discrete space to continuous actions
-def discrete_to_continuous(action):
-    env_action = np.zeros(6)
-    for i in range(6):
-        env_action[i] = (action % 3) - 1.0
-        action = action // 3
-    return env_action
+def preprocess_obs(obs, device):
+    """Convert MiniGrid observation to a flat float tensor on `device`.
+
+    Handles both Gymnasium dict observations and simple numpy arrays.
+    """
+    if isinstance(obs, dict):
+        # common MiniGrid observation: {'image': HxWx3, 'mission': str}
+        img = obs.get("image") or obs.get("obs")
+        if img is None:
+            # fallback: try to find the first array value
+            for v in obs.values():
+                if isinstance(v, np.ndarray):
+                    img = v
+                    break
+        if img is None:
+            raise RuntimeError("Couldn't find array observation in MiniGrid obs dict")
+        vec = np.asarray(img).ravel().astype(np.float32)
+        return torch.from_numpy(vec).to(device)
+    else:
+        return torch.from_numpy(np.asarray(obs)).to(device)
 
 
 def setup_config():
@@ -65,7 +78,7 @@ def setup_config():
         "all": {
             "munchausen": True,  # pillar (1)
             "soft": True,  # pillar (3) always enabled if munchausen on
-            "Beta": 0.1,  # pillar (3)
+            "Beta": 0.01,  # pillar (3)
             "dueling": True,  # pillar (4)
             "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.02,  # pillar (2)
@@ -109,9 +122,10 @@ def setup_config():
         dqn = AgentClass(
             obs_dim,
             action_dim,
-            zmin=-1000,
-            zmax=1000,
+            zmin=0,
+            zmax=1,
             n_atoms=51,
+            tau=0.005,
             **common_kwargs,
         )
     else:
@@ -126,27 +140,52 @@ def setup_config():
 
 if __name__ == "__main__":
 
-    def eval(agent):
-        lenv = gym.make("HalfCheetah-v5")
-        obs, info = lenv.reset()
+    def eval(agent, device, env_eval=None):
+        if env_eval is None:
+            env_eval = gym.make("MiniGrid-FourRooms-v0")
+        obs, info = env_eval.reset()
         done = False
         reward = 0.0
         while not done:
             with torch.no_grad():
-                logits = agent.online(torch.from_numpy(obs).to(device).float())
+                tobs = preprocess_obs(obs, device).float().unsqueeze(0)
+                logits = agent.online(tobs)
                 ev = agent.online.expected_value(logits)
                 action = torch.argmax(ev, dim=-1).item()
-            obs, r, term, trunc, info = lenv.step(discrete_to_continuous(action))
+            obs, r, term, trunc, info = env_eval.step(action)
             reward += float(r)
             done = term or trunc
         return reward
 
-    env = gym.make("HalfCheetah-v5")
+    env = gym.make("MiniGrid-FourRooms-v0")
+    env = FlatObsWrapper(env)  # Get pixel observations
+    env2 = gym.make("MiniGrid-FourRooms-v0")
+    env2 = FlatObsWrapper(env2)  # Get rid of the 'mission' field
+    obs, _ = env.reset()  # This now produces an RGB tensor only
     obs, info = env.reset()
-    action_dim = 729  # 3^6 because 6 actions with bang-0-bang control
-    assert env.observation_space.shape is not None
-    obs_dim = env.observation_space.shape[0]
-    assert obs_dim is not None
+    # Determine action and observation dimensions
+    if (
+        isinstance(env.observation_space, gym.spaces.Box)
+        and env.observation_space.shape is not None
+    ):
+        obs_dim = int(np.prod(env.observation_space.shape))
+    else:
+        # for dict observation spaces, infer from a sample obs
+        sample = obs
+        if isinstance(sample, dict):
+            img = sample.get("image") or sample.get("obs")
+            obs_dim = int(np.prod(np.asarray(img).shape))
+        else:
+            obs_dim = int(np.prod(np.asarray(sample).shape))
+
+    # infer discrete action dimension robustly
+    action_dim = getattr(env.action_space, "n", None)
+    if action_dim is None:
+        shape = getattr(env.action_space, "shape", None)
+        if shape:
+            action_dim = int(np.prod(shape))
+        else:
+            action_dim = 1
 
     dqn, device, configurations, args = setup_config()
     # Move all agent submodules to the selected device and reinitialize optimizers
@@ -209,20 +248,22 @@ if __name__ == "__main__":
     n_updates = 0
     for i in range(n_steps):
         eps_current = 1 - i / n_steps
+        tobs = preprocess_obs(obs, device).float()
         action = dqn.sample_action(
-            torch.from_numpy(obs).to(device).float(),
+            tobs,
             eps=eps_current,
             step=i,
             n_steps=n_steps,
         )
-        next_obs, r, term, trunc, info = env.step(discrete_to_continuous(action))
+        next_obs, r, term, trunc, info = env.step(action)
         # Update running stats with the freshly collected transition (single step)
-        dqn.update_running_stats(torch.from_numpy(next_obs).to(device).float())
+        if hasattr(dqn, "update_running_stats"):
+            dqn.update_running_stats(preprocess_obs(next_obs, device).float())
 
-        # Save transition to memory buffer
-        buff_actions[i % blen] = action
-        buff_obs[i % blen] = torch.from_numpy(obs).to(device).float()
-        buff_next_obs[i % blen] = torch.from_numpy(next_obs).to(device).float()
+        # Save transition to memory buffer (flattened obs vectors)
+        buff_actions[i % blen] = int(action)
+        buff_obs[i % blen] = preprocess_obs(obs, device).float()
+        buff_next_obs[i % blen] = preprocess_obs(next_obs, device).float()
         buff_term[i % blen] = term
         buff_r[i % blen] = float(r)
 
@@ -265,17 +306,19 @@ if __name__ == "__main__":
             if ep % 5 == 0:
                 evalr = 0.0
                 for k in range(5):
-                    evalr += eval(dqn)
+                    evalr += eval(dqn, device, env_eval=env2)
                 print(f"eval mean: {evalr/5}")
                 eval_hist.append(evalr / 5)
 
         obs = next_obs
 
-    np.save(f"results/dqn_mujoco_train_scores_{args.run}_{args.ablation}.npy", rhist)
-    np.save(f"results/dqn_mujoco_eval_scores_{args.run}_{args.ablation}.npy", eval_hist)
-    np.save(f"results/dqn_mujoco_loss_hist_{args.run}_{args.ablation}.npy", lhist)
+    np.save(f"results/dqn_minigrid_train_scores_{args.run}_{args.ablation}.npy", rhist)
     np.save(
-        f"results/dqn_mujoco_smooth_train_scores_{args.run}_{args.ablation}.npy",
+        f"results/dqn_minigrid_eval_scores_{args.run}_{args.ablation}.npy", eval_hist
+    )
+    np.save(f"results/dqn_minigrid_loss_hist_{args.run}_{args.ablation}.npy", lhist)
+    np.save(
+        f"results/dqn_minigrid_smooth_train_scores_{args.run}_{args.ablation}.npy",
         smooth_rhist,
     )
     plt.plot(rhist)
@@ -285,10 +328,10 @@ if __name__ == "__main__":
     plt.ylabel("Training Episode Reward")
     plt.grid()
     plt.title(f"Training rewards, run {args.run} ablated: {args.ablation}")
-    plt.savefig(f"results/dqn_mujoco_train_scores_{args.run}_{args.ablation}")
+    plt.savefig(f"results/dqn_minigrid_train_scores_{args.run}_{args.ablation}")
     plt.show()
     plt.plot(eval_hist)
     plt.grid()
     plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
-    plt.savefig(f"results/dqn_mujoco_eval_scores_{args.run}_{args.ablation}")
+    plt.savefig(f"results/dqn_minigrid_eval_scores_{args.run}_{args.ablation}")
     plt.show()
