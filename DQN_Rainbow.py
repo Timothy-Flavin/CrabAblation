@@ -46,7 +46,7 @@ class Q_Network(nn.Module):
         ), f"x with shape: {x.shape} does not match self.n_atoms {self.n_atoms} at dim -1"
         view_dim = [1] * (x.ndim - 1)
         view_dim.append(self.n_atoms)
-        atom_view = self.atoms.view(view_dim)
+        atom_view = self.atoms.view(view_dim)  # type: ignore
         if probs:
             return (x * atom_view).sum(-1)
         return (torch.softmax(x, dim=-1) * atom_view).sum(-1)
@@ -67,7 +67,7 @@ class RainbowDQN:
         gamma: float = 0.99,
         alpha: float = 0.9,
         tau: float = 0.03,
-        l: float = -1.0,
+        l_clip: float = -1.0,
         soft: bool = False,
         munchausen: bool = False,
         Thompson: bool = False,
@@ -90,7 +90,7 @@ class RainbowDQN:
         ).float()
         self.alpha = alpha
         self.tau = tau
-        self.l = l
+        self.l_clip = l_clip
         self.soft = soft
         self.munchausen = munchausen
         self.Thompson = Thompson
@@ -117,7 +117,7 @@ class RainbowDQN:
         # Prepare atom view
         atom_view_dim = [1] * (b_next_obs.ndim - 1)
         atom_view_dim.append(self.n_atoms)
-        expanded_atoms = self.online.atoms.view(atom_view_dim)
+        expanded_atoms = self.online.atoms.view(atom_view_dim)  # type: ignore
 
         # Double DQN-style: policy from online expected values, evaluation by target
         online_next_logits = self.online(b_next_obs)
@@ -153,10 +153,8 @@ class RainbowDQN:
             logpi_hist = torch.log_softmax(ev_hist / self.tau, dim=-1)  # [B, A]
             logpi_a = torch.gather(
                 logpi_hist, dim=1, index=hist_actions.view(-1, 1)
-            ).squeeze(
-                1
-            )  # [B]
-            logpi_a = torch.clamp(logpi_a, min=self.l)
+            ).squeeze(1)
+            logpi_a = torch.clamp(logpi_a, min=self.l_clip)
             r_aug = r_aug + self.alpha * self.tau * logpi_a
 
         # Bellman update on the support (C51 projection pre-step)
@@ -229,7 +227,7 @@ class RainbowDQN:
                 ).sample()  # [A]
                 # Map indices to support values
                 atoms = self.online.atoms  # [N]
-                sampled_values = atoms[sampled_indices]  # [A]
+                sampled_values = atoms[sampled_indices]  # type: ignore
                 action = torch.argmax(sampled_values).item()
         elif self.soft or self.munchausen:
             logits = self.online(obs)
@@ -247,124 +245,3 @@ class RainbowDQN:
                     ev = self.online.expected_value(logits)
                     action = torch.argmax(ev, dim=-1).item()
         return action
-
-
-if __name__ == "__main__":
-
-    def eval(agent: RainbowDQN):
-        lenv = gym.make("CartPole-v1")
-        obs, info = lenv.reset()
-        done = False
-        reward = 0.0
-        while not done:
-            with torch.no_grad():
-                logits = agent.online(torch.from_numpy(obs))
-                ev = agent.online.expected_value(logits)
-                action = torch.argmax(ev, dim=-1).item()
-            obs, r, term, trunc, info = lenv.step(action)
-            reward += float(r)
-            done = term or trunc
-        return reward
-
-    env = gym.make("CartPole-v1")
-    obs, info = env.reset()
-    assert env.observation_space.shape is not None
-    obs_dim = env.observation_space.shape[0]
-    assert obs_dim is not None
-
-    dqn = RainbowDQN(
-        obs_dim,
-        2,
-        zmin=0,
-        zmax=200,
-        n_atoms=51,
-        soft=False,
-        munchausen=False,
-        Thompson=False,
-    )
-
-    n_steps = 100000
-    rhist = []
-    smooth_rhist = []
-    lhist = []
-    eval_hist = []
-    r_ep = 0.0
-    smooth_r = 0.0
-    ep = 0
-    blen = 10000
-    update_every = 4
-
-    # Memory buffer
-    buff_actions = torch.zeros((blen,), dtype=torch.long)
-    buff_obs = torch.zeros(size=(blen, int(obs_dim)), dtype=torch.float32)
-    buff_next_obs = torch.zeros(size=(blen, int(obs_dim)), dtype=torch.float32)
-    buff_term = torch.zeros(size=(blen,), dtype=torch.float32)
-    buff_r = torch.zeros(size=(blen,), dtype=torch.float32)
-
-    for i in range(n_steps):
-        eps_current = 1 - i / n_steps
-        action = dqn.sample_action(
-            torch.from_numpy(obs), eps=eps_current, step=i, n_steps=n_steps
-        )
-        next_obs, r, term, trunc, info = env.step(action)
-
-        # Save transition to memory buffer
-        buff_actions[i % blen] = action
-        buff_obs[i % blen] = torch.from_numpy(obs)
-        buff_next_obs[i % blen] = torch.from_numpy(next_obs)
-        buff_term[i % blen] = term
-        buff_r[i % blen] = float(r)
-
-        if i > 512:
-            lhist.append(
-                dqn.update(
-                    buff_obs,
-                    buff_actions,
-                    buff_r,
-                    buff_next_obs,
-                    buff_term,
-                    batch_size=64,
-                    step=min(i, blen),
-                )
-            )
-            if i % update_every == 0:
-                dqn.update_target()
-
-        if i % 1000 == 0:
-            evalr = 0.0
-            for k in range(5):
-                evalr += eval(dqn)
-            print(f"eval mean: {evalr/5}")
-            eval_hist.append(evalr / 5)
-
-        r_ep += float(r)
-
-        if term or trunc:
-            next_obs, info = env.reset()
-            rhist.append(r_ep)
-            if len(rhist) < 20:
-                print(f"reward for episode: {ep}: {r_ep}")
-                smooth_r = sum(rhist) / len(rhist)
-            else:
-                smooth_r = 0.05 * rhist[-1] + 0.95 * smooth_r
-                print(
-                    f"smooth reward for episode: {ep}: {smooth_r} at eps: {eps_current}"
-                )
-            smooth_rhist.append(smooth_r)
-            r_ep = 0.0
-            ep += 1
-
-        obs = next_obs
-
-    plt.plot(rhist)
-    plt.plot(smooth_rhist)
-    plt.legend(["R hist", "Smooth R hist"])
-    plt.xlabel("Episode")
-    plt.ylabel("Training Episode Reward")
-    plt.grid()
-    plt.show()
-
-    plt.plot(eval_hist)
-    plt.grid()
-    plt.title("eval scores")
-    plt.show()
