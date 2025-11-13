@@ -13,14 +13,23 @@ class Q_Network(nn.Module):
         n_atoms=101,
         zmin=-50,
         zmax=50,
+        dueling: bool = False,
     ):
         super().__init__()
+        self.dueling = dueling
         layers = []
         layers.append(nn.Linear(input_dim, hidden_layer_sizes[0]))
         for li in range(len(hidden_layer_sizes) - 1):
             layers.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
-        self.out_layer = nn.Linear(hidden_layer_sizes[-1], n_actions * n_atoms)
         self.layers = nn.ModuleList(layers)
+        last_hidden = hidden_layer_sizes[-1]
+        if self.dueling:
+            # Value stream outputs per-atom logits [N]
+            self.value_layer = nn.Linear(last_hidden, n_atoms)
+            # Advantage stream outputs per-action per-atom logits [A*N]
+            self.advantage_layer = nn.Linear(last_hidden, n_actions * n_atoms)
+        else:
+            self.out_layer = nn.Linear(last_hidden, n_actions * n_atoms)
         self.relu = nn.ReLU()
         self.zmax = zmax
         self.zmin = zmin
@@ -30,14 +39,35 @@ class Q_Network(nn.Module):
         self.n_atoms = n_atoms
 
     def forward(self, x):
-        shape = []
-        if x.ndim > 1:
-            shape.append(x.shape[0])
-        shape = shape + [self.n_actions, self.n_atoms]
+        # Base MLP
+        h = x
         for layer in self.layers:
-            x = self.relu(layer(x))
-        x = self.out_layer(x).view(shape)
-        return x
+            h = self.relu(layer(h))
+        if not self.dueling:
+            shape = []
+            if h.ndim > 1:
+                shape.append(h.shape[0])
+            shape = shape + [self.n_actions, self.n_atoms]
+            out = self.out_layer(h).view(shape)
+            return out
+        # Dueling: compute per-atom value and advantages, then combine
+        if h.ndim == 1:
+            # Single sample path
+            v = self.value_layer(h).view(1, self.n_atoms)  # [1, N]
+            a = self.advantage_layer(h).view(self.n_actions, self.n_atoms)  # [A, N]
+            a_mean = a.mean(dim=0, keepdim=True)  # [1, N]
+            q = a - a_mean + v  # broadcast v to [A, N]
+            return q
+        else:
+            # Batched path
+            bsz = h.shape[0]
+            v = self.value_layer(h).view(bsz, 1, self.n_atoms)  # [B,1,N]
+            a = self.advantage_layer(h).view(
+                bsz, self.n_actions, self.n_atoms
+            )  # [B,A,N]
+            a_mean = a.mean(dim=1, keepdim=True)  # [B,1,N]
+            q = a - a_mean + v  # [B,A,N]
+            return q
 
     def expected_value(self, x: torch.Tensor, probs: bool = False):
         assert (
@@ -70,6 +100,7 @@ class RainbowDQN:
         soft: bool = False,
         munchausen: bool = False,
         Thompson: bool = False,
+        dueling: bool = False,
         Beta: float = 0.0,
         # Intrinsic/RND configs
         rnd_output_dim: int = 128,
@@ -83,6 +114,7 @@ class RainbowDQN:
             n_atoms=n_atoms,
             zmin=zmin,
             zmax=zmax,
+            dueling=dueling,
         ).float()
         self.target = Q_Network(
             input_dim,
@@ -91,6 +123,7 @@ class RainbowDQN:
             n_atoms=n_atoms,
             zmin=zmin,
             zmax=zmax,
+            dueling=dueling,
         ).float()
         # Intrinsic Q networks (separate head trained on intrinsic rewards only)
         self.int_online = Q_Network(
@@ -100,6 +133,7 @@ class RainbowDQN:
             n_atoms=n_atoms,
             zmin=zmin,
             zmax=zmax,
+            dueling=dueling,
         ).float()
         self.int_target = Q_Network(
             input_dim,
@@ -108,6 +142,7 @@ class RainbowDQN:
             n_atoms=n_atoms,
             zmin=zmin,
             zmax=zmax,
+            dueling=dueling,
         ).float()
         self.alpha = alpha
         self.tau = tau
@@ -255,11 +290,13 @@ class RainbowDQN:
         self.rnd_optim.step()
 
         # Normalize intrinsic reward magnitude using running stats (updated per step)
-        with torch.no_grad():
-            norm_int = self.int_rms.normalize(
-                rnd_errors.detach().to(dtype=torch.float64)
-            )
-            r_int = norm_int.to(dtype=torch.float32)
+        r_int = 0
+        if self.Beta > 0.0:
+            with torch.no_grad():
+                norm_int = self.int_rms.normalize(
+                    rnd_errors.detach().to(dtype=torch.float64)
+                )
+                r_int = norm_int.to(dtype=torch.float32)
 
         # Combine rewards for extrinsic head
         b_r_total = b_r + self.Beta * r_int
@@ -352,22 +389,29 @@ class RainbowDQN:
                 logits_int = self.int_online(obs)
                 probs_ext = torch.softmax(logits_ext, dim=-1)
                 probs_int = torch.softmax(logits_int, dim=-1)
+                atoms = self.online.atoms  # [N]
+
                 sampled_idx_ext = torch.distributions.Categorical(
                     probs=probs_ext
                 ).sample()
-                sampled_idx_int = torch.distributions.Categorical(
-                    probs=probs_int
-                ).sample()
-                atoms = self.online.atoms  # [N]
+
+                sampled_values_int = 0.0
+                if self.Beta > 0.0:
+                    sampled_idx_int = torch.distributions.Categorical(
+                        probs=probs_int
+                    ).sample()
+                    sampled_values_int = atoms[sampled_idx_int]  # type: ignore
+
                 sampled_values_ext = atoms[sampled_idx_ext]  # type: ignore
-                sampled_values_int = atoms[sampled_idx_int]  # type: ignore
                 sampled_values = sampled_values_ext + self.Beta * sampled_values_int
                 action = torch.argmax(sampled_values).item()
         elif self.soft or self.munchausen:
             logits_ext = self.online(obs)
-            logits_int = self.int_online(obs)
             ev_ext = self.online.expected_value(logits_ext)
-            ev_int = self.int_online.expected_value(logits_int)
+            ev_int = 0.0
+            if self.Beta > 0.0:
+                logits_int = self.int_online(obs)
+                ev_int = self.int_online.expected_value(logits_int)
             ev_comb = ev_ext + self.Beta * ev_int
             action = (
                 torch.distributions.Categorical(logits=ev_comb / self.tau)
@@ -381,9 +425,11 @@ class RainbowDQN:
             else:
                 with torch.no_grad():
                     logits_ext = self.online(obs)
-                    logits_int = self.int_online(obs)
                     ev_ext = self.online.expected_value(logits_ext)
-                    ev_int = self.int_online.expected_value(logits_int)
+                    ev_int = 0.0
+                    if self.Beta > 0.0:
+                        logits_int = self.int_online(obs)
+                        ev_int = self.int_online.expected_value(logits_int)
                     ev_comb = ev_ext + self.Beta * ev_int
                     action = torch.argmax(ev_comb, dim=-1).item()
         return action

@@ -36,7 +36,8 @@ if __name__ == "__main__":
         soft=False,
         munchausen=False,
         Thompson=False,
-        Beta=0.2,
+        Beta=0.0,
+        dueling=True,
     )
 
     n_steps = 100000
