@@ -66,7 +66,7 @@ def setup_config():
             "munchausen": True,  # pillar (1)
             "soft": True,  # pillar (3) always enabled if munchausen on
             "Beta": 0.1,  # pillar (3)
-            "dueling": True,  # pillar (4)
+            "dueling": False,  # pillar (4)
             "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.02,  # pillar (2)
             "delayed": True,  # pillar (5)
@@ -255,8 +255,9 @@ if __name__ == "__main__":
             else:
                 smooth_r = 0.05 * rhist[-1] + 0.95 * smooth_r
                 if ep % 10 == 0:
+                    dt = time() - start_time
                     print(
-                        f"smooth reward for episode: {ep}: {smooth_r} at eps: {eps_current}"
+                        f"reward for episode: {ep}: {r_ep} at {i/dt:.2f} steps/sec {n_updates/dt:.2f} updates/s {100*i/n_steps:.2f}%"
                     )
             smooth_rhist.append(smooth_r)
             r_ep = 0.0
