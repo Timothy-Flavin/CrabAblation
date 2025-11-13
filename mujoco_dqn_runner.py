@@ -1,45 +1,86 @@
 import torch
 import gymnasium as gym
 import matplotlib.pyplot as plt
-from DQN_Rainbow import RainbowDQN
+import numpy as np
+from DQN_Rainbow import RainbowDQN, EVRainbowDQN
+
+
+def discrete_to_continuous(action):
+    env_action = np.zeros(6)
+    for i in range(6):
+        env_action[i] = (action % 3) - 1.0
+        action = action // 3
+    return env_action
 
 
 if __name__ == "__main__":
 
-    def eval(agent: RainbowDQN):
-        lenv = gym.make("CartPole-v1")
+    def eval(agent):
+        lenv = gym.make("HalfCheetah-v5")
         obs, info = lenv.reset()
         done = False
         reward = 0.0
         while not done:
             with torch.no_grad():
-                logits = agent.online(torch.from_numpy(obs))
+                logits = agent.online(torch.from_numpy(obs).float())
                 ev = agent.online.expected_value(logits)
                 action = torch.argmax(ev, dim=-1).item()
-            obs, r, term, trunc, info = lenv.step(action)
+            obs, r, term, trunc, info = lenv.step(discrete_to_continuous(action))
             reward += float(r)
             done = term or trunc
         return reward
 
-    env = gym.make("CartPole-v1")
+    env = gym.make("HalfCheetah-v5")
     obs, info = env.reset()
+    action_dim = 729  # 3^6 because 6 actions with bang-0-bang control
     assert env.observation_space.shape is not None
     obs_dim = env.observation_space.shape[0]
     assert obs_dim is not None
+    # Five pillars of RL to be tested
+    # (1) Mirror Descent / Bregman Proximal Optimization
+    # (2) Magnet Policy Regularization
+    # (3) Optimism in the face of Uncertainty
+    # (4) Dual/Dueling/Distributional Value Estimates
+    # (5) Delayed / Two-Timescale Optimization
+    configurations = {
+        "all": {
+            "munchausen": True,  # pillar (1)
+            "soft": True,  # pillar (3) always enabled if munchausen on
+            "Beta": 0.1,  # pillar (3)
+            "dueling": True,  # pillar (4)
+            "distributional": False,  # pillar (4)
+            "ent_reg_coef": 0.02,  # pillar (2)
+            "delayed": True,  # pillar (5)
+        }
+    }
 
-    dqn = RainbowDQN(
-        obs_dim,
-        2,
-        zmin=0,
-        zmax=200,
-        n_atoms=51,
-        soft=False,
-        munchausen=False,
+    cfg = configurations["all"]
+    AgentClass = RainbowDQN if cfg.get("distributional", True) else EVRainbowDQN
+    # Common args
+    common_kwargs = dict(
+        soft=cfg.get("soft", False),
+        munchausen=cfg.get("munchausen", False),
         Thompson=False,
-        Beta=0.0,
-        dueling=True,
-        ent_reg_coef=0.02,
+        dueling=cfg.get("dueling", False),
+        Beta=cfg.get("Beta", 0.0),
+        ent_reg_coef=cfg.get("ent_reg_coef", 0.0),
+        delayed=cfg.get("delayed", True),
     )
+    if AgentClass is RainbowDQN:
+        dqn = AgentClass(
+            obs_dim,
+            action_dim,
+            zmin=0,
+            zmax=200,
+            n_atoms=51,
+            **common_kwargs,
+        )
+    else:
+        dqn = AgentClass(
+            obs_dim,
+            action_dim,
+            **common_kwargs,
+        )
 
     n_steps = 50000
     rhist = []
@@ -50,7 +91,7 @@ if __name__ == "__main__":
     smooth_r = 0.0
     ep = 0
     blen = 10000
-    update_every = 4
+    update_every = 1
 
     # Memory buffer
     buff_actions = torch.zeros((blen,), dtype=torch.long)
@@ -62,16 +103,16 @@ if __name__ == "__main__":
     for i in range(n_steps):
         eps_current = 1 - i / n_steps
         action = dqn.sample_action(
-            torch.from_numpy(obs), eps=eps_current, step=i, n_steps=n_steps
+            torch.from_numpy(obs).float(), eps=eps_current, step=i, n_steps=n_steps
         )
-        next_obs, r, term, trunc, info = env.step(action)
+        next_obs, r, term, trunc, info = env.step(discrete_to_continuous(action))
         # Update running stats with the freshly collected transition (single step)
-        dqn.update_running_stats(torch.from_numpy(next_obs))
+        dqn.update_running_stats(torch.from_numpy(next_obs).float())
 
         # Save transition to memory buffer
         buff_actions[i % blen] = action
-        buff_obs[i % blen] = torch.from_numpy(obs)
-        buff_next_obs[i % blen] = torch.from_numpy(next_obs)
+        buff_obs[i % blen] = torch.from_numpy(obs).float()
+        buff_next_obs[i % blen] = torch.from_numpy(next_obs).float()
         buff_term[i % blen] = term
         buff_r[i % blen] = float(r)
 
@@ -92,10 +133,10 @@ if __name__ == "__main__":
 
         if i % 1000 == 0:
             evalr = 0.0
-            for k in range(5):
+            for k in range(10):
                 evalr += eval(dqn)
-            print(f"eval mean: {evalr/5}")
-            eval_hist.append(evalr / 5)
+            print(f"eval mean: {evalr/10}")
+            eval_hist.append(evalr / 10)
 
         r_ep += float(r)
 
@@ -124,7 +165,6 @@ if __name__ == "__main__":
     plt.ylabel("Training Episode Reward")
     plt.grid()
     plt.show()
-
     plt.plot(eval_hist)
     plt.grid()
     plt.title("eval scores")
