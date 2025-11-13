@@ -1,8 +1,7 @@
 import torch
 import torch.nn as nn
-import gymnasium as gym
 import random
-import matplotlib.pyplot as plt
+from RandomDistilation import RNDModel, RunningMeanStd
 
 
 class Q_Network(nn.Module):
@@ -71,6 +70,11 @@ class RainbowDQN:
         soft: bool = False,
         munchausen: bool = False,
         Thompson: bool = False,
+        Beta: float = 0.0,
+        # Intrinsic/RND configs
+        rnd_output_dim: int = 128,
+        rnd_lr: float = 1e-3,
+        intrinsic_lr: float = 1e-3,
     ):
         self.online = Q_Network(
             input_dim,
@@ -88,6 +92,23 @@ class RainbowDQN:
             zmin=zmin,
             zmax=zmax,
         ).float()
+        # Intrinsic Q networks (separate head trained on intrinsic rewards only)
+        self.int_online = Q_Network(
+            input_dim,
+            n_actions,
+            hidden_layer_sizes=hidden_layer_sizes,
+            n_atoms=n_atoms,
+            zmin=zmin,
+            zmax=zmax,
+        ).float()
+        self.int_target = Q_Network(
+            input_dim,
+            n_actions,
+            hidden_layer_sizes=hidden_layer_sizes,
+            n_atoms=n_atoms,
+            zmin=zmin,
+            zmax=zmax,
+        ).float()
         self.alpha = alpha
         self.tau = tau
         self.l_clip = l_clip
@@ -96,33 +117,61 @@ class RainbowDQN:
         self.Thompson = Thompson
         self.target.requires_grad_(False)
         self.target.load_state_dict(self.online.state_dict())
+        self.int_target.requires_grad_(False)
+        self.int_target.load_state_dict(self.int_online.state_dict())
 
         self.optim = torch.optim.Adam(self.online.parameters(), lr=lr)
+        self.int_optim = torch.optim.Adam(self.int_online.parameters(), lr=intrinsic_lr)
         self.gamma = gamma
         self.n_atoms = n_atoms
         self.zmin = zmin
         self.zmax = zmax
         self.n_actions = n_actions
+        self.Beta = Beta
+
+        # RND intrinsic reward model and normalizers
+        self.rnd = RNDModel(input_dim, rnd_output_dim).float()
+        self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
+        # Running stats: observations and intrinsic reward magnitude
+        self.obs_rms = RunningMeanStd(shape=(input_dim,))
+        # Scalar running stats for intrinsic reward
+        self.int_rms = RunningMeanStd(shape=())
 
     def update_target(self):
         """Polyak averaging: target = (1 - tau) * target + tau * online."""
         with torch.no_grad():
             for tp, op in zip(self.target.parameters(), self.online.parameters()):
                 tp.data.mul_(1.0 - self.tau).add_(op.data, alpha=self.tau)
+            for tp, op in zip(
+                self.int_target.parameters(), self.int_online.parameters()
+            ):
+                tp.data.mul_(1.0 - self.tau).add_(op.data, alpha=self.tau)
 
     @torch.no_grad()
     def _project_next_distribution(
-        self, b_r, b_term, b_next_obs, hist_logits=None, hist_actions=None
+        self,
+        b_r,
+        b_term,
+        b_next_obs,
+        hist_logits=None,
+        hist_actions=None,
+        net_online: Q_Network = None,  # type: ignore
+        net_target: Q_Network = None,  # type: ignore
     ):
+        # Select which networks to use (extrinsic by default)
+        if net_online is None:
+            net_online = self.online
+        if net_target is None:
+            net_target = self.target
         # Prepare atom view
         atom_view_dim = [1] * (b_next_obs.ndim - 1)
         atom_view_dim.append(self.n_atoms)
-        expanded_atoms = self.online.atoms.view(atom_view_dim)  # type: ignore
+        expanded_atoms = net_online.atoms.view(atom_view_dim)  # type: ignore
 
         # Double DQN-style: policy from online expected values, evaluation by target
-        online_next_logits = self.online(b_next_obs)
-        next_ev_online = self.online.expected_value(online_next_logits, probs=False)
-        eval_logits = self.target(b_next_obs)
+        online_next_logits = net_online(b_next_obs)
+        next_ev_online = net_online.expected_value(online_next_logits, probs=False)
+        eval_logits = net_target(b_next_obs)
         next_probs = torch.softmax(eval_logits, dim=-1)  # [B, A, N]
 
         if self.soft or self.munchausen:
@@ -149,7 +198,7 @@ class RainbowDQN:
         r_aug = b_r
         if self.munchausen and (hist_logits is not None) and (hist_actions is not None):
             # Compute policy log-prob for taken actions at (s_t, a_t)
-            ev_hist = self.online.expected_value(hist_logits, probs=False)  # [B, A]
+            ev_hist = net_online.expected_value(hist_logits, probs=False)  # [B, A]
             logpi_hist = torch.log_softmax(ev_hist / self.tau, dim=-1)  # [B, A]
             logpi_a = torch.gather(
                 logpi_hist, dim=1, index=hist_actions.view(-1, 1)
@@ -191,10 +240,41 @@ class RainbowDQN:
         b_next_obs = next_obs[idx]
         b_term = term[idx]
         b_actions = a[idx]
+
+        # 1) Intrinsic reward via RND (train predictor to reduce novelty on visited states)
+        # Use existing running stats (updated per-environment step) to normalize inputs for RND
+        with torch.no_grad():
+            norm_next_obs = self.obs_rms.normalize(b_next_obs.to(dtype=torch.float64))
+        norm_next_obs_f32 = norm_next_obs.to(dtype=torch.float32)
+
+        # Train RND predictor
+        rnd_errors = self.rnd(norm_next_obs_f32)  # [B]
+        rnd_loss = rnd_errors.mean()
+        self.rnd_optim.zero_grad()
+        rnd_loss.backward()
+        self.rnd_optim.step()
+
+        # Normalize intrinsic reward magnitude using running stats (updated per step)
+        with torch.no_grad():
+            norm_int = self.int_rms.normalize(
+                rnd_errors.detach().to(dtype=torch.float64)
+            )
+            r_int = norm_int.to(dtype=torch.float32)
+
+        # Combine rewards for extrinsic head
+        b_r_total = b_r + self.Beta * r_int
+
+        # 2) Update extrinsic Q network on combined rewards
         logits = self.online(b_obs)
         with torch.no_grad():
             target_dist = self._project_next_distribution(
-                b_r, b_term, b_next_obs, hist_logits=logits, hist_actions=b_actions
+                b_r_total,
+                b_term,
+                b_next_obs,
+                hist_logits=logits,
+                hist_actions=b_actions,
+                net_online=self.online,
+                net_target=self.target,
             )
 
         # Current logits for chosen actions
@@ -211,7 +291,56 @@ class RainbowDQN:
         loss.backward()
         self.optim.step()
 
+        # 3) Update intrinsic Q network on intrinsic rewards only
+        int_logits = self.int_online(b_obs)
+        with torch.no_grad():
+            int_target_dist = self._project_next_distribution(
+                r_int,
+                b_term,
+                b_next_obs,
+                hist_logits=int_logits,
+                hist_actions=b_actions,
+                net_online=self.int_online,
+                net_target=self.int_target,
+            )
+
+        int_selected_logits = torch.gather(
+            int_logits, dim=1, index=actions_viewed
+        ).squeeze()
+        int_current_l_probs = torch.log_softmax(int_selected_logits, dim=-1)
+        int_loss = -torch.sum(int_target_dist * int_current_l_probs, dim=-1).mean()
+
+        self.int_optim.zero_grad()
+        int_loss.backward()
+        self.int_optim.step()
+
+        # Store last auxiliary losses for logging (optional)
+        self.last_losses = {
+            "extrinsic": float(loss.item()),
+            "intrinsic": float(int_loss.item()),
+            "rnd": float(rnd_loss.item()),
+            "avg_r_int": float(r_int.mean().item()),
+        }
+
         return loss.item()
+
+    @torch.no_grad()
+    def update_running_stats(self, next_obs: torch.Tensor):
+        """Update observation and intrinsic reward running stats with a single environment step.
+
+        This does not train any networks; it only updates the normalizers so that
+        later batch updates can use stable statistics.
+        """
+        # Update observation stats
+        x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
+        self.obs_rms.update(x64)
+        # Compute a single-step intrinsic error to update intrinsic RMS
+        norm_x64 = self.obs_rms.normalize(x64)
+        # Ensure batch dimension for RND
+        if norm_x64.ndim == 1:
+            norm_x64 = norm_x64.unsqueeze(0)
+        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
+        self.int_rms.update(rnd_err.to(dtype=torch.float64))
 
     def sample_action(
         self, obs: torch.Tensor, eps: float, step: int, n_steps: int = 100000
@@ -219,21 +348,31 @@ class RainbowDQN:
         # linear annealing from 1.0 -> 0.0 across n_steps
         if self.Thompson:
             with torch.no_grad():
-                logits = self.online(obs)  # [A, N]
-                probs = torch.softmax(logits, dim=-1)  # [A, N]
-                # Sample one atom per action
-                sampled_indices = torch.distributions.Categorical(
-                    probs=probs
-                ).sample()  # [A]
-                # Map indices to support values
+                logits_ext = self.online(obs)  # [A, N] or [N] per action when no batch
+                logits_int = self.int_online(obs)
+                probs_ext = torch.softmax(logits_ext, dim=-1)
+                probs_int = torch.softmax(logits_int, dim=-1)
+                sampled_idx_ext = torch.distributions.Categorical(
+                    probs=probs_ext
+                ).sample()
+                sampled_idx_int = torch.distributions.Categorical(
+                    probs=probs_int
+                ).sample()
                 atoms = self.online.atoms  # [N]
-                sampled_values = atoms[sampled_indices]  # type: ignore
+                sampled_values_ext = atoms[sampled_idx_ext]  # type: ignore
+                sampled_values_int = atoms[sampled_idx_int]  # type: ignore
+                sampled_values = sampled_values_ext + self.Beta * sampled_values_int
                 action = torch.argmax(sampled_values).item()
         elif self.soft or self.munchausen:
-            logits = self.online(obs)
-            ev = self.online.expected_value(logits)
+            logits_ext = self.online(obs)
+            logits_int = self.int_online(obs)
+            ev_ext = self.online.expected_value(logits_ext)
+            ev_int = self.int_online.expected_value(logits_int)
+            ev_comb = ev_ext + self.Beta * ev_int
             action = (
-                torch.distributions.Categorical(logits=ev / self.tau).sample().item()
+                torch.distributions.Categorical(logits=ev_comb / self.tau)
+                .sample()
+                .item()
             )
         else:
             eps = 1 - step / n_steps
@@ -241,7 +380,10 @@ class RainbowDQN:
                 action = random.randint(0, self.n_actions - 1)
             else:
                 with torch.no_grad():
-                    logits = self.online(obs)
-                    ev = self.online.expected_value(logits)
-                    action = torch.argmax(ev, dim=-1).item()
+                    logits_ext = self.online(obs)
+                    logits_int = self.int_online(obs)
+                    ev_ext = self.online.expected_value(logits_ext)
+                    ev_int = self.int_online.expected_value(logits_int)
+                    ev_comb = ev_ext + self.Beta * ev_int
+                    action = torch.argmax(ev_comb, dim=-1).item()
         return action

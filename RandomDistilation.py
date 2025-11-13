@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.functional as F
 
 
 class RNDModel(nn.Module):
@@ -30,10 +29,6 @@ class RNDModel(nn.Module):
         # Calculate MSE per batch item (no reduction yet)
         error = (predict_feature - target_feature).pow(2).sum(1)
         return error
-
-
-import torch
-import torch.nn as nn
 
 
 class RunningMeanStd(nn.Module):
@@ -89,35 +84,52 @@ class RunningMeanStd(nn.Module):
         return torch.sqrt(self.var + self.epsilon)
 
     def update(self, x):
-        """Updates the running mean and variance with a new batch of data."""
+        """Updates running statistics from data where leading dims are batch and trailing dims match `shape`."""
 
-        # Ensure x is a tensor and on the same device/dtype as the buffers
+        # Ensure tensor on correct device/dtype
         if not isinstance(x, torch.Tensor):
             x = torch.tensor(x, dtype=torch.float64, device=self.mean.device)
+        else:
+            x = x.to(dtype=torch.float64, device=self.mean.device)
 
-        # Handle different input dimensions (batch vs. single sample)
-        if len(x.shape) == 1:
-            # Assume it's a single sample, add a batch dim
-            x = x.unsqueeze(0)
+        feat_shape = tuple(self.mean.shape)
+        feat_ndim = self.mean.dim()
 
-        batch_size = x.shape[0]
+        if feat_ndim == 0:
+            # Scalar feature per sample: accept x as scalar or any batch of scalars
+            if x.ndim == 0:
+                x_flat = x.view(1)
+            else:
+                x_flat = x.reshape(-1)
+            batch_size = x_flat.shape[0]
+            batch_mean = x_flat.mean(dim=0)  # scalar
+            batch_M2 = ((x_flat - batch_mean) ** 2).sum(dim=0)  # scalar
+        else:
+            # Ensure samples have trailing dims equal to feat_shape
+            if x.ndim < feat_ndim:
+                raise ValueError(
+                    f"Input tensor has ndim={x.ndim} < feature ndim={feat_ndim}"
+                )
+            if x.shape[-feat_ndim:] != feat_shape:
+                # If x is a single sample with exactly feat_shape, add batch dim
+                if x.ndim == feat_ndim and tuple(x.shape) == feat_shape:
+                    x = x.unsqueeze(0)
+                else:
+                    raise ValueError(
+                        f"Trailing dims {x.shape[-feat_ndim:]} do not match feature shape {feat_shape}"
+                    )
+            if x.ndim == feat_ndim:
+                x = x.unsqueeze(0)
+            # Flatten all leading (batch) dims
+            x_flat = x.reshape(-1, *feat_shape)
+            batch_size = x_flat.shape[0]
+            batch_mean = x_flat.mean(dim=0)
+            batch_M2 = ((x_flat - batch_mean) ** 2).sum(dim=0)
 
-        # Welford's algorithm
-        # See: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford's_online_algorithm
-
+        # Welford combine
         new_count = self.count + batch_size
-
-        # Calculate the delta between new data and old mean
-        # We use batch_mean for efficiency over iterating
-        batch_mean = torch.mean(x, dim=0)
         delta = batch_mean - self.mean
-
-        # Update the mean
         new_mean = self.mean + delta * (batch_size / new_count)
-
-        # Calculate new M2 (sum of squares of differences)
-        # This part combines the old M2 with the contribution from the new batch
-        batch_M2 = torch.sum((x - batch_mean) ** 2, dim=0)
         new_M2 = self.M2 + batch_M2 + (delta**2) * (self.count * batch_size / new_count)
 
         # Assign new values

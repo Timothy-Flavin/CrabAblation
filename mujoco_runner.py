@@ -1,10 +1,7 @@
 import torch
-import torch.nn as nn
 import gymnasium as gym
-import random
 import matplotlib.pyplot as plt
 from DQN_Rainbow import RainbowDQN
-from RandomDistilation import RND
 
 
 if __name__ == "__main__":
@@ -39,6 +36,7 @@ if __name__ == "__main__":
         soft=False,
         munchausen=False,
         Thompson=False,
+        Beta=0.2,
     )
 
     n_steps = 100000
@@ -65,6 +63,8 @@ if __name__ == "__main__":
             torch.from_numpy(obs), eps=eps_current, step=i, n_steps=n_steps
         )
         next_obs, r, term, trunc, info = env.step(action)
+        # Update running stats with the freshly collected transition (single step)
+        dqn.update_running_stats(torch.from_numpy(next_obs))
 
         # Save transition to memory buffer
         buff_actions[i % blen] = action
@@ -105,9 +105,10 @@ if __name__ == "__main__":
                 smooth_r = sum(rhist) / len(rhist)
             else:
                 smooth_r = 0.05 * rhist[-1] + 0.95 * smooth_r
-                print(
-                    f"smooth reward for episode: {ep}: {smooth_r} at eps: {eps_current}"
-                )
+                if ep % 10 == 0:
+                    print(
+                        f"smooth reward for episode: {ep}: {smooth_r} at eps: {eps_current}"
+                    )
             smooth_rhist.append(smooth_r)
             r_ep = 0.0
             ep += 1
