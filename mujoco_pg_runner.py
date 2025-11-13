@@ -2,7 +2,7 @@ import torch
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
-from DQN_Rainbow import RainbowDQN, EVRainbowDQN
+from PG_Rainbow import PG
 import argparse
 
 
@@ -261,13 +261,6 @@ if __name__ == "__main__":
 
         obs = next_obs
 
-    np.save(f"results/dqn_mujoco_train_scores_{args.run}_{args.ablation}.npy", rhist)
-    np.save(f"results/dqn_mujoco_eval_scores_{args.run}_{args.ablation}.npy", eval_hist)
-    np.save(f"results/dqn_mujoco_loss_hist_{args.run}_{args.ablation}.npy", lhist)
-    np.save(
-        f"results/dqn_mujoco_smooth_train_scores_{args.run}_{args.ablation}.npy",
-        smooth_rhist,
-    )
     plt.plot(rhist)
     plt.plot(smooth_rhist)
     plt.legend(["R hist", "Smooth R hist"])
