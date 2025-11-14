@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 import argparse
+from torch.utils.tensorboard import SummaryWriter
 
 
 # Mujoco is a continuous action env so we need to transform
@@ -69,7 +70,7 @@ def setup_config():
             "Beta": 0.1,  # pillar (3)
             "dueling": False,  # pillar (4)
             "distributional": True,  # pillar (4)
-            "ent_reg_coef": 0.02,  # pillar (2)
+            "ent_reg_coef": 0.01,  # pillar (2)
             "delayed": True,  # pillar (5)
         }
     }
@@ -91,6 +92,7 @@ def setup_config():
         # Distributional off (use EV agent)
         cfg["distributional"] = False
         cfg["dueling"] = False
+        cfg["ent_reg_coef"] = 0.003
     elif args.ablation == 5:
         # Delayed target off
         cfg["delayed"] = False
@@ -113,12 +115,14 @@ def setup_config():
             zmin=-1000,
             zmax=1000,
             n_atoms=51,
+            hidden_layer_sizes=[512, 512],
             **common_kwargs,
         )
     else:
         dqn = AgentClass(
             obs_dim,
             action_dim,
+            hidden_layer_sizes=[512, 512],
             **common_kwargs,
         )
 
@@ -207,6 +211,14 @@ if __name__ == "__main__":
     buff_r = torch.zeros((blen,), dtype=torch.float32, device=device)
 
     start_time = time()
+    # Initialize TensorBoard writer
+    runner_name = "mujoco"
+    results_dir = os.path.join("results", runner_name)
+    os.makedirs(results_dir, exist_ok=True)
+    tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
+    writer = SummaryWriter(log_dir=tb_dir)
+    # Write a startup marker so TensorBoard shows an active run immediately
+    writer.add_scalar("run/started", 1, 0)
     n_updates = 0
     for i in range(n_steps):
         eps_current = 1 - i * 2 / n_steps
@@ -242,6 +254,13 @@ if __name__ == "__main__":
             )
             n_updates += 1
             dqn.update_target()
+            # TensorBoard: update metrics
+            writer.add_scalar("update/loss", float(lhist[-1]), i)
+            if hasattr(dqn, "last_losses") and isinstance(dqn.last_losses, dict):
+                for k, v in dqn.last_losses.items():
+                    if isinstance(v, (int, float)):
+                        writer.add_scalar(f"update/{k}", float(v), i)
+            writer.add_scalar("update/updates", n_updates, i)
 
         r_ep += float(r)
 
@@ -271,14 +290,16 @@ if __name__ == "__main__":
                     evalr += eval(dqn)
                 print(f"eval mean: {evalr/5}")
                 eval_hist.append(evalr / 5)
+                writer.add_scalar("eval/reward", float(eval_hist[-1]), i)
+            # TensorBoard: episode metrics
+            writer.add_scalar("episode/reward", float(rhist[-1]), i)
+            writer.add_scalar("episode/smooth_reward", float(smooth_rhist[-1]), i)
 
         obs = next_obs
 
-    # Legacy flat saves removed in favor of structured directory below
-    # Save artifacts under results/{runner_name}/
-    runner_name = "mujoco"
-    results_dir = os.path.join("results", runner_name)
-    os.makedirs(results_dir, exist_ok=True)
+    # Close TensorBoard writer
+    writer.flush()
+    writer.close()
 
     np.save(
         os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}.npy"), rhist
@@ -305,12 +326,12 @@ if __name__ == "__main__":
     plt.grid()
     plt.title(f"Training rewards, run {args.run} ablated: {args.ablation}")
     plt.savefig(os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}"))
-    plt.show()
+    plt.close()
     plt.plot(eval_hist)
     plt.grid()
     plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
     plt.savefig(os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}"))
-    plt.show()
+    plt.close()
 
     # Save total wall clock training time
     end_time = time()

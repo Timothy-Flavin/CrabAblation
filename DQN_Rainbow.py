@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import random
+from typing import Optional
+from torch.utils.tensorboard import SummaryWriter
 from RandomDistilation import RNDModel, RunningMeanStd
 
 
@@ -229,6 +231,14 @@ class RainbowDQN:
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
         # Scalar running stats for intrinsic reward
         self.int_rms = RunningMeanStd(shape=())
+        # Optional TensorBoard writer
+        self.tb_writer: Optional[SummaryWriter] = None
+        self.tb_prefix: str = "agent"
+
+    def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
+        """Attach a TensorBoard SummaryWriter to enable internal logging during updates."""
+        self.tb_writer = writer
+        self.tb_prefix = prefix
 
     def update_target(self):
         """Polyak averaging: target = (1 - tau) * target + tau * online."""
@@ -435,6 +445,17 @@ class RainbowDQN:
             "entropy_reg": entropy_val,
         }
 
+        # Inline TensorBoard logging if writer attached
+        if self.tb_writer is not None:
+            try:
+                for k, v in self.last_losses.items():
+                    if isinstance(v, (int, float)):
+                        self.tb_writer.add_scalar(
+                            f"{self.tb_prefix}/{k}", float(v), step
+                        )
+            except Exception:
+                pass
+
         return loss.item()
 
     @torch.no_grad()
@@ -482,7 +503,7 @@ class RainbowDQN:
                 sampled_values = sampled_values_ext + self.Beta * sampled_values_int
                 action = torch.argmax(sampled_values).item()
         elif self.soft or self.munchausen:
-            if random.random() <= 0.05:
+            if random.random() <= 0.01:
                 return random.randint(0, self.n_actions - 1)
             logits_ext = self.online(obs)
             ev_ext = self.online.expected_value(logits_ext)
@@ -588,6 +609,12 @@ class EVRainbowDQN:
         self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
         self.int_rms = RunningMeanStd(shape=())
+        self.tb_writer: Optional[SummaryWriter] = None
+        self.tb_prefix: str = "agent"
+
+    def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
+        self.tb_writer = writer
+        self.tb_prefix = prefix
 
     def update_target(self):
         if not self.delayed_target:
@@ -712,6 +739,15 @@ class EVRainbowDQN:
             "avg_r_int": r_int_log,
             "entropy_reg": entropy_val,
         }
+        if self.tb_writer is not None:
+            try:
+                for k, v in self.last_losses.items():
+                    if isinstance(v, (int, float)):
+                        self.tb_writer.add_scalar(
+                            f"{self.tb_prefix}/{k}", float(v), step
+                        )
+            except Exception:
+                pass
         return float(extrinsic_loss.item())
 
     @torch.no_grad()

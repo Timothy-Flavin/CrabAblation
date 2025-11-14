@@ -9,6 +9,7 @@ import gymnasium as gym
 from pettingzoo.classic import leduc_holdem_v4
 
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
+from torch.utils.tensorboard import SummaryWriter
 
 
 def setup_config():
@@ -198,6 +199,13 @@ if __name__ == "__main__":
     t = 0  # transition counter
     start_time = time()
     eps_min = 0.05
+    # Initialize TensorBoard writer
+    runner_name = "leduc"
+    results_dir = os.path.join("results", runner_name)
+    os.makedirs(results_dir, exist_ok=True)
+    tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
+    writer = SummaryWriter(log_dir=tb_dir)
+
     for ep in range(args.episodes):
         env = leduc_holdem_v4.env()
         env.reset()
@@ -253,6 +261,14 @@ if __name__ == "__main__":
                     )
                     lhist.append(l)
                     dqn.update_target()
+                    # TensorBoard: update metrics
+                    writer.add_scalar("update/loss", float(l), t)
+                    if hasattr(dqn, "last_losses") and isinstance(
+                        dqn.last_losses, dict
+                    ):
+                        for k, v in dqn.last_losses.items():
+                            if isinstance(v, (int, float)):
+                                writer.add_scalar(f"update/{k}", float(v), t)
 
             if term or trunc:
                 env.step(None)
@@ -293,6 +309,10 @@ if __name__ == "__main__":
             print(
                 f"Episode {ep}/{args.episodes} | Eval vs random: {score:.3f} | transitions: {t} | {ep/dt:.2f} eps/s"
             )
+            writer.add_scalar("eval/reward", float(score), ep)
+        # Episode-level TensorBoard logging
+        writer.add_scalar("episode/reward", float(rhist[-1]), ep)
+        writer.add_scalar("episode/smooth_reward", float(smooth_rhist[-1]), ep)
 
     end_time = time()
     print(
@@ -323,3 +343,6 @@ if __name__ == "__main__":
         ),
         smooth_rhist,
     )
+    # Close TensorBoard writer
+    writer.flush()
+    writer.close()

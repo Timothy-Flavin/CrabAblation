@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 import argparse
+from torch.utils.tensorboard import SummaryWriter
 
 
 def setup_config():
@@ -224,6 +225,12 @@ if __name__ == "__main__":
     buff_r = torch.zeros((blen,), dtype=torch.float32, device=device)
 
     start_time = time()
+    # Initialize TensorBoard writer
+    runner_name = "minigrid"
+    results_dir = os.path.join("results", runner_name)
+    os.makedirs(results_dir, exist_ok=True)
+    tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
+    writer = SummaryWriter(log_dir=tb_dir)
     n_updates = 0
     for i in range(n_steps):
         eps_current = 1 - i * 2 / n_steps
@@ -253,19 +260,25 @@ if __name__ == "__main__":
         buff_r[i % blen] = float(r)
 
         if i > 512 and i % 8 == 0:
-            lhist.append(
-                dqn.update(
-                    buff_obs,
-                    buff_actions,
-                    buff_r,
-                    buff_next_obs,
-                    buff_term,
-                    batch_size=64,
-                    step=min(i, blen),
-                )
+            loss_val = dqn.update(
+                buff_obs,
+                buff_actions,
+                buff_r,
+                buff_next_obs,
+                buff_term,
+                batch_size=64,
+                step=min(i, blen),
             )
+            lhist.append(loss_val)
             n_updates += 1
             dqn.update_target()
+            # TensorBoard: update metrics
+            writer.add_scalar("update/loss", float(loss_val), i)
+            if hasattr(dqn, "last_losses") and isinstance(dqn.last_losses, dict):
+                for k, v in dqn.last_losses.items():
+                    if isinstance(v, (int, float)):
+                        writer.add_scalar(f"update/{k}", float(v), i)
+            writer.add_scalar("update/updates", n_updates, i)
 
         r_ep += float(r)
 
@@ -288,6 +301,9 @@ if __name__ == "__main__":
             smooth_rhist.append(smooth_r)
             r_ep = 0.0
             ep += 1
+            # TensorBoard: episode metrics
+            writer.add_scalar("episode/reward", float(rhist[-1]), i)
+            writer.add_scalar("episode/smooth_reward", float(smooth_r), i)
 
             if ep % 5 == 0:
                 evalr = 0.0
@@ -295,6 +311,7 @@ if __name__ == "__main__":
                     evalr += eval(dqn, device, env_eval=env2)
                 print(f"eval mean: {evalr/5}")
                 eval_hist.append(evalr / 5)
+                writer.add_scalar("eval/reward", float(eval_hist[-1]), i)
 
         obs = next_obs
 
@@ -343,3 +360,6 @@ if __name__ == "__main__":
         train_time_seconds,
     )
     print(f"Training wall clock time: {train_time_seconds:.2f} seconds")
+    # Close TensorBoard writer
+    writer.flush()
+    writer.close()

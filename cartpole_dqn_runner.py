@@ -3,9 +3,11 @@ import os
 import torch
 import gymnasium as gym
 import matplotlib.pyplot as plt
+import json
 import numpy as np
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 import argparse
+from torch.utils.tensorboard import SummaryWriter
 
 
 def setup_config():
@@ -196,6 +198,13 @@ if __name__ == "__main__":
     buff_term = torch.zeros((blen,), dtype=torch.float32, device=device)
     buff_r = torch.zeros((blen,), dtype=torch.float32, device=device)
 
+    # Initialize TensorBoard writer
+    runner_name = "cartpole"
+    results_dir = os.path.join("results", runner_name)
+    os.makedirs(results_dir, exist_ok=True)
+    tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
+    writer = SummaryWriter(log_dir=tb_dir)
+
     start_time = time()
     n_updates = 0
     for i in range(n_steps):
@@ -232,6 +241,13 @@ if __name__ == "__main__":
             )
             n_updates += 1
             dqn.update_target()
+            # TensorBoard: update metrics
+            writer.add_scalar("update/loss", float(lhist[-1]), i)
+            if hasattr(dqn, "last_losses") and isinstance(dqn.last_losses, dict):
+                for k, v in dqn.last_losses.items():
+                    if isinstance(v, (int, float)):
+                        writer.add_scalar(f"update/{k}", float(v), i)
+            writer.add_scalar("update/updates", n_updates, i)
 
         r_ep += float(r)
 
@@ -261,16 +277,16 @@ if __name__ == "__main__":
                     evalr += eval(dqn)
                 print(f"eval mean: {evalr/5}")
                 eval_hist.append(evalr / 5)
+                writer.add_scalar("eval/reward", float(eval_hist[-1]), i)
+            # TensorBoard: episode metrics
+            writer.add_scalar("episode/reward", float(rhist[-1]), i)
+            writer.add_scalar("episode/smooth_reward", float(smooth_rhist[-1]), i)
 
         obs = next_obs
 
     end_time = time()
     print(f"Training completed in {end_time - start_time:.2f} seconds.")
     # Save artifacts under results/{runner_name}/
-    runner_name = "cartpole"
-    results_dir = os.path.join("results", runner_name)
-    os.makedirs(results_dir, exist_ok=True)
-
     np.save(
         os.path.join(results_dir, f"train_time_{args.run}_{args.ablation}.npy"),
         end_time - start_time,
@@ -306,3 +322,7 @@ if __name__ == "__main__":
     plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
     plt.savefig(os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}"))
     plt.close()
+
+    # Close TensorBoard writer
+    writer.flush()
+    writer.close()
