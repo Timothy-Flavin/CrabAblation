@@ -184,7 +184,7 @@ if __name__ == "__main__":
     if hasattr(dqn, "rnd"):
         dqn.rnd_optim = torch.optim.Adam(dqn.rnd.predictor.parameters(), lr=rnd_lr)
 
-    n_steps = 500000
+    n_steps = 1000000
     rhist = []
     smooth_rhist = []
     lhist = []
@@ -192,7 +192,7 @@ if __name__ == "__main__":
     r_ep = 0.0
     smooth_r = 0.0
     ep = 0
-    blen = 10000
+    blen = 20000
     update_every = 1
 
     # Memory buffer
