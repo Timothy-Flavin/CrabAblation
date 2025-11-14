@@ -199,7 +199,8 @@ if __name__ == "__main__":
     start_time = time()
     n_updates = 0
     for i in range(n_steps):
-        eps_current = 1 - i / n_steps
+        eps_current = 1 - i * 2 / n_steps
+        eps_current = max(eps_current, 0.05)
         action = dqn.sample_action(
             torch.from_numpy(obs).to(device).float(),
             eps=eps_current,
@@ -299,9 +300,9 @@ if __name__ == "__main__":
     plt.grid()
     plt.title(f"Training rewards, run {args.run} ablated: {args.ablation}")
     plt.savefig(os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}"))
-    plt.show()
+    plt.close()
     plt.plot(eval_hist)
     plt.grid()
     plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
     plt.savefig(os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}"))
-    plt.show()
+    plt.close()

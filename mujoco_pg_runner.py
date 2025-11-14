@@ -202,7 +202,8 @@ if __name__ == "__main__":
     buff_r = torch.zeros((blen,), dtype=torch.float32, device=device)
 
     for i in range(n_steps):
-        eps_current = 1 - i / n_steps
+        eps_current = 1 - i * 2 / n_steps
+        eps_current = max(eps_current, 0.05)
         action = dqn.sample_action(
             torch.from_numpy(obs).to(device).float(),
             eps=eps_current,
