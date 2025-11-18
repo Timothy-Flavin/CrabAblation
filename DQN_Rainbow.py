@@ -391,6 +391,12 @@ class RainbowDQN:
             (batch_size, 1, self.n_atoms)
         )
         selected_logits = torch.gather(logits, dim=1, index=actions_viewed).squeeze()
+        print(target_dist[0])
+        tev = self.online.expected_value(target_dist[0], probs=True)
+        print(torch.softmax(selected_logits, dim=-1)[0])
+        oev = self.online.expected_value(selected_logits[0], probs=False)
+        print(f"TEV: {tev.item():.4f}, OEV: {oev.item():.4f}")
+        print("-----------------------------")
 
         # Cross-entropy between projected target distribution and current predicted logits
         current_l_probs = torch.log_softmax(selected_logits, dim=-1)
@@ -434,15 +440,21 @@ class RainbowDQN:
         int_loss.backward()
         self.int_optim.step()
 
-        if isinstance(r_int, torch.Tensor):
-            r_int = float(r_int.mean().item())
         # Store last auxiliary losses for logging (optional)
         self.last_losses = {
             "extrinsic": float(loss.item()),
             "intrinsic": float(int_loss.item()),
             "rnd": float(rnd_loss.item()),
-            "avg_r_int": r_int,
+            "avg_r_int": (
+                float(r_int.mean().item()) if isinstance(r_int, torch.Tensor) else r_int
+            ),
             "entropy_reg": entropy_val,
+            "abs_r_ext": float(b_r.abs().mean().item()),
+            "abs_r_int": (
+                float(r_int.abs().mean().item())
+                if isinstance(r_int, torch.Tensor)
+                else r_int
+            ),
         }
 
         # Inline TensorBoard logging if writer attached
@@ -477,7 +489,12 @@ class RainbowDQN:
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
 
     def sample_action(
-        self, obs: torch.Tensor, eps: float, step: int, n_steps: int = 100000
+        self,
+        obs: torch.Tensor,
+        eps: float,
+        step: int,
+        n_steps: int = 100000,
+        min_eps=0.01,
     ):
         # linear annealing from 1.0 -> 0.0 across n_steps
         if self.Thompson:
@@ -503,7 +520,7 @@ class RainbowDQN:
                 sampled_values = sampled_values_ext + self.Beta * sampled_values_int
                 action = torch.argmax(sampled_values).item()
         elif self.soft or self.munchausen:
-            if random.random() <= 0.01:
+            if random.random() <= min_eps:
                 return random.randint(0, self.n_actions - 1)
             logits_ext = self.online(obs)
             ev_ext = self.online.expected_value(logits_ext)
@@ -512,6 +529,10 @@ class RainbowDQN:
                 logits_int = self.int_online(obs)
                 ev_int = self.int_online.expected_value(logits_int)
             ev_comb = ev_ext + self.Beta * ev_int
+            # print(ev_ext)
+            # print(ev_int)
+            # print(ev_comb / self.tau)
+            # print("----------------------------------------")
             action = (
                 torch.distributions.Categorical(logits=ev_comb / self.tau)
                 .sample()
@@ -761,12 +782,21 @@ class EVRainbowDQN:
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
 
     def sample_action(
-        self, obs: torch.Tensor, eps: float, step: int, n_steps: int = 100000
+        self,
+        obs: torch.Tensor,
+        eps: float,
+        step: int,
+        n_steps: int = 100000,
+        min_ent=0.01,
     ):
         if self.soft or self.munchausen:
             q_ext = self.online(obs)
-            q_int = self.int_online(obs) if self.Beta > 0.0 else 0.0
+            if self.Beta > 0.0:
+                q_int = self.int_online(obs)
+            else:
+                q_int = 0.0
             q_comb = q_ext + self.Beta * q_int
+
             return (
                 torch.distributions.Categorical(logits=q_comb / self.tau)
                 .sample()

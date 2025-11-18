@@ -68,10 +68,12 @@ def setup_config():
             "munchausen": True,  # pillar (1)
             "soft": True,  # pillar (3) always enabled if munchausen on
             "Beta": 0.1,  # pillar (3)
-            "dueling": False,  # pillar (4)
+            "dueling": True,  # pillar (4)
             "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.01,  # pillar (2)
             "delayed": True,  # pillar (5)
+            "tau": 0.03,  # softmax temperature for exploration
+            "alpha": 0.7,  # munchausen log-policy scaling
         }
     }
 
@@ -82,6 +84,7 @@ def setup_config():
         # Mirror Descent / Munchausen off
         cfg["munchausen"] = False
         cfg["soft"] = False
+
     elif args.ablation == 2:
         # Magnet policy regularization off
         cfg["ent_reg_coef"] = 0.0
@@ -114,7 +117,7 @@ def setup_config():
             action_dim,
             zmin=-1000,
             zmax=1000,
-            n_atoms=51,
+            n_atoms=101,
             hidden_layer_sizes=[512, 512],
             **common_kwargs,
         )

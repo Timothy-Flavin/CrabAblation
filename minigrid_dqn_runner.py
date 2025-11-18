@@ -58,7 +58,7 @@ def setup_config():
         "all": {
             "munchausen": True,  # pillar (1)
             "soft": True,  # pillar (3) always enabled if munchausen on
-            "Beta": 0.01,  # pillar (3)
+            "Beta": 0.02,  # pillar (3)
             "dueling": True,  # pillar (4)
             "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.02,  # pillar (2)
@@ -105,7 +105,7 @@ def setup_config():
             zmin=-1,
             zmax=2,
             n_atoms=51,
-            tau=0.001,
+            tau=0.01,
             **common_kwargs,
         )
     else:
