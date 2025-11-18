@@ -126,9 +126,19 @@ if __name__ == "__main__":
         reward = 0.0
         while not done:
             with torch.no_grad():
-                logits = agent.online(torch.from_numpy(obs).to(device).float())
-                ev = agent.online.expected_value(logits)
-                action = torch.argmax(ev, dim=-1).item()
+                obs_t = torch.from_numpy(obs).to(device).float()
+                # Handle IQN-based Rainbow vs EV agent
+                if hasattr(agent, "n_quantiles"):
+                    # IQN forward expects batch + taus
+                    obs_b = obs_t.unsqueeze(0)  # [1, obs_dim]
+                    taus = agent._sample_taus(1, agent.n_quantiles, obs_b.device)
+                    quantiles = agent.online(obs_b, taus)  # [1, Nq, A]
+                    ev = quantiles.mean(dim=1).squeeze(0)  # [A]
+                    action = torch.argmax(ev, dim=-1).item()
+                else:
+                    q_vals = agent.online(obs_t)
+                    ev = agent.online.expected_value(q_vals)
+                    action = torch.argmax(ev, dim=-1).item()
             obs, r, term, trunc, info = lenv.step(action)
             reward += float(r)
             done = term or trunc
