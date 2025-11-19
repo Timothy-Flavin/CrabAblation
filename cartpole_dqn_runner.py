@@ -59,7 +59,7 @@ def setup_config():
             "munchausen": True,  # pillar (1)
             "soft": True,  # pillar (3) always enabled if munchausen on
             "Beta": 0.1,  # pillar (3)
-            "dueling": False,  # pillar (4)
+            "dueling": True,  # pillar (4)
             "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.01,  # pillar (2)
             "delayed": True,  # pillar (5)
@@ -101,16 +101,18 @@ def setup_config():
     if AgentClass is RainbowDQN:
         dqn = AgentClass(
             obs_dim,
-            action_dim,
             zmin=0,
             zmax=200,
             n_atoms=51,
+            n_action_bins=2,
+            n_action_dims=1,
             **common_kwargs,
         )
     else:
         dqn = AgentClass(
             obs_dim,
-            action_dim,
+            n_action_bins=2,
+            n_action_dims=1,
             **common_kwargs,
         )
 
@@ -225,7 +227,8 @@ if __name__ == "__main__":
             eps=eps_current,
             step=i,
             n_steps=n_steps,
-        )
+        )[0]
+
         next_obs, r, term, trunc, info = env.step(action)
         # Update running stats with the freshly collected transition (single step)
         dqn.update_running_stats(torch.from_numpy(next_obs).to(device).float())

@@ -9,14 +9,9 @@ import argparse
 from torch.utils.tensorboard import SummaryWriter
 
 
-# Mujoco is a continuous action env so we need to transform
-# the joint discrete space to continuous actions
-def discrete_to_continuous(action):
-    env_action = np.zeros(6)
-    for i in range(6):
-        env_action[i] = (action % 3) - 1.0
-        action = action // 3
-    return env_action
+# Map per-dimension discrete bin indices to continuous actions (-1, 0, 1)
+def bins_to_continuous(action_bins):
+    return np.array([b - 1.0 for b in action_bins], dtype=np.float32)
 
 
 def setup_config():
@@ -111,10 +106,13 @@ def setup_config():
         ent_reg_coef=cfg.get("ent_reg_coef", 0.0),
         delayed=cfg.get("delayed", True),
     )
+    n_action_dims = 6
+    n_action_bins = 3
     if AgentClass is RainbowDQN:
         dqn = AgentClass(
             obs_dim,
-            action_dim,
+            n_action_dims,
+            n_action_bins,
             zmin=-1000,
             zmax=1000,
             n_atoms=101,
@@ -124,7 +122,8 @@ def setup_config():
     else:
         dqn = AgentClass(
             obs_dim,
-            action_dim,
+            n_action_dims,
+            n_action_bins,
             hidden_layer_sizes=[512, 512],
             **common_kwargs,
         )
@@ -135,23 +134,35 @@ def setup_config():
 if __name__ == "__main__":
 
     def eval(agent):
+        """Greedy evaluation over all action dimensions.
+
+        Uses the agent's sample_action with eps=0 for consistent logic across
+        EV and IQN variants. Converts per-dimension bin indices to continuous
+        action values via bins_to_continuous.
+        """
         lenv = gym.make("HalfCheetah-v5")
         obs, info = lenv.reset()
         done = False
-        reward = 0.0
+        total_reward = 0.0
+        step_count = 0
         while not done:
             with torch.no_grad():
-                logits = agent.online(torch.from_numpy(obs).to(device).float())
-                ev = agent.online.expected_value(logits)
-                action = torch.argmax(ev, dim=-1).item()
-            obs, r, term, trunc, info = lenv.step(discrete_to_continuous(action))
-            reward += float(r)
+                # Greedy action (eps=0). n_steps dummy=1, step=0.
+                action_bins = agent.sample_action(
+                    torch.from_numpy(obs).to(device).float(),
+                    eps=0.0,
+                    step=0,
+                    n_steps=1,
+                )
+            obs, r, term, trunc, info = lenv.step(bins_to_continuous(action_bins))
+            total_reward += float(r)
+            step_count += 1
             done = term or trunc
-        return reward
+        return total_reward
 
     env = gym.make("HalfCheetah-v5")
     obs, info = env.reset()
-    action_dim = 729  # 3^6 because 6 actions with bang-0-bang control
+    # Multi-dimensional discretization: 6 joints each with 3 bins (-1,0,1)
     assert env.observation_space.shape is not None
     obs_dim = env.observation_space.shape[0]
     assert obs_dim is not None
@@ -203,7 +214,7 @@ if __name__ == "__main__":
     update_every = 1
 
     # Memory buffer
-    buff_actions = torch.zeros((blen,), dtype=torch.long, device=device)
+    buff_actions = torch.zeros((blen, 6), dtype=torch.long, device=device)
     buff_obs = torch.zeros(
         size=(blen, int(obs_dim)), dtype=torch.float32, device=device
     )
@@ -226,18 +237,18 @@ if __name__ == "__main__":
     for i in range(n_steps):
         eps_current = 1 - i * 2 / n_steps
         eps_current = max(eps_current, 0.05)
-        action = dqn.sample_action(
+        action_bins = dqn.sample_action(
             torch.from_numpy(obs).to(device).float(),
             eps=eps_current,
             step=i,
             n_steps=n_steps,
         )
-        next_obs, r, term, trunc, info = env.step(discrete_to_continuous(action))
+        next_obs, r, term, trunc, info = env.step(bins_to_continuous(action_bins))
         # Update running stats with the freshly collected transition (single step)
         dqn.update_running_stats(torch.from_numpy(next_obs).to(device).float())
 
         # Save transition to memory buffer
-        buff_actions[i % blen] = action
+        buff_actions[i % blen] = torch.tensor(action_bins, device=device)
         buff_obs[i % blen] = torch.from_numpy(obs).to(device).float()
         buff_next_obs[i % blen] = torch.from_numpy(next_obs).to(device).float()
         buff_term[i % blen] = term

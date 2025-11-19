@@ -7,131 +7,129 @@ from RandomDistilation import RNDModel, RunningMeanStd
 
 
 class EV_Q_Network(nn.Module):
-    """Single-valued (non-distributional) Q network with optional dueling."""
+    """Single-valued (non-distributional) multi-dimensional Q network with optional dueling.
 
-    def __init__(
-        self,
-        input_dim,
-        n_action_dims,
-        n_action_bins,
-        hidden_layer_sizes=[128, 128],
-        dueling: bool = False,
-    ):
-        super().__init__()
-        self.dueling = dueling
-        layers = []
-        layers.append(nn.Linear(input_dim, hidden_layer_sizes[0]))
-        for li in range(len(hidden_layer_sizes) - 1):
-            layers.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
-        self.layers = nn.ModuleList(layers)
-        self.relu = nn.ReLU()
-        last_hidden = hidden_layer_sizes[-1]
-        self.n_actions = n_actions
-        if self.dueling:
-            self.value_layer = nn.Linear(last_hidden, 1)
-            self.advantage_layer = nn.Linear(last_hidden, n_actions)
-        else:
-            self.out_layer = nn.Linear(last_hidden, n_actions)
-
-    def forward(self, x: torch.Tensor):
-        h = x
-        for layer in self.layers:
-            h = self.relu(layer(h))
-        if not self.dueling:
-            return self.out_layer(h)
-        if h.ndim == 1:
-            v = self.value_layer(h).view(1)  # [] -> [1]
-            a = self.advantage_layer(h).view(self.n_actions)
-            a_mean = a.mean()
-            q = a - a_mean + v
-            return q
-        else:
-            bsz = h.shape[0]
-            v = self.value_layer(h).view(bsz, 1)
-            a = self.advantage_layer(h).view(bsz, self.n_actions)
-            a_mean = a.mean(dim=1, keepdim=True)
-            q = a - a_mean + v
-            return q
-
-    # Keep API parity with distributional network
-    def expected_value(self, x: torch.Tensor, probs: bool = False):
-        # For single-valued Q, the 'expected value' is the Q itself
-        return x
-
-
-class IQN_Network(nn.Module):
-    """Implicit Quantile Network.
-
-    Produces quantile values for each action: output shape [B, N_quantiles, A].
-    Uses cosine embedding of sampled quantile fractions tau in (0,1).
-    Supports optional dueling: value and advantage streams applied per quantile sample.
+    Outputs Q-values per action dimension and per bin: [B, D, Bins].
+    Dueling implemented by producing a single value head plus an advantage head of size D*Bins,
+    which is reshaped and mean-subtracted across all (D*Bins) entries.
     """
 
     def __init__(
         self,
         input_dim: int,
-        n_actions: int,
+        n_action_dims: int,
+        n_action_bins: int,
+        hidden_layer_sizes=[128, 128],
+        dueling: bool = False,
+    ):
+        super().__init__()
+        self.dueling = dueling
+        self.n_action_dims = n_action_dims
+        self.n_action_bins = n_action_bins
+        self.n_actions_total = n_action_dims * n_action_bins  # legacy convenience
+        layers = [nn.Linear(input_dim, hidden_layer_sizes[0])]
+        for li in range(len(hidden_layer_sizes) - 1):
+            layers.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
+        self.layers = nn.ModuleList(layers)
+        self.relu = nn.ReLU()
+        last_hidden = hidden_layer_sizes[-1]
+        if self.dueling:
+            self.value_layer = nn.Linear(last_hidden, 1)
+            self.advantage_layer = nn.Linear(last_hidden, self.n_actions_total)
+        else:
+            self.out_layer = nn.Linear(last_hidden, self.n_actions_total)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x
+        for layer in self.layers:
+            h = self.relu(layer(h))
+        if not self.dueling:
+            out = self.out_layer(h)
+            if h.ndim == 1:
+                return out.view(self.n_action_dims, self.n_action_bins)
+            return out.view(h.shape[0], self.n_action_dims, self.n_action_bins)
+        if h.ndim == 1:
+            v = self.value_layer(h).view(1)  # scalar value
+            a = self.advantage_layer(h).view(self.n_action_dims, self.n_action_bins)
+            a_mean = a.mean()
+            q = a - a_mean + v
+            return q
+        bsz = h.shape[0]
+        v = self.value_layer(h).view(bsz, 1, 1)
+        a = self.advantage_layer(h).view(bsz, self.n_action_dims, self.n_action_bins)
+        a_mean = a.mean(dim=(1, 2), keepdim=True)
+        q = a - a_mean + v
+        return q
+
+    def expected_value(self, x: torch.Tensor, probs: bool = False):
+        # For EV network, expected value per dimension/bin is x itself.
+        return x
+
+
+class IQN_Network(nn.Module):
+    """Implicit Quantile Network supporting multi-dimensional discrete actions.
+
+    Output shape: [B, Nq, D, Bins].
+    Dueling implemented similarly to EV_Q_Network using a shared advantage head sized D*Bins.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        n_action_dims: int,
+        n_action_bins: int,
         hidden_layer_sizes=[128, 128],
         n_cosines: int = 64,
         dueling: bool = False,
     ):
         super().__init__()
         self.dueling = dueling
-        self.n_actions = n_actions
+        self.n_action_dims = n_action_dims
+        self.n_action_bins = n_action_bins
+        self.n_actions_total = n_action_dims * n_action_bins
         self.n_cosines = n_cosines
-        # Base feature extractor (state features)
-        base = []
-        base.append(nn.Linear(input_dim, hidden_layer_sizes[0]))
+        base = [nn.Linear(input_dim, hidden_layer_sizes[0])]
         for li in range(len(hidden_layer_sizes) - 1):
             base.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
         self.base_layers = nn.ModuleList(base)
         self.relu = nn.ReLU()
         last_hidden = hidden_layer_sizes[-1]
-        # Embedding for tau (cosine embedding followed by linear projection)
         self.cosine_layer = nn.Linear(n_cosines, last_hidden)
-        # Final head combining (state_feature * tau_feature)
         if dueling:
             self.value_head = nn.Linear(last_hidden, 1)
-            self.adv_head = nn.Linear(last_hidden, n_actions)
+            self.adv_head = nn.Linear(last_hidden, self.n_actions_total)
         else:
-            self.out_head = nn.Linear(last_hidden, n_actions)
+            self.out_head = nn.Linear(last_hidden, self.n_actions_total)
 
     def _phi(self, tau: torch.Tensor) -> torch.Tensor:
-        """Cosine embedding of tau.
-        tau: [B, N] -> returns embedding [B, N, hidden]
-        """
-        # [B, N, n_cosines]
         i = torch.arange(self.n_cosines, device=tau.device, dtype=tau.dtype).view(
             1, 1, -1
         )
         cosines = torch.cos(i * torch.pi * tau.unsqueeze(-1))
-        emb = self.relu(self.cosine_layer(cosines))  # [B, N, hidden]
+        emb = self.relu(self.cosine_layer(cosines))  # [B,N,H]
         return emb
 
     def forward(self, x: torch.Tensor, tau: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-        x: [B, input_dim], tau: [B, N] uniform samples in (0,1)
-        Returns: quantile values [B, N, A]
-        """
         h = x
         for layer in self.base_layers:
-            h = self.relu(layer(h))  # [B, hidden]
-        # Expand h to [B, N, hidden]
+            h = self.relu(layer(h))  # [B,H]
         h = h.unsqueeze(1)  # [B,1,H]
         tau_emb = self._phi(tau)  # [B,N,H]
-        h = h * tau_emb  # Hadamard product
+        h = h * tau_emb  # [B,N,H]
         if not self.dueling:
-            q = self.out_head(h)  # [B,N,A]
-            return q
-        # Dueling: compute per-sample value + advantage, then combine
+            out = self.out_head(h)  # [B,N,D*Bins]
+            return out.view(
+                out.shape[0], out.shape[1], self.n_action_dims, self.n_action_bins
+            )
         v = self.value_head(h)  # [B,N,1]
-        a = self.adv_head(h)  # [B,N,A]
-        a_mean = a.mean(dim=-1, keepdim=True)  # [B,N,1]
-        q = a - a_mean + v  # [B,N,A]
-        return q
+        a = self.adv_head(h)  # [B,N,D*Bins]
+        a = a.view(a.shape[0], a.shape[1], self.n_action_dims, self.n_action_bins)
+        a_mean = a.mean(dim=(2, 3), keepdim=True)
+        q = a - a_mean + v.unsqueeze(-1)  # broadcast v
+        return q  # [B,N,D,Bins]
 
     def expected_value(self, quantiles: torch.Tensor) -> torch.Tensor:
-        """Return mean over quantile dimension: [B, A]."""
+        # Mean over quantile dimension -> [B,D,Bins]
         return quantiles.mean(dim=1)
 
 
@@ -141,7 +139,8 @@ class RainbowDQN:
     def __init__(
         self,
         input_dim,
-        n_actions,
+        n_action_dims,
+        n_action_bins,
         hidden_layer_sizes=[128, 128],
         n_atoms=101,
         zmin=-50,
@@ -167,26 +166,30 @@ class RainbowDQN:
     ):
         self.online = IQN_Network(
             input_dim,
-            n_actions,
+            n_action_dims,
+            n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
         ).float()
         self.target = IQN_Network(
             input_dim,
-            n_actions,
+            n_action_dims,
+            n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
         ).float()
         # Intrinsic Q networks (separate head trained on intrinsic rewards only)
         self.int_online = IQN_Network(
             input_dim,
-            n_actions,
+            n_action_dims,
+            n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
         ).float()
         self.int_target = IQN_Network(
             input_dim,
-            n_actions,
+            n_action_dims,
+            n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
         ).float()
@@ -208,7 +211,9 @@ class RainbowDQN:
         self.n_quantiles = 32
         self.n_target_quantiles = 32
         self.n_cosines = 64
-        self.n_actions = n_actions
+        self.n_action_dims = n_action_dims
+        self.n_action_bins = n_action_bins
+        self.n_actions = n_action_dims * n_action_bins  # legacy single number
         self.Beta = Beta
         self.delayed_target = delayed
         self.ent_reg_coef = ent_reg_coef
@@ -221,8 +226,8 @@ class RainbowDQN:
         # Scalar running stats for intrinsic reward
         self.int_rms = RunningMeanStd(shape=())
         # Optional TensorBoard writer
-        self.tb_writer: Optional[SummaryWriter] = None
-        self.tb_prefix: str = "agent"
+        self.tb_writer = None
+        self.tb_prefix = "agent"
 
     def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
         """Attach a TensorBoard SummaryWriter to enable internal logging during updates."""
@@ -301,6 +306,7 @@ class RainbowDQN:
                     rnd_errors.detach().to(dtype=torch.float64)
                 )
                 r_int = norm_int.to(dtype=torch.float32)
+                r_int = r_int.clamp(-10.0, 10.0)
 
         # Combine rewards for extrinsic head
 
@@ -309,48 +315,61 @@ class RainbowDQN:
         # 2) IQN forward passes
         device = b_obs.device
         taus = self._sample_taus(batch_size, self.n_quantiles, device)
-        quantiles = self.online(b_obs, taus)  # [B,N,A]
+        quantiles = self.online(b_obs, taus)  # [B,N,D,Bins]
         with torch.no_grad():
             target_taus = self._sample_taus(batch_size, self.n_target_quantiles, device)
             target_quantiles_all = (
                 self.target if self.delayed_target else self.online
             )(
                 b_next_obs, target_taus
-            )  # [B,Nt,A]
-            # Action selection via mean of online quantiles
-            online_next_quantiles = self.online(
-                b_next_obs, taus
-            )  # reuse taus shape [B,N,A]
-            mean_next = online_next_quantiles.mean(dim=1)  # [B,A]
+            )  # [B,Nt,D,Bins]
+            online_next_quantiles = self.online(b_next_obs, taus)  # [B,N,D,Bins]
+            mean_next = online_next_quantiles.mean(dim=1)  # [B,D,Bins]
             if self.soft or self.munchausen:
-                pi_next = torch.softmax(mean_next / self.tau, dim=-1)  # [B,A]
-                # Weighted mixture for target distribution
-                mixed_target = (pi_next.unsqueeze(1) * target_quantiles_all).sum(
-                    dim=2
-                )  # [B,Nt]
-                # Entropy bonus
+                pi_next = torch.softmax(mean_next / self.tau, dim=-1)  # [B,D,Bins]
+                mixed_target_per_dim = (
+                    pi_next.unsqueeze(1) * target_quantiles_all
+                ).sum(
+                    dim=-1
+                )  # [B,Nt,D]
+                mixed_target = mixed_target_per_dim.sum(
+                    dim=-1
+                )  # [B,Nt] aggregate across dims
                 logpi_next = torch.log_softmax(mean_next / self.tau, dim=-1)
-                ent_bonus = -self.tau * (pi_next * logpi_next).sum(dim=-1)  # [B]
+                ent_bonus_per_dim = -(pi_next * logpi_next).sum(dim=-1)  # [B,D]
+                ent_bonus = ent_bonus_per_dim.sum(dim=-1)  # [B]
             else:
-                next_actions = torch.argmax(mean_next, dim=-1)  # [B]
-                mixed_target = torch.gather(
-                    target_quantiles_all,
-                    2,
-                    next_actions.view(batch_size, 1, 1).expand(
-                        -1, self.n_target_quantiles, 1
-                    ),
+                next_actions_per_dim = torch.argmax(mean_next, dim=-1)  # [B,D]
+                gather_index = (
+                    next_actions_per_dim.unsqueeze(1)
+                    .unsqueeze(-1)
+                    .expand(-1, self.n_target_quantiles, -1, 1)
+                )
+                chosen_target_per_dim = torch.gather(
+                    target_quantiles_all, 3, gather_index
                 ).squeeze(
                     -1
-                )  # [B,Nt]
+                )  # [B,Nt,D]
+                mixed_target = chosen_target_per_dim.sum(dim=-1)  # [B,Nt]
                 ent_bonus = torch.zeros(batch_size, device=device)
 
             # Munchausen augmentation on reward
             r_aug = b_r_total
             if self.munchausen:
-                ev_hist = quantiles.mean(dim=1)  # [B,A]
+                ev_hist = quantiles.mean(dim=1)  # [B,D,Bins]
                 logpi_hist = torch.log_softmax(ev_hist / self.tau, dim=-1)
-                logpi_a = torch.gather(logpi_hist, 1, b_actions.view(-1, 1)).squeeze(1)
-                logpi_a = torch.clamp(logpi_a, min=self.l_clip)
+                # b_actions shape [B,D]
+                if b_actions.ndim == 1:
+                    b_actions_hist = b_actions.view(-1, 1)
+                else:
+                    b_actions_hist = b_actions
+                gather_m_hist = b_actions_hist.unsqueeze(-1)
+                selected_logpi = torch.gather(logpi_hist, -1, gather_m_hist).squeeze(
+                    -1
+                )  # [B,D]
+                logpi_a = torch.clamp(
+                    selected_logpi.mean(dim=-1), min=self.l_clip
+                )  # average over dims
                 r_aug = r_aug + self.alpha * self.tau * logpi_a
 
             target_values = r_aug.unsqueeze(1) + (1 - b_term).unsqueeze(
@@ -360,13 +379,22 @@ class RainbowDQN:
             )  # [B,Nt]
 
         # Gather predicted quantiles for taken actions
-        pred_chosen = torch.gather(
-            quantiles,
-            2,
-            b_actions.view(batch_size, 1, 1).expand(-1, self.n_quantiles, 1),
-        ).squeeze(
+        # Gather predicted quantiles per dimension and aggregate
+        if b_actions.ndim == 1:
+            b_actions_view = b_actions.view(batch_size, 1)  # assume single dimension
+        else:
+            b_actions_view = b_actions  # [B,D]
+        gather_index_pred = (
+            b_actions_view.unsqueeze(1)
+            .unsqueeze(-1)
+            .expand(-1, self.n_quantiles, -1, 1)
+        )
+        pred_chosen_per_dim = torch.gather(quantiles, 3, gather_index_pred).squeeze(
             -1
-        )  # [B,N]
+        )  # [B,N,D]
+        pred_chosen = pred_chosen_per_dim.sum(
+            dim=-1
+        )  # [B,N] aggregated joint quantiles
         # Quantile Huber loss
         loss = self._quantile_huber_loss(
             pred_chosen, target_values.detach(), taus.detach()
@@ -376,10 +404,11 @@ class RainbowDQN:
         entropy_val = 0.0
         if self.ent_reg_coef > 0.0:
             # Policy over actions from expected values (mean quantiles)
-            ev_all = quantiles.mean(dim=1)  # [B, A]
+            ev_all = quantiles.mean(dim=1)  # [B,D,Bins]
             pi = torch.softmax(ev_all / self.tau, dim=-1)
             logpi = torch.log_softmax(ev_all / self.tau, dim=-1)
-            entropy = -(pi * logpi).sum(dim=-1).mean()
+            entropy_per_dim = -(pi * logpi).sum(dim=-1)  # [B,D]
+            entropy = entropy_per_dim.mean()  # average over dims
             entropy_val = float(entropy.item())
             loss = loss - self.ent_reg_coef * entropy
 
@@ -390,7 +419,7 @@ class RainbowDQN:
         # 3) Update intrinsic Q network on intrinsic rewards only
         # Intrinsic IQN update (on intrinsic rewards only)
         int_taus = self._sample_taus(batch_size, self.n_quantiles, device)
-        int_quantiles = self.int_online(b_obs, int_taus)  # [B,N,A]
+        int_quantiles = self.int_online(b_obs, int_taus)  # [B,N,D,Bins]
         with torch.no_grad():
             int_target_taus = self._sample_taus(
                 batch_size, self.n_target_quantiles, device
@@ -399,18 +428,22 @@ class RainbowDQN:
                 self.int_target if self.delayed_target else self.int_online
             )(
                 b_next_obs, int_target_taus
-            )  # [B,Nt,A]
-            int_online_next = self.int_online(b_next_obs, int_taus).mean(dim=1)  # [B,A]
-            next_a_int = torch.argmax(int_online_next, dim=-1)  # [B]
-            int_target_values = torch.gather(
-                int_target_all,
-                2,
-                next_a_int.view(batch_size, 1, 1).expand(
-                    -1, self.n_target_quantiles, 1
-                ),
+            )  # [B,Nt,D,Bins]
+            int_online_next = self.int_online(b_next_obs, int_taus).mean(
+                dim=1
+            )  # [B,D,Bins]
+            next_a_int = torch.argmax(int_online_next, dim=-1)  # [B,D]
+            gather_index_int = (
+                next_a_int.unsqueeze(1)
+                .unsqueeze(-1)
+                .expand(-1, self.n_target_quantiles, -1, 1)
+            )
+            chosen_int_target_per_dim = torch.gather(
+                int_target_all, 3, gather_index_int
             ).squeeze(
                 -1
-            )  # [B,Nt]
+            )  # [B,Nt,D]
+            int_target_values = chosen_int_target_per_dim.sum(dim=-1)  # [B,Nt]
             r_int_only = (
                 r_int if isinstance(r_int, torch.Tensor) else torch.zeros_like(b_r)
             )
@@ -419,13 +452,17 @@ class RainbowDQN:
                 + (1 - b_term).unsqueeze(1) * self.gamma * int_target_values
             )
 
-        int_pred_chosen = torch.gather(
-            int_quantiles,
-            2,
-            b_actions.view(batch_size, 1, 1).expand(-1, self.n_quantiles, 1),
+        gather_index_int_pred = (
+            b_actions_view.unsqueeze(1)
+            .unsqueeze(-1)
+            .expand(-1, self.n_quantiles, -1, 1)
+        )
+        int_pred_per_dim = torch.gather(
+            int_quantiles, 3, gather_index_int_pred
         ).squeeze(
             -1
-        )  # [B,N]
+        )  # [B,N,D]
+        int_pred_chosen = int_pred_per_dim.sum(dim=-1)  # [B,N]
         int_loss = self._quantile_huber_loss(
             int_pred_chosen, int_target_values.detach(), int_taus.detach()
         )
@@ -492,45 +529,39 @@ class RainbowDQN:
         n_steps: int = 100000,
         min_eps=0.01,
     ):
-        # IQN action selection: use mean quantiles as expected value surrogate
+        """Return vector of length D with selected bin indices for each action dimension."""
         with torch.no_grad():
-            obs_b = obs.unsqueeze(0) if obs.ndim == 1 else obs  # ensure batch
+            obs_b = obs.unsqueeze(0) if obs.ndim == 1 else obs
             taus = self._sample_taus(obs_b.shape[0], self.n_quantiles, obs_b.device)
-            q_ext_quantiles = self.online(obs_b, taus)  # [B,N,A]
-            ev_ext = q_ext_quantiles.mean(dim=1)  # [B,A]
-            ev_int = 0.0
+            ext_q = self.online(obs_b, taus).mean(dim=1)  # [B,D,Bins]
             if self.Beta > 0.0:
                 int_taus = self._sample_taus(
                     obs_b.shape[0], self.n_quantiles, obs_b.device
                 )
-                q_int_quantiles = self.int_online(obs_b, int_taus)
-                ev_int = q_int_quantiles.mean(dim=1)  # [B,A]
-            ev_comb = ev_ext + self.Beta * (
-                ev_int if isinstance(ev_int, torch.Tensor) else 0.0
-            )
-
+                int_q = self.int_online(obs_b, int_taus).mean(dim=1)  # [B,D,Bins]
+                q_comb = ext_q + self.Beta * int_q
+            else:
+                q_comb = ext_q
             if self.Thompson:
-                # Add Gumbel noise to mean values for approximate posterior sampling
-                g = -torch.log(-torch.log(torch.rand_like(ev_comb)))
-                ev_comb = ev_comb + g
-
-            if self.soft or self.munchausen:
-                if random.random() <= min_eps:
-                    return random.randint(0, self.n_actions - 1)
-                action = (
-                    torch.distributions.Categorical(
-                        logits=ev_comb.squeeze(0) / self.tau
-                    )
-                    .sample()
-                    .item()
-                )
-                return action
-
-            # Epsilon-greedy
+                g = -torch.log(-torch.log(torch.rand_like(q_comb)))
+                q_comb = q_comb + g
             eps_curr = 1 - step / n_steps
-            if random.random() < eps_curr:
-                return random.randint(0, self.n_actions - 1)
-            return torch.argmax(ev_comb.squeeze(0), dim=-1).item()
+            if (not (self.soft or self.munchausen)) and random.random() < eps_curr:
+                return torch.randint(
+                    0, self.n_action_bins, (self.n_action_dims,)
+                ).tolist()
+            if self.soft or self.munchausen:
+                # Sample per dimension from softmax policy
+                actions = []
+                for d in range(self.n_action_dims):
+                    logits_d = q_comb[0, d] / self.tau
+                    a_d = (
+                        torch.distributions.Categorical(logits=logits_d).sample().item()
+                    )
+                    actions.append(a_d)
+                return actions
+            # Greedy per dimension
+            return torch.argmax(q_comb.squeeze(0), dim=-1).tolist()
 
 
 class EVRainbowDQN:
@@ -539,7 +570,8 @@ class EVRainbowDQN:
     def __init__(
         self,
         input_dim,
-        n_actions,
+        n_action_dims,
+        n_action_bins,
         hidden_layer_sizes=[128, 128],
         lr: float = 1e-3,
         gamma: float = 0.99,
@@ -560,25 +592,29 @@ class EVRainbowDQN:
     ):
         self.online = EV_Q_Network(
             input_dim,
-            n_actions,
+            n_action_dims,
+            n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
         ).float()
         self.target = EV_Q_Network(
             input_dim,
-            n_actions,
+            n_action_dims,
+            n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
         ).float()
         self.int_online = EV_Q_Network(
             input_dim,
-            n_actions,
+            n_action_dims,
+            n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
         ).float()
         self.int_target = EV_Q_Network(
             input_dim,
-            n_actions,
+            n_action_dims,
+            n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
         ).float()
@@ -593,7 +629,9 @@ class EVRainbowDQN:
         self.Beta = Beta
         self.ent_reg_coef = ent_reg_coef
         self.gamma = gamma
-        self.n_actions = n_actions
+        self.n_action_dims = n_action_dims
+        self.n_action_bins = n_action_bins
+        self.n_actions = n_action_dims * n_action_bins
 
         self.target.requires_grad_(False)
         self.target.load_state_dict(self.online.state_dict())
@@ -608,8 +646,8 @@ class EVRainbowDQN:
         self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
         self.int_rms = RunningMeanStd(shape=())
-        self.tb_writer: Optional[SummaryWriter] = None
-        self.tb_prefix: str = "agent"
+        self.tb_writer = None
+        self.tb_prefix = "agent"
 
     def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
         self.tb_writer = writer
@@ -661,52 +699,79 @@ class EVRainbowDQN:
         b_r_total = b_r + self.Beta * r_int
 
         # Current and next Q-values
-        q_now = self.online(b_obs)  # [B, A]
-        q_next_online = self.online(b_next_obs)
+        q_now = self.online(b_obs)  # [B,D,Bins]
+        q_next_online = self.online(b_next_obs)  # [B,D,Bins]
         q_next_target = (self.target if self.delayed_target else self.online)(
             b_next_obs
-        )
+        )  # [B,D,Bins]
 
         # Munchausen augmentation
         r_aug = b_r_total
         if self.munchausen:
-            ev_hist = q_now  # [B, A]
-            _, logpi_hist, _ = self._soft_policy(ev_hist)
-            logpi_a = torch.gather(
-                logpi_hist, dim=1, index=b_actions.view(-1, 1)
-            ).squeeze(1)
-            logpi_a = torch.clamp(logpi_a, min=self.l_clip)
+            # Treat each dimension independently; average log-probs of selected bins
+            _, logpi_hist, _ = self._soft_policy(
+                q_now.view(q_now.shape[0], -1)
+            )  # flatten for reuse (approximation)
+            # Simpler: compute per-dim logpi directly
+            logpi_dims = torch.log_softmax(q_now / self.tau, dim=-1)  # [B,D,Bins]
+            if b_actions.ndim == 1:
+                b_act_view = b_actions.view(-1, 1)
+            else:
+                b_act_view = b_actions  # [B,D]
+            gather_idx = b_act_view.unsqueeze(-1)
+            selected_logpi = torch.gather(logpi_dims, -1, gather_idx).squeeze(
+                -1
+            )  # [B,D]
+            logpi_a = torch.clamp(selected_logpi.mean(dim=-1), min=self.l_clip)
             r_aug = r_aug + self.alpha * self.tau * logpi_a
 
         # Compute next-state value
         if self.soft or self.munchausen:
-            pi_next, logpi_next, ent_next = self._soft_policy(q_next_online)
-            v_next = (pi_next * q_next_target).sum(dim=1)
-            v_next = v_next + ent_next  # add entropy bonus
+            # Per-dimension soft backup
+            pi_next = torch.softmax(q_next_online / self.tau, dim=-1)  # [B,D,Bins]
+            v_next_per_dim = (pi_next * q_next_target).sum(dim=-1)  # [B,D]
+            ent_next_per_dim = -(
+                pi_next * torch.log_softmax(q_next_online / self.tau, dim=-1)
+            ).sum(dim=-1)
+            v_next = (v_next_per_dim + ent_next_per_dim).sum(
+                dim=-1
+            )  # aggregate over dims
         else:
-            next_actions = torch.argmax(q_next_online, dim=-1, keepdim=True)
-            v_next = torch.gather(q_next_target, dim=1, index=next_actions).squeeze(1)
+            next_bins = torch.argmax(q_next_online, dim=-1)  # [B,D]
+            gather_idx = next_bins.unsqueeze(-1)
+            chosen_vals = torch.gather(q_next_target, -1, gather_idx).squeeze(
+                -1
+            )  # [B,D]
+            v_next = chosen_vals.sum(dim=-1)
 
         y = r_aug + (1 - b_term) * (self.gamma * v_next)
 
         # Extrinsic loss
-        q_selected = torch.gather(q_now, dim=1, index=b_actions.view(-1, 1)).squeeze(1)
+        # Gather chosen bins per dimension and aggregate
+        if b_actions.ndim == 1:
+            b_act_view = b_actions.view(-1, 1)
+        else:
+            b_act_view = b_actions  # [B,D]
+        gather_idx = b_act_view.unsqueeze(-1)
+        chosen_per_dim = torch.gather(q_now, -1, gather_idx).squeeze(-1)  # [B,D]
+        q_selected = chosen_per_dim.sum(dim=-1)  # joint value as sum
         extrinsic_loss = torch.nn.functional.smooth_l1_loss(q_selected, y)
 
         # Entropy regularization
         entropy_val = 0.0
         if self.ent_reg_coef > 0.0:
-            pi, logpi, _ = self._soft_policy(q_now)
-            entropy = -(pi * logpi).sum(dim=-1).mean()
-            entropy_val = float(entropy.item())
-            extrinsic_loss = extrinsic_loss - self.ent_reg_coef * entropy
+            pi_dims = torch.softmax(q_now / self.tau, dim=-1)
+            logpi_dims = torch.log_softmax(q_now / self.tau, dim=-1)
+            entropy_dims = -(pi_dims * logpi_dims).sum(dim=-1).mean()
+            entropy_val = float(entropy_dims.item())
+            extrinsic_loss = extrinsic_loss - self.ent_reg_coef * entropy_dims
 
         self.optim.zero_grad()
         extrinsic_loss.backward()
         self.optim.step()
 
         # Intrinsic Q update
-        int_q_now = self.int_online(b_obs)
+        int_q_now = self.int_online(b_obs)  # [B,D,Bins]
         int_q_next_online = self.int_online(b_next_obs)
         int_q_next_target = (
             self.int_target if self.delayed_target else self.int_online
@@ -717,10 +782,19 @@ class EVRainbowDQN:
             pi_next_i, logpi_next_i, ent_next_i = self._soft_policy(int_q_next_online)
             v_next_i = (pi_next_i * int_q_next_target).sum(dim=1) + ent_next_i
         else:
-            next_a_i = torch.argmax(int_q_next_online, dim=-1, keepdim=True)
-            v_next_i = torch.gather(int_q_next_target, dim=1, index=next_a_i).squeeze(1)
+            next_bins_int = torch.argmax(int_q_next_online, dim=-1)  # [B,D]
+            gather_idx_int = next_bins_int.unsqueeze(-1)
+            v_next_i = (
+                torch.gather(int_q_next_target, -1, gather_idx_int)
+                .squeeze(-1)
+                .sum(dim=-1)
+            )
         y_i = r_int_only + (1 - b_term) * (self.gamma * v_next_i)
-        int_q_sel = torch.gather(int_q_now, 1, index=b_actions.view(-1, 1)).squeeze(1)
+        gather_idx_intr = b_act_view.unsqueeze(-1)
+        chosen_int_per_dim = torch.gather(int_q_now, -1, gather_idx_intr).squeeze(
+            -1
+        )  # [B,D]
+        int_q_sel = chosen_int_per_dim.sum(dim=-1)
         intrinsic_loss = torch.nn.functional.smooth_l1_loss(int_q_sel, y_i)
 
         self.int_optim.zero_grad()
@@ -767,29 +841,32 @@ class EVRainbowDQN:
         n_steps: int = 100000,
         min_ent=0.01,
     ):
-        if self.soft or self.munchausen:
-            q_ext = self.online(obs)
-            if self.Beta > 0.0:
-                q_int = self.int_online(obs)
-            else:
-                q_int = 0.0
-            q_comb = q_ext + self.Beta * q_int
-
-            return (
-                torch.distributions.Categorical(logits=q_comb / self.tau)
-                .sample()
-                .item()
-            )
-        # Epsilon greedy (with optional Thompson via Gumbel noise)
-        eps = 1 - step / n_steps
-        if torch.rand(()) < eps:
-            return int(torch.randint(0, self.n_actions, ()).item())
         with torch.no_grad():
-            q_ext = self.online(obs)
-            q_int = self.int_online(obs) if self.Beta > 0.0 else 0.0
-            q_comb = q_ext + self.Beta * q_int
+            q_ext = self.online(obs.unsqueeze(0) if obs.ndim == 1 else obs).squeeze(
+                0
+            )  # [D,Bins]
+            if self.Beta > 0.0:
+                q_int = self.int_online(
+                    obs.unsqueeze(0) if obs.ndim == 1 else obs
+                ).squeeze(0)
+                q_comb = q_ext + self.Beta * q_int
+            else:
+                q_comb = q_ext
+            eps_curr = 1 - step / n_steps
+            if (not (self.soft or self.munchausen)) and random.random() < eps_curr:
+                return torch.randint(
+                    0, self.n_action_bins, (self.n_action_dims,)
+                ).tolist()
+            if self.soft or self.munchausen:
+                actions = []
+                for d in range(self.n_action_dims):
+                    logits_d = q_comb[d] / self.tau
+                    a_d = (
+                        torch.distributions.Categorical(logits=logits_d).sample().item()
+                    )
+                    actions.append(a_d)
+                return actions
             if self.Thompson:
-                # Approximate posterior sampling by adding Gumbel noise
                 g = -torch.log(-torch.log(torch.rand_like(q_comb)))
                 q_comb = q_comb + g
-            return torch.argmax(q_comb, dim=-1).item()
+            return torch.argmax(q_comb, dim=-1).tolist()
