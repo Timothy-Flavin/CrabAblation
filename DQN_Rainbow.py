@@ -142,9 +142,6 @@ class RainbowDQN:
         n_action_dims,
         n_action_bins,
         hidden_layer_sizes=[128, 128],
-        n_atoms=101,
-        zmin=-50,
-        zmax=50,
         lr: float = 1e-3,
         gamma: float = 0.99,
         alpha: float = 0.9,
@@ -853,10 +850,6 @@ class EVRainbowDQN:
             else:
                 q_comb = q_ext
             eps_curr = 1 - step / n_steps
-            if (not (self.soft or self.munchausen)) and random.random() < eps_curr:
-                return torch.randint(
-                    0, self.n_action_bins, (self.n_action_dims,)
-                ).tolist()
             if self.soft or self.munchausen:
                 actions = []
                 for d in range(self.n_action_dims):
@@ -866,7 +859,8 @@ class EVRainbowDQN:
                     )
                     actions.append(a_d)
                 return actions
-            if self.Thompson:
-                g = -torch.log(-torch.log(torch.rand_like(q_comb)))
-                q_comb = q_comb + g
+            if random.random() < eps_curr:
+                return torch.randint(
+                    0, self.n_action_bins, (self.n_action_dims,)
+                ).tolist()
             return torch.argmax(q_comb, dim=-1).tolist()
