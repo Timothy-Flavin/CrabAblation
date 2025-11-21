@@ -527,6 +527,9 @@ class RainbowDQN:
         min_eps=0.01,
     ):
         """Return vector of length D with selected bin indices for each action dimension."""
+        r = random.random()
+        if r < min_eps or ((not (self.soft or self.munchausen)) and r < eps):
+            return torch.randint(0, self.n_action_bins, (self.n_action_dims,)).tolist()
         with torch.no_grad():
             obs_b = obs.unsqueeze(0) if obs.ndim == 1 else obs
             taus = self._sample_taus(obs_b.shape[0], self.n_quantiles, obs_b.device)
@@ -542,11 +545,8 @@ class RainbowDQN:
             if self.Thompson:
                 g = -torch.log(-torch.log(torch.rand_like(q_comb)))
                 q_comb = q_comb + g
-            eps_curr = 1 - step / n_steps
-            if (not (self.soft or self.munchausen)) and random.random() < eps_curr:
-                return torch.randint(
-                    0, self.n_action_bins, (self.n_action_dims,)
-                ).tolist()
+            # eps_curr = 1 - step / n_steps
+
             if self.soft or self.munchausen:
                 # Sample per dimension from softmax policy
                 actions = []
