@@ -113,9 +113,6 @@ def setup_config():
             obs_dim,
             n_action_dims,
             n_action_bins,
-            zmin=-1000,
-            zmax=1000,
-            n_atoms=101,
             hidden_layer_sizes=[512, 512],
             **common_kwargs,
         )
