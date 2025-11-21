@@ -352,6 +352,7 @@ class RainbowDQN:
 
             # Munchausen augmentation on reward
             r_aug = b_r_total
+            logpi_a = 0
             if self.munchausen:
                 ev_hist = quantiles.mean(dim=1)  # [B,D,Bins]
                 logpi_hist = torch.log_softmax(ev_hist / self.tau, dim=-1)
@@ -364,8 +365,8 @@ class RainbowDQN:
                 selected_logpi = torch.gather(logpi_hist, -1, gather_m_hist).squeeze(
                     -1
                 )  # [B,D]
-                logpi_a = torch.clamp(
-                    selected_logpi.mean(dim=-1), min=self.l_clip
+                logpi_a = torch.clamp(selected_logpi, min=self.l_clip).mean(
+                    dim=-1
                 )  # average over dims
                 r_aug = r_aug + self.alpha * self.tau * logpi_a
 
@@ -468,6 +469,9 @@ class RainbowDQN:
         int_loss.backward()
         self.int_optim.step()
 
+        m_r = 0
+        if self.munchausen:
+            m_r = (self.tau * logpi_a).mean().item()
         # Store last auxiliary losses for logging (optional)
         self.last_losses = {
             "extrinsic": float(loss.item()),
@@ -485,6 +489,7 @@ class RainbowDQN:
                 if isinstance(r_int, torch.Tensor)
                 else r_int
             ),
+            "munchausen_r": float(m_r),
         }
 
         # Inline TensorBoard logging if writer attached
