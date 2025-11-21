@@ -232,7 +232,7 @@ if __name__ == "__main__":
     writer.add_scalar("run/started", 1, 0)
     n_updates = 0
     for i in range(n_steps):
-        eps_current = 1 - i * 2 / n_steps
+        eps_current = 0.9 - i * 2 / n_steps
         eps_current = max(eps_current, 0.05)
         action_bins = dqn.sample_action(
             torch.from_numpy(obs).to(device).float(),

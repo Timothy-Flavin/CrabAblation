@@ -12,7 +12,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 def setup_config():
     # Parse CLI arguments
-    parser = argparse.ArgumentParser(description="MuJoCo DQN Runner")
+    parser = argparse.ArgumentParser(
+        description="MiniGrid DQN Runner (Rainbow/EV/ IQN-ready)"
+    )
     parser.add_argument(
         "--device",
         type=str,
@@ -58,11 +60,13 @@ def setup_config():
         "all": {
             "munchausen": True,  # pillar (1)
             "soft": True,  # pillar (3) always enabled if munchausen on
-            "Beta": 0.02,  # pillar (3)
+            "Beta": 0.1,  # pillar (3) optimism scale (match mujoco)
             "dueling": True,  # pillar (4)
             "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.02,  # pillar (2)
             "delayed": True,  # pillar (5)
+            "tau": 0.03,  # exploration / policy temperature
+            "alpha": 0.7,  # munchausen log-policy scaling
         }
     }
 
@@ -83,12 +87,16 @@ def setup_config():
         # Distributional off (use EV agent)
         cfg["distributional"] = False
         cfg["dueling"] = False
+        # Slightly reduce entropy reg to keep losses comparable (mirrors mujoco tweak)
+        cfg["ent_reg_coef"] = 0.01
     elif args.ablation == 5:
         # Delayed target off
         cfg["delayed"] = False
 
     AgentClass = RainbowDQN if cfg.get("distributional", True) else EVRainbowDQN
     # Common args
+    n_action_dims = 1
+    n_action_bins = 7
     common_kwargs = dict(
         soft=cfg.get("soft", False),
         munchausen=cfg.get("munchausen", False),
@@ -97,21 +105,23 @@ def setup_config():
         Beta=cfg.get("Beta", 0.0),
         ent_reg_coef=cfg.get("ent_reg_coef", 0.0),
         delayed=cfg.get("delayed", True),
+        tau=cfg.get("tau", 0.03),
+        alpha=cfg.get("alpha", 0.7),
     )
     if AgentClass is RainbowDQN:
         dqn = AgentClass(
             obs_dim,
-            action_dim,
-            zmin=-1,
-            zmax=2,
-            n_atoms=51,
-            tau=0.01,
+            n_action_dims,
+            n_action_bins,
+            hidden_layer_sizes=[512, 512],
             **common_kwargs,
         )
     else:
         dqn = AgentClass(
             obs_dim,
-            action_dim,
+            n_action_dims,
+            n_action_bins,
+            hidden_layer_sizes=[512, 512],
             **common_kwargs,
         )
 
@@ -121,17 +131,28 @@ def setup_config():
 if __name__ == "__main__":
 
     def eval(agent, device, env_eval=None):
+        """Greedy evaluation using agent.sample_action with eps=0 for IQN/Rainbow/EV parity."""
         if env_eval is None:
             env_eval = gym.make("MiniGrid-FourRooms-v0")
+            env_eval = FlatObsWrapper(env_eval)
         obs, info = env_eval.reset()
         done = False
         reward = 0.0
         while not done:
             with torch.no_grad():
-                tobs = torch.from_numpy(np.asarray(obs)).to(device).float().unsqueeze(0)
-                logits = agent.online(tobs)
-                ev = agent.online.expected_value(logits)
-                action = torch.argmax(ev, dim=-1).item()
+                action_bins = agent.sample_action(
+                    torch.from_numpy(np.asarray(obs)).to(device).float(),
+                    eps=0.0,
+                    step=0,
+                    n_steps=1,
+                )
+            # action_bins may be list/tensor length 1 for minigrid
+            if isinstance(action_bins, (list, tuple, np.ndarray)):
+                action = int(action_bins[0])
+            elif torch.is_tensor(action_bins):
+                action = int(action_bins.view(-1)[0].item())
+            else:
+                action = int(action_bins)
             obs, r, term, trunc, info = env_eval.step(action)
             reward += float(r)
             done = term or trunc
@@ -231,6 +252,7 @@ if __name__ == "__main__":
     os.makedirs(results_dir, exist_ok=True)
     tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
     writer = SummaryWriter(log_dir=tb_dir)
+    writer.add_scalar("run/started", 1, 0)
     n_updates = 0
     for i in range(n_steps):
         eps_current = 1 - i * 2 / n_steps
@@ -242,6 +264,8 @@ if __name__ == "__main__":
             step=i,
             n_steps=n_steps,
         )
+        if isinstance(action, list):
+            action = action[0]
         next_obs, r, term, trunc, info = env.step(action)
         # Update running stats with the freshly collected transition (single step)
         if hasattr(dqn, "update_running_stats"):
