@@ -38,12 +38,12 @@ class RNDModel(nn.Module):
             )
         else:
             next_obs = next_obs.to(self._device())
-
-        target_feature = self.target(next_obs)
+        with torch.no_grad():
+            target_feature = self.target(next_obs)
         predict_feature = self.predictor(next_obs)
 
         # Calculate MSE per batch item (no reduction yet)
-        error = (predict_feature - target_feature).pow(2).sum(1)
+        error = (predict_feature - target_feature).pow(2).sum(-1)
         return error
 
 
@@ -173,10 +173,35 @@ class RunningMeanStd(nn.Module):
 
         # Normalize: (x - mean) / std
         # We use .detach() to ensure no gradients flow back through the filter
-        normalized_x = (x - self.mean.detach()) / self.std.detach()
+        normalized_x = (x - self.mean.detach()) / (self.std.detach() + 1e-8)
 
         # Clip the result to be within [-clip_range, clip_range]
         return torch.clamp(normalized_x, -clip_range, clip_range)
+
+    def scale(self, x, clip_range=10.0):
+        """
+        scales an input 'x' using the running statistics.
+
+        Args:
+            x (torch.Tensor): The data to be normalized.
+            clip_range (float): The range to clip the normalized data to (e.g., [-10, 10]).
+                                This prevents extreme values.
+
+        Returns:
+            torch.Tensor: The normalized and clipped data.
+        """
+        if self.count == 0:
+            return x  # Can't normalize if we haven't seen any data
+
+        # Ensure x is on the correct device
+        x = x.to(self.mean.device)
+
+        # Normalize: x / std
+        # We use .detach() to ensure no gradients flow back through the filter
+        normalized_x = (x) / (self.std.detach() + 1e-8)
+
+        # Clip the result to be within [-clip_range, clip_range]
+        return torch.clamp(normalized_x, 0.0, clip_range)
 
     def to(self, *args, **kwargs):
         """Overrides .to() to move all buffers to the correct device."""
