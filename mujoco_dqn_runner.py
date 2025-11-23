@@ -114,6 +114,7 @@ def setup_config():
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=[512, 512],
+            polyak_tau=0.03,
             **common_kwargs,
         )
     else:
@@ -122,6 +123,7 @@ def setup_config():
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=[512, 512],
+            polyak_tau=0.03,
             **common_kwargs,
         )
 

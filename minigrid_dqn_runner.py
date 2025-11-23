@@ -33,9 +33,9 @@ def setup_config():
             "Beta": (
                 0.7 if args.ablation != 4 else 0.1
             ),  # pillar (3) optimism scale (match mujoco)
-            "dueling": False,  # pillar (4)
+            "dueling": True,  # pillar (4)
             "distributional": True,  # pillar (4)
-            "ent_reg_coef": 0.01,  # pillar (2)
+            "ent_reg_coef": 0.05,  # pillar (2)
             "delayed": True,  # pillar (5)
             "tau": 0.03,  # exploration / policy temperature
             "alpha": 0.9,  # munchausen log-policy scaling
@@ -109,7 +109,7 @@ def setup_config():
 class obs_transformer:
     def __init__(self):
         # 7x7 image, 3 channels (one-hot for IDs 1, 2, 8)
-        self.image_flat_size = 7 * 7 * 3
+        self.image_flat_size = 7 * 7 * 2
         # Direction is one-hot encoded (4 values)
         self.direction_size = 4
         self.frame_size = self.image_flat_size + self.direction_size
@@ -123,10 +123,10 @@ class obs_transformer:
         direction = obs["direction"]
 
         # One-hot encode IDs: 1=Empty, 2=Wall, 8=Goal
-        one_hot_img = np.zeros((7, 7, 3), dtype=np.float32)
-        one_hot_img[:, :, 0] = img == 1
-        one_hot_img[:, :, 1] = img == 2
-        one_hot_img[:, :, 2] = img == 8
+        one_hot_img = np.zeros((7, 7, 2), dtype=np.float32)
+        # one_hot_img[:, :, 0] = img == 1
+        one_hot_img[:, :, 0] = img == 2
+        one_hot_img[:, :, 1] = img == 8
 
         # One-hot encode direction
         one_hot_dir = np.zeros(4, dtype=np.float32)
@@ -142,6 +142,10 @@ class obs_transformer:
 
         self.last_obs = current_full
         return transformed_obs
+
+    def reset(self):
+        self.last_obs = np.zeros(self.frame_size)
+        return np.concatenate([self.last_obs, self.last_obs])
 
 
 if __name__ == "__main__":
@@ -236,7 +240,7 @@ if __name__ == "__main__":
     #     env = OneHotPartialObsWrapper(env)
     # env = FlatObsWrapper(env)
 
-    env2 = gym.make("MiniGrid-FourRooms-v0", render_mode="human")
+    env2 = gym.make("MiniGrid-FourRooms-v0")  # , render_mode="human")
     env2_transformer = obs_transformer()
     # if args.fully_obs:
     #     env2 = FullyObsWrapper(env2)
@@ -298,7 +302,7 @@ if __name__ == "__main__":
     if hasattr(dqn, "rnd"):
         dqn.rnd_optim = torch.optim.Adam(dqn.rnd.predictor.parameters(), lr=1e-3)
 
-    n_steps = 200000
+    n_steps = 300000
     rhist = []
     smooth_rhist = []
     lhist = []
@@ -378,7 +382,7 @@ if __name__ == "__main__":
         buff_next_obs[i % blen].copy_(
             torch.from_numpy(np.asarray(next_obs)).to(device).float()
         )
-        buff_term[i % blen] = term
+        buff_term[i % blen] = term or trunc
         buff_r[i % blen] = float(r)
 
         if i > BATCH_SIZE and i % 2 == 0:
@@ -423,7 +427,7 @@ if __name__ == "__main__":
         ep_len += 1
         if term or trunc:
             next_obs_raw, info = env.reset()
-            next_obs = env1_transformer.transform(next_obs_raw)
+            next_obs = env1_transformer.reset()
             next_obs = env1_transformer.transform(
                 next_obs_raw
             )  # ensure last_obs updated
