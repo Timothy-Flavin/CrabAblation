@@ -28,12 +28,12 @@ def setup_config():
     # (5) Delayed / Two-Timescale Optimization
     configurations = {
         "all": {
-            "munchausen": True,  # pillar (1)
-            "soft": True,  # pillar (3) always enabled if munchausen on
+            "munchausen": False,  # pillar (1)
+            "soft": False,  # pillar (3) always enabled if munchausen on
             "Beta": (
-                0.5 if args.ablation != 4 else 0.05
+                0.7 if args.ablation != 4 else 0.1
             ),  # pillar (3) optimism scale (match mujoco)
-            "dueling": True,  # pillar (4)
+            "dueling": False,  # pillar (4)
             "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.01,  # pillar (2)
             "delayed": True,  # pillar (5)
@@ -68,7 +68,7 @@ def setup_config():
     AgentClass = RainbowDQN if cfg.get("distributional", True) else EVRainbowDQN
     # Common args
     n_action_dims = 1
-    n_action_bins = 7
+    n_action_bins = 3
     common_kwargs = dict(
         soft=cfg.get("soft", True),
         munchausen=cfg.get("munchausen", True),
@@ -78,6 +78,7 @@ def setup_config():
         ent_reg_coef=cfg.get("ent_reg_coef", 0.0),
         delayed=cfg.get("delayed", True),
         tau=cfg.get("tau", 0.03),
+        polyak_tau=0.005,
         alpha=cfg.get("alpha", 0.7),
     )
     if AgentClass is RainbowDQN:
@@ -103,6 +104,44 @@ def setup_config():
         )
 
     return dqn, device, configurations, args
+
+
+class obs_transformer:
+    def __init__(self):
+        # 7x7 image, 3 channels (one-hot for IDs 1, 2, 8)
+        self.image_flat_size = 7 * 7 * 3
+        # Direction is one-hot encoded (4 values)
+        self.direction_size = 4
+        self.frame_size = self.image_flat_size + self.direction_size
+
+        # Last obs includes image and direction
+        self.last_obs = np.zeros(self.frame_size)
+
+    def transform(self, obs):
+        # Extract object ID channel
+        img = obs["image"][:, :, 0]
+        direction = obs["direction"]
+
+        # One-hot encode IDs: 1=Empty, 2=Wall, 8=Goal
+        one_hot_img = np.zeros((7, 7, 3), dtype=np.float32)
+        one_hot_img[:, :, 0] = img == 1
+        one_hot_img[:, :, 1] = img == 2
+        one_hot_img[:, :, 2] = img == 8
+
+        # One-hot encode direction
+        one_hot_dir = np.zeros(4, dtype=np.float32)
+        one_hot_dir[direction] = 1.0
+
+        current_obs = one_hot_img.flatten()
+
+        # Combine current image and direction
+        current_full = np.concatenate([current_obs, one_hot_dir])
+
+        # Stack current and last frame
+        transformed_obs = np.concatenate([current_full, self.last_obs])
+
+        self.last_obs = current_full
+        return transformed_obs
 
 
 if __name__ == "__main__":
@@ -142,21 +181,26 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    def eval(agent, device, env_eval=None):
+    def eval(agent, device, env_eval=None, step=0, n_steps=200000):
         """Greedy evaluation using agent.sample_action with eps=0 for IQN/Rainbow/EV parity."""
         if env_eval is None:
             env_eval = gym.make("MiniGrid-FourRooms-v0")
             env_eval = FlatObsWrapper(env_eval)
+        et = obs_transformer()
         obs, info = env_eval.reset()
+        obs = et.transform(obs)
         done = False
         reward = 0.0
+        eps_current = 1 - step * 2 / n_steps
+        eps_current = max(eps_current, 0.05)
         while not done:
             with torch.no_grad():
                 action_bins = agent.sample_action(
                     torch.from_numpy(np.asarray(obs)).to(device).float(),
-                    eps=0.0,
-                    step=0,
-                    n_steps=1,
+                    eps=eps_current,
+                    step=step,
+                    n_steps=n_steps,
+                    verbose=True,
                 )
             # action_bins may be list/tensor length 1 for minigrid
             if isinstance(action_bins, (list, tuple, np.ndarray)):
@@ -165,52 +209,60 @@ if __name__ == "__main__":
                 action = int(action_bins.view(-1)[0].item())
             else:
                 action = int(action_bins)
+            print(action)
             obs, r, term, trunc, info = env_eval.step(action)
+            obs = et.transform(obs)
+
             reward += float(r)
             done = term or trunc
         return reward
 
     env = gym.make("MiniGrid-FourRooms-v0")
-    if args.fully_obs:
-        # Fully observed grid; DO NOT stack partial one-hot wrapper (they conflict)
-        env = FullyObsWrapper(env)
-    else:
-        # Partial observation -> one-hot encode
-        env = OneHotPartialObsWrapper(env)
-    env = FlatObsWrapper(env)
+    obs, _ = env.reset()
+    env1_transformer = obs_transformer()
+    obs = env1_transformer.transform(obs)
+    # print(obs)
+    # print(obs["image"].shape)
+    # print(obs["direction"])
+    # env = FlatObsWrapper(env)
+    # print(obs.shape)
+    # print(obs)
+    # exit()
+    # if args.fully_obs:
+    #     # Fully observed grid; DO NOT stack partial one-hot wrapper (they conflict)
+    #     env = FullyObsWrapper(env)
+    # else:
+    #     # Partial observation -> one-hot encode
+    #     env = OneHotPartialObsWrapper(env)
+    # env = FlatObsWrapper(env)
 
-    env2 = gym.make("MiniGrid-FourRooms-v0")
-    if args.fully_obs:
-        env2 = FullyObsWrapper(env2)
-    else:
-        env2 = OneHotPartialObsWrapper(env2)
-    env2 = FlatObsWrapper(env2)
-    obs, _ = env.reset()  # This now produces an RGB tensor only
-    obs, info = env.reset()
+    env2 = gym.make("MiniGrid-FourRooms-v0", render_mode="human")
+    env2_transformer = obs_transformer()
+    # if args.fully_obs:
+    #     env2 = FullyObsWrapper(env2)
+    # else:
+    #     env2 = OneHotPartialObsWrapper(env2)
+    # env2 = FlatObsWrapper(env2)
+    # obs2, _ = env2.reset()  # This now produces an RGB tensor only
+    # obs2, info2 = env2.reset()
+    # obs2 = obs2["image"].flatten()
+    obs_dim = len(obs)
     # Determine action and observation dimensions
-    if (
-        isinstance(env.observation_space, gym.spaces.Box)
-        and env.observation_space.shape is not None
-    ):
-        obs_dim = int(np.prod(env.observation_space.shape))
-    else:
-        # for dict observation spaces, infer from a sample obs
-        sample = obs
-        if isinstance(sample, dict):
-            img = sample.get("image") or sample.get("obs")
-            obs_dim = int(np.prod(np.asarray(img).shape))
-        else:
-            obs_dim = int(np.prod(np.asarray(sample).shape))
+    # if (
+    #     isinstance(env.observation_space, gym.spaces.Box)
+    #     and env.observation_space.shape is not None
+    # ):
+    #     obs_dim = len(obs)  # int(np.prod(env.observation_space.shape))
+    # else:
+    #     # for dict observation spaces, infer from a sample obs
+    #     sample = obs
+    #     if isinstance(sample, dict):
+    #         img = sample.get("image") or sample.get("obs")
+    #         obs_dim = int(np.prod(np.asarray(img).shape))
+    #     else:
+    #         obs_dim = int(np.prod(np.asarray(sample).shape))
 
-    # infer discrete action dimension robustly
-    action_dim = getattr(env.action_space, "n", None)
-    if action_dim is None:
-        shape = getattr(env.action_space, "shape", None)
-        if shape:
-            action_dim = int(np.prod(shape))
-        else:
-            action_dim = 1
-
+    action_dim = 3
     dqn, device, configurations, args = setup_config()
     # Move all agent submodules to the selected device and reinitialize optimizers
     # Note: Optimizers need to be recreated after moving parameters across devices.
@@ -240,11 +292,11 @@ if __name__ == "__main__":
 
     # Recreate optimizers on moved parameters
     if hasattr(dqn, "ext_online"):
-        dqn.optim = torch.optim.Adam(dqn.ext_online.parameters(), lr=main_lr)
+        dqn.optim = torch.optim.Adam(dqn.ext_online.parameters(), lr=1e-3)
     if hasattr(dqn, "int_online"):
-        dqn.int_optim = torch.optim.Adam(dqn.int_online.parameters(), lr=int_lr)
+        dqn.int_optim = torch.optim.Adam(dqn.int_online.parameters(), lr=1e-3)
     if hasattr(dqn, "rnd"):
-        dqn.rnd_optim = torch.optim.Adam(dqn.rnd.predictor.parameters(), lr=rnd_lr)
+        dqn.rnd_optim = torch.optim.Adam(dqn.rnd.predictor.parameters(), lr=1e-3)
 
     n_steps = 200000
     rhist = []
@@ -268,6 +320,17 @@ if __name__ == "__main__":
     buff_term = torch.zeros((blen,), dtype=torch.float32, device=device)
     buff_r = torch.zeros((blen,), dtype=torch.float32, device=device)
 
+    # Priority experience replay buffers
+    priority_obs = torch.zeros(
+        size=(blen // 4, int(obs_dim)), dtype=torch.float32, device=device
+    )
+    priority_next_obs = torch.zeros(
+        size=(blen // 4, int(obs_dim)), dtype=torch.float32, device=device
+    )
+    priority_term = torch.zeros((blen // 4,), dtype=torch.float32, device=device)
+    priority_r = torch.zeros((blen // 4,), dtype=torch.float32, device=device)
+    priority_actions = torch.zeros((blen // 4,), dtype=torch.long, device=device)
+
     start_time = time()
     # Initialize TensorBoard writer
     runner_name = "minigrid"
@@ -282,6 +345,9 @@ if __name__ == "__main__":
     n_updates = 0
     RND_BURN_IN = 1000
     BATCH_SIZE = 64
+    ep_len = 0
+    priority_idx = 0
+    priority_filled = 0
     for i in range(n_steps):
         # Decay epsilon faster (over 1/4 of training) to ensure policy stabilizes and fills buffer with successes
         eps_current = 1 - i * 2 / n_steps
@@ -296,6 +362,8 @@ if __name__ == "__main__":
         if isinstance(action, list):
             action = action[0]
         next_obs, r, term, trunc, info = env.step(action)
+        next_obs = env1_transformer.transform(next_obs)
+        # print(next_obs.shape)
         r = float(r) * 10.0
         # Update running stats with the freshly collected transition (single step)
         if hasattr(dqn, "update_running_stats"):
@@ -313,7 +381,7 @@ if __name__ == "__main__":
         buff_term[i % blen] = term
         buff_r[i % blen] = float(r)
 
-        if i > BATCH_SIZE:
+        if i > BATCH_SIZE and i % 2 == 0:
             if i + BATCH_SIZE < RND_BURN_IN:
                 dqn.update(
                     buff_obs,
@@ -336,12 +404,29 @@ if __name__ == "__main__":
                 )
                 lhist.append(loss_val)
                 n_updates += 1
+                if priority_filled >= BATCH_SIZE:
+                    loss_priority = dqn.update(
+                        priority_obs,
+                        priority_actions,
+                        priority_r,
+                        priority_next_obs,
+                        priority_term,
+                        batch_size=BATCH_SIZE,
+                        step=min(priority_filled, blen // 4),
+                        extrinsic_only=True,
+                    )
+                    n_updates += 1
+
                 dqn.update_target()
 
         r_ep += float(r)
-
+        ep_len += 1
         if term or trunc:
-            next_obs, info = env.reset()
+            next_obs_raw, info = env.reset()
+            next_obs = env1_transformer.transform(next_obs_raw)
+            next_obs = env1_transformer.transform(
+                next_obs_raw
+            )  # ensure last_obs updated
             rhist.append(r_ep)
             if len(rhist) < 20:
                 dt = time() - start_time
@@ -357,20 +442,35 @@ if __name__ == "__main__":
                         f"reward for episode: {ep}: {r_ep} at {i/dt:.2f} steps/sec {n_updates/dt:.2f} updates/s {100*i/n_steps:.2f}%"
                     )
             smooth_rhist.append(smooth_r)
-            r_ep = 0.0
+
             ep += 1
             # TensorBoard: episode metrics
             writer.add_scalar("episode/reward", float(rhist[-1]), i)
             writer.add_scalar("episode/smooth_reward", float(smooth_r), i)
 
-            if ep % 5 == 0:
+            if ep % 50 == 0 and i > n_steps // 2:
                 evalr = 0.0
                 for k in range(5):
-                    evalr += eval(dqn, device, env_eval=env2)
+                    evalr += eval(dqn, device, env_eval=env2, step=i, n_steps=n_steps)
                 print(f"eval mean: {evalr/5}")
                 eval_hist.append(evalr / 5)
                 writer.add_scalar("eval/reward", float(eval_hist[-1]), i)
 
+            # if this episode was better than the running smooth reward, add to priority buffer
+            if r_ep > smooth_r:
+                store_len = min(ep_len, blen // 4)
+                for idx in range(store_len, 0, -1):
+                    buff_idx = (i - idx) % blen
+                    pidx = (priority_idx + store_len - idx) % (blen // 4)
+                    priority_obs[pidx].copy_(buff_obs[buff_idx])
+                    priority_next_obs[pidx].copy_(buff_next_obs[buff_idx])
+                    priority_term[pidx] = buff_term[buff_idx]
+                    priority_r[pidx] = buff_r[buff_idx]
+                    priority_actions[pidx] = buff_actions[buff_idx]
+                priority_idx = (priority_idx + store_len) % (blen // 4)
+                priority_filled = min(priority_filled + store_len, blen // 4)
+            ep_len = 0
+            r_ep = 0.0
         obs = next_obs
 
     # Save artifacts under results/{runner_name}/
