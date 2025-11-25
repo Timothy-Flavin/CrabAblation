@@ -90,7 +90,7 @@ def setup_config():
         # Distributional off (use EV agent)
         cfg["distributional"] = False
         cfg["dueling"] = False
-        cfg["ent_reg_coef"] = 0.003
+        cfg["ent_reg_coef"] = 0.01
     elif args.ablation == 5:
         # Delayed target off
         cfg["delayed"] = False
@@ -114,7 +114,7 @@ def setup_config():
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=[512, 512],
-            polyak_tau=0.03,
+            # polyak_tau=0.03,
             **common_kwargs,
         )
     else:
@@ -123,7 +123,7 @@ def setup_config():
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=[512, 512],
-            polyak_tau=0.03,
+            # polyak_tau=0.03,
             **common_kwargs,
         )
 

@@ -146,7 +146,7 @@ class RainbowDQN:
         gamma: float = 0.99,
         alpha: float = 0.9,
         tau: float = 0.03,
-        polyak_tau: float = 0.005,
+        polyak_tau: float = 0.03,
         l_clip: float = -1.0,
         soft: bool = False,
         munchausen: bool = False,
@@ -161,7 +161,7 @@ class RainbowDQN:
         rnd_output_dim: int = 128,
         rnd_lr: float = 1e-3,
         intrinsic_lr: float = 1e-3,
-        int_r_clamp: float = 5.0,
+        int_r_clamp: float = 10.0,
         Beta_half_life_steps: Optional[int] = None,
         norm_obs: bool = True,
         burn_in_updates: int = 0,
@@ -409,8 +409,8 @@ class RainbowDQN:
                         selected_logpi = torch.gather(logpi, -1, gather_m_hist).squeeze(
                             -1
                         )  # [B,D]
-                        logpi_a = torch.clamp(selected_logpi, min=self.l_clip).mean(
-                            dim=-1
+                        logpi_a = torch.clamp(
+                            selected_logpi.mean(dim=-1), min=self.l_clip
                         )  # average over dims
                         m_r = self.alpha * self.tau * logpi_a
                         b_r_final = b_r_final + m_r
@@ -454,6 +454,7 @@ class RainbowDQN:
         b_r_int: torch.Tensor,
         b_next_obs: torch.Tensor,
         batch_size: int,
+        b_term: torch.Tensor,
     ):
         # Update intrinsic Q network on intrinsic rewards only
         device = b_obs.device
@@ -470,10 +471,12 @@ class RainbowDQN:
             )  # [B,Nt,D,Bins]
             # 1. Calculate Mean Q-values for selection (average over quantiles/tau dim 1)
             # shape: [B, D, Bins]
-            target_q_means = int_target_all.mean(dim=1)
+            # target_q_means = int_target_all.mean(dim=1)
+            # online_q_means = int_quantiles.mean(dim=1)
+            online_q_means = self.int_online(b_next_obs, int_taus).mean(dim=1)
             # 2. Select best action based on expected value
             # shape: [B, D]
-            target_actions = target_q_means.argmax(dim=-1)
+            target_actions = online_q_means.argmax(dim=-1)
             # 3. Gather the quantiles corresponding to the best action
             # Expand indices to match target_quantiles_all shape: [B, Nt, D, 1]
             action_idx = (
@@ -487,7 +490,10 @@ class RainbowDQN:
             )  # [B, Nt, D]
             # Sum over action dimensions (if multi-dim actions)
             mixed_target = mixed_target.sum(dim=-1)  # [B, Nt]
-            int_target_values = b_r_int.unsqueeze(1) + self.gamma * mixed_target
+            int_target_values = (
+                b_r_int.unsqueeze(1)
+                + self.gamma * (1 - b_term).unsqueeze(1) * mixed_target
+            )
 
         # Gather current quantile values from taken actions
         if b_actions.ndim == 1:
@@ -541,8 +547,9 @@ class RainbowDQN:
             )
 
         b_r_int = self._int_reward(b_r, rnd_errors)
+        b_r_aug = b_r  # + self.Beta * b_r_int
         extrinsic_loss, munchausen_reward, entropy_loss = self._rl_update_extrinsic(
-            b_obs, b_actions, b_r, b_next_obs, b_term, batch_size
+            b_obs, b_actions, b_r_aug, b_next_obs, b_term, batch_size
         )
         if extrinsic_only:
             return extrinsic_loss.item()
@@ -550,7 +557,7 @@ class RainbowDQN:
         if self.Beta > 0.0:
             assert isinstance(b_r_int, torch.Tensor)
             intrinsic_loss = self._rl_update_intrinsic(
-                b_obs, b_actions, b_r_int, b_next_obs, batch_size
+                b_obs, b_actions, b_r_int, b_next_obs, batch_size, b_term
             )
         if isinstance(entropy_loss, torch.Tensor):
             entropy_loss = float(entropy_loss.item())
@@ -798,7 +805,7 @@ class EVRainbowDQN:
                 r_int = rnd_errors.detach() / torch.std(
                     rnd_errors.detach().to(dtype=torch.float32)
                 )
-                r_int = r_int.clamp(-5.0, 5.0)
+                r_int = r_int.clamp(-10.0, 10.0)
         b_r_total = b_r
 
         # Current and next Q-values
