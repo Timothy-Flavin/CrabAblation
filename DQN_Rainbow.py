@@ -4,6 +4,10 @@ import random
 from typing import Optional
 from torch.utils.tensorboard import SummaryWriter
 from RandomDistilation import RNDModel, RunningMeanStd
+from PopArtLayer import PopArtLayer
+from PopArtDuelingLayer import PopArtDuelingHead
+from PopArtIQNLayer import PopArtIQNLayer
+from PopArtDuelingIQNLayer import PopArtDuelingIQNLayer
 
 
 class EV_Q_Network(nn.Module):
@@ -21,9 +25,11 @@ class EV_Q_Network(nn.Module):
         n_action_bins: int,
         hidden_layer_sizes=[128, 128],
         dueling: bool = False,
+        popart: bool = False,
     ):
         super().__init__()
         self.dueling = dueling
+        self.popart = popart
         self.n_action_dims = n_action_dims
         self.n_action_bins = n_action_bins
         self.n_actions_total = n_action_dims * n_action_bins  # legacy convenience
@@ -34,15 +40,28 @@ class EV_Q_Network(nn.Module):
         self.relu = nn.ReLU()
         last_hidden = hidden_layer_sizes[-1]
         if self.dueling:
-            self.value_layer = nn.Linear(last_hidden, 1)
-            self.advantage_layer = nn.Linear(last_hidden, self.n_actions_total)
+            if self.popart:
+                self.output_layer = PopArtDuelingHead(last_hidden, self.n_actions_total)
+            else:
+                self.value_layer = nn.Linear(last_hidden, 1)
+                self.advantage_layer = nn.Linear(last_hidden, self.n_actions_total)
         else:
-            self.out_layer = nn.Linear(last_hidden, self.n_actions_total)
+            if self.popart:
+                self.output_layer = PopArtLayer(last_hidden, self.n_actions_total)
+            else:
+                self.out_layer = nn.Linear(last_hidden, self.n_actions_total)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, normalized: bool = False) -> torch.Tensor:
         h = x
         for layer in self.layers:
             h = self.relu(layer(h))
+
+        if self.popart:
+            out = self.output_layer(h, normalized=normalized)
+            if h.ndim == 1:
+                return out.view(self.n_action_dims, self.n_action_bins)
+            return out.view(h.shape[0], self.n_action_dims, self.n_action_bins)
+
         if not self.dueling:
             out = self.out_layer(h)
             if h.ndim == 1:
@@ -81,9 +100,11 @@ class IQN_Network(nn.Module):
         hidden_layer_sizes=[128, 128],
         n_cosines: int = 64,
         dueling: bool = False,
+        popart: bool = False,
     ):
         super().__init__()
         self.dueling = dueling
+        self.popart = popart
         self.n_action_dims = n_action_dims
         self.n_action_bins = n_action_bins
         self.n_actions_total = n_action_dims * n_action_bins
@@ -96,10 +117,18 @@ class IQN_Network(nn.Module):
         last_hidden = hidden_layer_sizes[-1]
         self.cosine_layer = nn.Linear(n_cosines, last_hidden)
         if dueling:
-            self.value_head = nn.Linear(last_hidden, 1)
-            self.adv_head = nn.Linear(last_hidden, self.n_actions_total)
+            if self.popart:
+                self.output_layer = PopArtDuelingIQNLayer(
+                    last_hidden, n_action_dims, n_action_bins
+                )
+            else:
+                self.value_head = nn.Linear(last_hidden, 1)
+                self.adv_head = nn.Linear(last_hidden, self.n_actions_total)
         else:
-            self.out_head = nn.Linear(last_hidden, self.n_actions_total)
+            if self.popart:
+                self.output_layer = PopArtIQNLayer(last_hidden, self.n_actions_total)
+            else:
+                self.out_head = nn.Linear(last_hidden, self.n_actions_total)
 
     def _phi(self, tau: torch.Tensor) -> torch.Tensor:
         i = torch.arange(self.n_cosines, device=tau.device, dtype=tau.dtype).view(
@@ -109,13 +138,25 @@ class IQN_Network(nn.Module):
         emb = self.relu(self.cosine_layer(cosines))  # [B,N,H]
         return emb
 
-    def forward(self, x: torch.Tensor, tau: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, tau: torch.Tensor, normalized: bool = False
+    ) -> torch.Tensor:
         h = x
         for layer in self.base_layers:
             h = self.relu(layer(h))  # [B,H]
         h = h.unsqueeze(1)  # [B,1,H]
         tau_emb = self._phi(tau)  # [B,N,H]
         h = h * tau_emb  # [B,N,H]
+
+        if self.popart:
+            out = self.output_layer(h, normalized=normalized)
+            if self.dueling:
+                return out
+            else:
+                return out.view(
+                    out.shape[0], out.shape[1], self.n_action_dims, self.n_action_bins
+                )
+
         if not self.dueling:
             out = self.out_head(h)  # [B,N,D*Bins]
             return out.view(
@@ -151,6 +192,7 @@ class RainbowDQN:
         munchausen: bool = False,
         Thompson: bool = False,
         dueling: bool = False,
+        popart: bool = False,
         Beta: float = 0.0,
         # Delayed target usage (pillar 5). If False, use online net as target.
         delayed: bool = True,
@@ -161,12 +203,14 @@ class RainbowDQN:
         rnd_lr: float = 1e-3,
         intrinsic_lr: float = 1e-3,
     ):
+        self.popart = popart
         self.online = IQN_Network(
             input_dim,
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.target = IQN_Network(
             input_dim,
@@ -174,6 +218,7 @@ class RainbowDQN:
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         # Intrinsic Q networks (separate head trained on intrinsic rewards only)
         self.int_online = IQN_Network(
@@ -182,6 +227,7 @@ class RainbowDQN:
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.int_target = IQN_Network(
             input_dim,
@@ -189,6 +235,7 @@ class RainbowDQN:
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.alpha = alpha
         self.tau = tau
@@ -312,15 +359,17 @@ class RainbowDQN:
         # 2) IQN forward passes
         device = b_obs.device
         taus = self._sample_taus(batch_size, self.n_quantiles, device)
-        quantiles = self.online(b_obs, taus)  # [B,N,D,Bins]
+        quantiles = self.online(b_obs, taus, normalized=self.popart)  # [B,N,D,Bins]
         with torch.no_grad():
             target_taus = self._sample_taus(batch_size, self.n_target_quantiles, device)
             target_quantiles_all = (
                 self.target if self.delayed_target else self.online
             )(
-                b_next_obs, target_taus
+                b_next_obs, target_taus, normalized=False
             )  # [B,Nt,D,Bins]
-            online_next_quantiles = self.online(b_next_obs, taus)  # [B,N,D,Bins]
+            online_next_quantiles = self.online(
+                b_next_obs, taus, normalized=False
+            )  # [B,N,D,Bins]
             mean_next = online_next_quantiles.mean(dim=1)  # [B,D,Bins]
             if self.soft or self.munchausen:
                 pi_next = torch.softmax(mean_next / self.tau, dim=-1)  # [B,D,Bins]
@@ -375,6 +424,10 @@ class RainbowDQN:
             ) * self.gamma * (
                 mixed_target + ent_bonus.unsqueeze(1)
             )  # [B,Nt]
+
+            if self.popart:
+                self.online.output_layer.update_stats(target_values)
+                target_values = self.online.output_layer.normalize(target_values)
 
         # Gather predicted quantiles for taken actions
         # Gather predicted quantiles per dimension and aggregate
@@ -584,6 +637,7 @@ class EVRainbowDQN:
         munchausen: bool = False,
         Thompson: bool = False,
         dueling: bool = False,
+        popart: bool = False,
         Beta: float = 0.0,
         delayed: bool = True,
         ent_reg_coef: float = 0.0,
@@ -592,12 +646,14 @@ class EVRainbowDQN:
         rnd_lr: float = 1e-3,
         intrinsic_lr: float = 1e-3,
     ):
+        self.popart = popart
         self.online = EV_Q_Network(
             input_dim,
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.target = EV_Q_Network(
             input_dim,
@@ -605,13 +661,16 @@ class EVRainbowDQN:
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
+        # Intrinsic Q networks (separate head trained on intrinsic rewards only)
         self.int_online = EV_Q_Network(
             input_dim,
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.int_target = EV_Q_Network(
             input_dim,
@@ -619,6 +678,7 @@ class EVRainbowDQN:
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
 
         self.alpha = alpha
@@ -704,7 +764,7 @@ class EVRainbowDQN:
         b_r_total = b_r + self.Beta * r_int
 
         # Current and next Q-values
-        q_now = self.online(b_obs)  # [B,D,Bins]
+        q_now = self.online(b_obs, normalized=self.popart)  # [B,D,Bins]
         logpi_now = None
         pi_now = None
         entropy_loss = 0
@@ -725,7 +785,7 @@ class EVRainbowDQN:
             action_idx_now = b_act_view.unsqueeze(-1)
             # q_next_online = self.online(b_next_obs)  # [B,D,Bins]
             q_next = (self.target if self.delayed_target else self.online)(
-                b_next_obs
+                b_next_obs, normalized=False
             )  # [B,D,Bins]
             if self.munchausen:
                 # only need this right now for ln(pi(a)) for munchausen loss
@@ -753,6 +813,10 @@ class EVRainbowDQN:
             if next_head_vals.ndim > 1:
                 next_head_vals = next_head_vals.sum(-1)
             td_target = b_r_total + self.gamma * (1 - b_term) * next_head_vals
+
+            if self.popart:
+                self.online.output_layer.update_stats(td_target)
+                td_target = self.online.output_layer.normalize(td_target)
 
         q_selected = torch.gather(q_now, -1, action_idx_now).squeeze(
             -1

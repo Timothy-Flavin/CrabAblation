@@ -38,7 +38,7 @@ class PopArtDuelingHead(nn.Module):
         # 3. Denormalize on the fly for action selection / targets
         return q_norm * self.sigma + self.mu
 
-    def update_stats_and_weights(self, target_q_unnormalized):
+    def update_stats(self, target_q_unnormalized):
         """
         Updates mu/sigma and adjusts V and A weights to preserve outputs.
         """
@@ -81,3 +81,9 @@ class PopArtDuelingHead(nn.Module):
             # new_bias = (old_sigma * old_bias + old_mu - new_mu) / new_sigma
             # This simplifies to: old_bias * ratio + shift_term
             self.fc_V.bias.mul_(weight_scale).add_(bias_shift)
+
+    def normalize(self, x):
+        return (x - self.mu) / self.sigma
+
+    def unnormalize(self, x):
+        return x * self.sigma + self.mu

@@ -25,10 +25,10 @@ class PopArtIQNLayer(nn.Module):
         self.bias = nn.Parameter(torch.Tensor(out_features))
 
         # Running statistics for the targets (mean and mean-squared)
-        # Shape: [out_features]
-        self.register_buffer("mu", torch.zeros(out_features))
-        self.register_buffer("nu", torch.ones(out_features))  # E[x^2]
-        self.register_buffer("sigma", torch.ones(out_features))
+        # Scalar stats shared across all actions
+        self.register_buffer("mu", torch.zeros(1))
+        self.register_buffer("nu", torch.ones(1))  # E[x^2]
+        self.register_buffer("sigma", torch.ones(1))
 
         self.reset_parameters()
 
@@ -57,13 +57,8 @@ class PopArtIQNLayer(nn.Module):
             return out_norm
 
         # Unnormalized output: y = y_norm * sigma + mu
-        # Broadcast sigma and mu: [Out] -> [1, 1, Out] or [1, Out]
-        if out_norm.ndim == 3:
-            # [B, N, Out]
-            return out_norm * self.sigma.view(1, 1, -1) + self.mu.view(1, 1, -1)
-        else:
-            # [B, Out]
-            return out_norm * self.sigma + self.mu
+        # sigma, mu are scalars
+        return out_norm * self.sigma + self.mu
 
     @torch.no_grad()
     def update_stats(self, targets):
@@ -82,20 +77,12 @@ class PopArtIQNLayer(nn.Module):
                      or just the mean over quantiles depending on desired behavior.
                      Standard PopArt tracks the return moments.
         """
-        # If targets have quantile dimension, we can either:
-        # 1. Treat every quantile as a sample (flatten B and N)
-        # 2. Compute mean over N first (expected value), then stats over B.
-        # Usually, we want to normalize the value scale, so using all quantiles is robust.
-
-        if targets.ndim == 3:
-            # [B, N, Out] -> Flatten to [B*N, Out]
-            targets_flat = targets.reshape(-1, self.out_features)
-        else:
-            targets_flat = targets
+        # Flatten all dimensions to compute scalar stats
+        targets_flat = targets.reshape(-1)
 
         # Calculate batch statistics
-        batch_mean = targets_flat.mean(dim=0)
-        batch_sq_mean = (targets_flat**2).mean(dim=0)
+        batch_mean = targets_flat.mean()
+        batch_sq_mean = (targets_flat**2).mean()
 
         # Update running statistics using EMA
         new_mu = self.beta * self.mu + (1 - self.beta) * batch_mean
@@ -108,8 +95,12 @@ class PopArtIQNLayer(nn.Module):
         # Update weights and biases to preserve unnormalized outputs
         # W_new = W_old * (sigma_old / sigma_new)
         # b_new = (sigma_old * b_old + mu_old - mu_new) / sigma_new
-        self.weight.data.mul_(self.sigma.unsqueeze(1) / new_sigma.unsqueeze(1))
-        self.bias.data.mul_(self.sigma).add_(self.mu - new_mu).div_(new_sigma)
+
+        weight_scale = self.sigma / new_sigma
+        bias_shift = (self.mu - new_mu) / new_sigma
+
+        self.weight.data.mul_(weight_scale)
+        self.bias.data.mul_(weight_scale).add_(bias_shift)
 
         # Update buffers
         self.mu.copy_(new_mu)
@@ -118,15 +109,10 @@ class PopArtIQNLayer(nn.Module):
 
     def normalize(self, x):
         """Normalizes values using the current statistics."""
-        # Broadcast logic
-        if x.ndim == 3:
-            return (x - self.mu.view(1, 1, -1)) / self.sigma.view(1, 1, -1)
         return (x - self.mu) / self.sigma
 
     def unnormalize(self, x_norm):
         """Unnormalizes values using the current statistics."""
-        if x_norm.ndim == 3:
-            return x_norm * self.sigma.view(1, 1, -1) + self.mu.view(1, 1, -1)
         return x_norm * self.sigma + self.mu
 
 
