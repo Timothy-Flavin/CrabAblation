@@ -5,6 +5,7 @@ import torch.nn as nn
 class PopArtDuelingHead(nn.Module):
 
     mu: torch.Tensor
+    nu: torch.Tensor
     sigma: torch.Tensor
 
     def __init__(self, input_features, action_dim, beta=0.0005):
@@ -19,6 +20,7 @@ class PopArtDuelingHead(nn.Module):
 
         # PopArt Statistics (Shared across the whole Q-function)
         self.register_buffer("mu", torch.zeros(1))
+        self.register_buffer("nu", torch.ones(1))  # E[x^2]
         self.register_buffer("sigma", torch.ones(1))
 
     def forward(self, x, normalize=False):
@@ -45,13 +47,17 @@ class PopArtDuelingHead(nn.Module):
         old_sigma = self.sigma.clone()
 
         batch_mean = torch.mean(target_q_unnormalized)
-        batch_std = torch.std(target_q_unnormalized)
+        batch_sq_mean = torch.mean(target_q_unnormalized**2)
 
         new_mu = (1 - self.beta) * old_mu + self.beta * batch_mean
-        new_sigma = (1 - self.beta) * old_sigma + self.beta * batch_std
+        new_nu = (1 - self.beta) * self.nu + self.beta * batch_sq_mean
+
+        # Calculate new sigma = sqrt(E[x^2] - E[x]^2)
+        new_sigma = torch.sqrt(torch.clamp(new_nu - new_mu**2, min=1e-4**2))
         new_sigma = torch.clamp(new_sigma, min=1e-4, max=1e6)
 
         self.mu.copy_(new_mu)
+        self.nu.copy_(new_nu)
         self.sigma.copy_(new_sigma)
 
         # --- 2. Update Weights (The Dueling Logic) ---
