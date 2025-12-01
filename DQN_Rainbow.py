@@ -303,7 +303,7 @@ class RainbowDQN:
                     rnd_errors.detach().to(dtype=torch.float64)
                 )
                 r_int = norm_int.to(dtype=torch.float32)
-                r_int = r_int.clamp(-10.0, 10.0)
+                r_int = r_int.clamp(-5.0, 5.0)
 
         # Combine rewards for extrinsic head
 
