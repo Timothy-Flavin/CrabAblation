@@ -1,177 +1,8 @@
 import torch
-import torch.nn as nn
 import random
-from typing import Optional
 from torch.utils.tensorboard import SummaryWriter
 from RandomDistilation import RNDModel, RunningMeanStd
-from PopArtLayer import PopArtLayer
-from PopArtDuelingLayer import PopArtDuelingHead
-from PopArtIQNLayer import PopArtIQNLayer
-from PopArtDuelingIQNLayer import PopArtDuelingIQNLayer
-
-
-class EV_Q_Network(nn.Module):
-    """Single-valued (non-distributional) multi-dimensional Q network with optional dueling.
-
-    Outputs Q-values per action dimension and per bin: [B, D, Bins].
-    Dueling implemented by producing a single value head plus an advantage head of size D*Bins,
-    which is reshaped and mean-subtracted across all (D*Bins) entries.
-    """
-
-    def __init__(
-        self,
-        input_dim: int,
-        n_action_dims: int,
-        n_action_bins: int,
-        hidden_layer_sizes=[128, 128],
-        dueling: bool = False,
-        popart: bool = False,
-    ):
-        super().__init__()
-        self.dueling = dueling
-        self.popart = popart
-        self.n_action_dims = n_action_dims
-        self.n_action_bins = n_action_bins
-        self.n_actions_total = n_action_dims * n_action_bins  # legacy convenience
-        layers = [nn.Linear(input_dim, hidden_layer_sizes[0])]
-        for li in range(len(hidden_layer_sizes) - 1):
-            layers.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
-        self.layers = nn.ModuleList(layers)
-        self.relu = nn.ReLU()
-        last_hidden = hidden_layer_sizes[-1]
-        if self.dueling:
-            if self.popart:
-                self.output_layer = PopArtDuelingHead(last_hidden, self.n_actions_total)
-            else:
-                self.value_layer = nn.Linear(last_hidden, 1)
-                self.advantage_layer = nn.Linear(last_hidden, self.n_actions_total)
-        else:
-            if self.popart:
-                self.output_layer = PopArtLayer(last_hidden, self.n_actions_total)
-            else:
-                self.out_layer = nn.Linear(last_hidden, self.n_actions_total)
-
-    def forward(self, x: torch.Tensor, normalized: bool = False) -> torch.Tensor:
-        h = x
-        for layer in self.layers:
-            h = self.relu(layer(h))
-
-        if self.popart:
-            out = self.output_layer(h, normalized=normalized)
-            if h.ndim == 1:
-                return out.view(self.n_action_dims, self.n_action_bins)
-            return out.view(h.shape[0], self.n_action_dims, self.n_action_bins)
-
-        if not self.dueling:
-            out = self.out_layer(h)
-            if h.ndim == 1:
-                return out.view(self.n_action_dims, self.n_action_bins)
-            return out.view(h.shape[0], self.n_action_dims, self.n_action_bins)
-        if h.ndim == 1:
-            v = self.value_layer(h).view(1)  # scalar value
-            a = self.advantage_layer(h).view(self.n_action_dims, self.n_action_bins)
-            a_mean = a.mean()
-            q = a - a_mean + v
-            return q
-        bsz = h.shape[0]
-        v = self.value_layer(h).view(bsz, 1, 1)
-        a = self.advantage_layer(h).view(bsz, self.n_action_dims, self.n_action_bins)
-        a_mean = a.mean(dim=(1, 2), keepdim=True)
-        q = a - a_mean + v
-        return q
-
-    def expected_value(self, x: torch.Tensor, probs: bool = False):
-        # For EV network, expected value per dimension/bin is x itself.
-        return x
-
-
-class IQN_Network(nn.Module):
-    """Implicit Quantile Network supporting multi-dimensional discrete actions.
-
-    Output shape: [B, Nq, D, Bins].
-    Dueling implemented similarly to EV_Q_Network using a shared advantage head sized D*Bins.
-    """
-
-    def __init__(
-        self,
-        input_dim: int,
-        n_action_dims: int,
-        n_action_bins: int,
-        hidden_layer_sizes=[128, 128],
-        n_cosines: int = 64,
-        dueling: bool = False,
-        popart: bool = False,
-    ):
-        super().__init__()
-        self.dueling = dueling
-        self.popart = popart
-        self.n_action_dims = n_action_dims
-        self.n_action_bins = n_action_bins
-        self.n_actions_total = n_action_dims * n_action_bins
-        self.n_cosines = n_cosines
-        base = [nn.Linear(input_dim, hidden_layer_sizes[0])]
-        for li in range(len(hidden_layer_sizes) - 1):
-            base.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
-        self.base_layers = nn.ModuleList(base)
-        self.relu = nn.ReLU()
-        last_hidden = hidden_layer_sizes[-1]
-        self.cosine_layer = nn.Linear(n_cosines, last_hidden)
-        if dueling:
-            if self.popart:
-                self.output_layer = PopArtDuelingIQNLayer(
-                    last_hidden, n_action_dims, n_action_bins
-                )
-            else:
-                self.value_head = nn.Linear(last_hidden, 1)
-                self.adv_head = nn.Linear(last_hidden, self.n_actions_total)
-        else:
-            if self.popart:
-                self.output_layer = PopArtIQNLayer(last_hidden, self.n_actions_total)
-            else:
-                self.out_head = nn.Linear(last_hidden, self.n_actions_total)
-
-    def _phi(self, tau: torch.Tensor) -> torch.Tensor:
-        i = torch.arange(self.n_cosines, device=tau.device, dtype=tau.dtype).view(
-            1, 1, -1
-        )
-        cosines = torch.cos(i * torch.pi * tau.unsqueeze(-1))
-        emb = self.relu(self.cosine_layer(cosines))  # [B,N,H]
-        return emb
-
-    def forward(
-        self, x: torch.Tensor, tau: torch.Tensor, normalized: bool = False
-    ) -> torch.Tensor:
-        h = x
-        for layer in self.base_layers:
-            h = self.relu(layer(h))  # [B,H]
-        h = h.unsqueeze(1)  # [B,1,H]
-        tau_emb = self._phi(tau)  # [B,N,H]
-        h = h * tau_emb  # [B,N,H]
-
-        if self.popart:
-            out = self.output_layer(h, normalized=normalized)
-            if self.dueling:
-                return out
-            else:
-                return out.view(
-                    out.shape[0], out.shape[1], self.n_action_dims, self.n_action_bins
-                )
-
-        if not self.dueling:
-            out = self.out_head(h)  # [B,N,D*Bins]
-            return out.view(
-                out.shape[0], out.shape[1], self.n_action_dims, self.n_action_bins
-            )
-        v = self.value_head(h)  # [B,N,1]
-        a = self.adv_head(h)  # [B,N,D*Bins]
-        a = a.view(a.shape[0], a.shape[1], self.n_action_dims, self.n_action_bins)
-        a_mean = a.mean(dim=(2, 3), keepdim=True)
-        q = a - a_mean + v.unsqueeze(-1)  # broadcast v
-        return q  # [B,N,D,Bins]
-
-    def expected_value(self, quantiles: torch.Tensor) -> torch.Tensor:
-        # Mean over quantile dimension -> [B,D,Bins]
-        return quantiles.mean(dim=1)
+from RainbowNetworks import EV_Q_Network, IQN_Network
 
 
 class RainbowDQN:
@@ -320,9 +151,13 @@ class RainbowDQN:
         loss = (torch.abs(taus_expanded - I) * huber).mean()
         return loss
 
-    def update(self, obs, a, r, next_obs, term, batch_size, step=0):
+    def update(self, obs, a, r, next_obs, term, batch_size=None, step=0):
         # Sample a random minibatch
-        idx = torch.randint(low=0, high=step, size=(batch_size,))
+        if batch_size is None:
+            idx = torch.arange(0, len(r))
+            batch_size = len(r)
+        else:
+            idx = torch.randint(low=0, high=step, size=(batch_size,))
         b_obs = obs[idx]
         b_r = r[idx]
         b_next_obs = next_obs[idx]
@@ -406,7 +241,7 @@ class RainbowDQN:
 
             # Munchausen augmentation on reward
             r_aug = b_r_total
-            logpi_a = 0
+            logpi_a = torch.zeros(1)
             if self.munchausen:
                 ev_hist = q_eval.mean(dim=1)  # [B,D,Bins]
                 logpi_hist = torch.log_softmax(ev_hist / self.tau, dim=-1)
@@ -749,10 +584,14 @@ class EVRainbowDQN:
         ent = -(pi * logpi).sum(dim=-1)  # [B]
         return pi, logpi, ent
 
-    def update(self, obs, a, r, next_obs, term, batch_size, step=0):
+    def update(self, obs, a, r, next_obs, term, batch_size=None, step=0):
 
         # Get Batch items
-        idx = torch.randint(low=0, high=step, size=(batch_size,))
+        if batch_size is None:
+            idx = torch.arange(0, len(r))
+            batch_size = len(r)
+        else:
+            idx = torch.randint(low=0, high=step, size=(batch_size,))
         b_obs = obs[idx]
         b_r = r[idx]
         b_next_obs = next_obs[idx]
@@ -956,174 +795,3 @@ class EVRainbowDQN:
                     0, self.n_action_bins, (self.n_action_dims,)
                 ).tolist()
             return torch.argmax(q_comb, dim=-1).tolist()
-
-
-if __name__ == "__main__":
-    import itertools
-
-    print("Starting Integration Tests for RainbowDQN and EVRainbowDQN...")
-
-    # Hyperparameters
-    OBS_DIM = 16
-    ACTION_BINS = 4
-    HIDDEN_LAYER_SIZES = [128, 128]
-
-    # Grid Search Parameters
-    SOFT_AND_MUNCHAUSEN = [[True, True], [False, False]]
-    DUELING = [True, False]
-    POPART = [True, False]
-    BETA = [0.0, 0.2]
-    D_ACTION_DIMS = [1, 3]
-
-    # Data Generation
-    buffer_size = 100
-    batch_size = 32
-    torch.manual_seed(42)
-    # torch.autograd.set_detect_anomaly(True) # Optional for debugging
-
-    single_obs = torch.rand(size=[OBS_DIM])
-
-    # Create "Replay Buffer"
-    buffer_obs = torch.rand(size=[buffer_size, OBS_DIM])
-    buffer_next_obs = torch.rand(size=[buffer_size, OBS_DIM])
-    buffer_rewards = torch.randn(size=[buffer_size]) * 5.0 + 2.0
-    buffer_terminated = torch.randint(0, 2, [buffer_size])
-
-    # Actions for D=1 and D=3
-    buffer_actions_1 = torch.randint(0, ACTION_BINS, [buffer_size])
-    buffer_actions_3 = torch.randint(0, ACTION_BINS, [buffer_size, 3])
-
-    # Iterate over models
-    models_to_test = [RainbowDQN, EVRainbowDQN]
-
-    total_tests = (
-        len(models_to_test)
-        * len(SOFT_AND_MUNCHAUSEN)
-        * len(DUELING)
-        * len(POPART)
-        * len(BETA)
-        * len(D_ACTION_DIMS)
-    )
-    current_test = 0
-    n_extrinsic_tests = 0
-    n_extrinsic_run = 0
-    n_extrinsic_passed = 0
-
-    n_rnd_tests = 0
-    n_rnd_run = 0
-    n_rnd_pass = 0
-    for ModelClass in models_to_test:
-        print(f"\n{'='*20} Testing {ModelClass.__name__} {'='*20}")
-
-        # Grid Search
-        combinations = itertools.product(
-            SOFT_AND_MUNCHAUSEN, DUELING, POPART, BETA, D_ACTION_DIMS
-        )
-
-        for sm, dueling, popart, beta, d_dim in combinations:
-            current_test += 1
-            soft, munchausen = sm
-
-            print(
-                f"\nTest {current_test}/{total_tests}: Soft={soft}, Munch={munchausen}, Dueling={dueling}, PopArt={popart}, Beta={beta}, D_Dim={d_dim}"
-            )
-
-            # Initialize Model
-            try:
-                agent = ModelClass(
-                    input_dim=OBS_DIM,
-                    n_action_dims=d_dim,
-                    n_action_bins=ACTION_BINS,
-                    hidden_layer_sizes=HIDDEN_LAYER_SIZES,
-                    soft=soft,
-                    munchausen=munchausen,
-                    dueling=dueling,
-                    popart=popart,
-                    Beta=beta,
-                    rnd_lr=1e-2,  # Higher LR to see RND convergence faster
-                    intrinsic_lr=1e-3,
-                )
-                # Pre-warm running stats to avoid non-stationary input distribution for RND
-                # This prevents the RND loss from spiking due to shifting normalization statistics
-                agent.update_running_stats(buffer_obs)
-            except Exception as e:
-                print(f"FAILED to initialize model: {e}")
-                raise e
-
-            # 1. Test sample_action
-            try:
-                action = agent.sample_action(single_obs, eps=0.1, step=0)
-                assert (
-                    len(action) == d_dim
-                ), f"Sampled action dim mismatch. Expected {d_dim}, got {len(action)}"
-            except Exception as e:
-                print(f"FAILED in sample_action: {e}")
-                raise e
-
-            # 2. Test update loop (10 steps)
-            actions = buffer_actions_1 if d_dim == 1 else buffer_actions_3
-
-            initial_rnd_loss = None
-            initial_sigma = None
-
-            # Get initial sigma if popart
-            if popart:
-                if hasattr(agent.online, "output_layer"):
-                    layer = agent.online.output_layer
-                    initial_sigma = layer.sigma.mean().item()
-            n_extrinsic_run += 1
-            if beta > 0:
-                n_rnd_run += 1
-            try:
-                initial_ext_loss = 0
-                loss = torch.zeros(1)
-                for step in range(50):
-                    # Pass step=buffer_size to allow sampling from the full buffer
-                    loss = agent.update(
-                        buffer_obs,
-                        actions,
-                        buffer_rewards,
-                        buffer_next_obs,
-                        buffer_terminated,
-                        batch_size,
-                        step=buffer_size,
-                    )
-                    if step == 0:
-                        print(f"Initial Extrinsic loss: {loss:.4f}")
-                    # Update running stats (usually done in runner, but needed for RND/PopArt to see shifts)
-                    # We use a random batch from the buffer for this simulation
-                    idx = torch.randint(0, buffer_size, (batch_size,))
-                    agent.update_running_stats(buffer_next_obs[idx])
-
-                    if step == 0:
-                        initial_rnd_loss = agent.last_losses.get("rnd", 0.0)
-                        initial_ext_loss = loss
-                # Post-loop checks
-                print(f"  Final Extrinsic Loss: {loss:.4f}")
-                if loss < initial_ext_loss:
-                    n_extrinsic_passed += 1
-                # Check RND
-                if beta > 0:
-                    final_rnd = agent.last_losses.get("rnd", 0.0)
-                    print(f"  RND Loss: {initial_rnd_loss:.4f} -> {final_rnd:.4f}")
-                    if initial_rnd_loss > final_rnd:
-                        n_rnd_pass += 1
-                # Check PopArt
-                if popart:
-                    layer = agent.online.output_layer
-                    final_sigma = layer.sigma.mean().item()
-                    print(f"  PopArt Sigma: {initial_sigma:.4f} -> {final_sigma:.4f}")
-
-                    # Check if sigma updated (it starts at 1.0)
-                    if abs(final_sigma - 1.0) < 1e-6:
-                        print("  WARNING: PopArt sigma did not change from 1.0!")
-                    else:
-                        print("  PopArt sigma updated successfully.")
-
-            except Exception as e:
-                print(f"FAILED in update loop: {e}")
-                raise e
-    print(
-        f"Extrinsic experiments tried: {n_extrinsic_run} run: {n_extrinsic_run} passed: {n_extrinsic_passed}"
-    )
-    print(f"RND experiments tried: {n_rnd_tests} run: {n_rnd_run} passed: {n_rnd_pass}")
