@@ -36,6 +36,7 @@ class RainbowDQN:
         rnd_lr: float = 1e-3,
         intrinsic_lr: float = 1e-3,
         int_r_clamp: float = 5.0,
+        ext_r_clamp: float = 5.0,
         Beta_half_life_steps: Optional[int] = None,
         norm_obs: bool = True,
         burn_in_updates: int = 0,
@@ -78,6 +79,7 @@ class RainbowDQN:
         self.burn_in_updates = burn_in_updates
         self.norm_obs = norm_obs
         self.int_r_clamp = int_r_clamp
+        self.ext_r_clamp = ext_r_clamp
         self.alpha = alpha
         self.tau = tau
         self.polyak_tau = polyak_tau
@@ -112,6 +114,7 @@ class RainbowDQN:
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
         # Scalar running stats for intrinsic reward
         self.int_rms = RunningMeanStd(shape=())
+        self.ext_rms = RunningMeanStd(shape=())
         # Optional TensorBoard writer
         self.tb_writer = None
         self.tb_prefix = "agent"
@@ -168,6 +171,8 @@ class RainbowDQN:
         return loss
 
     def update(self, obs, a, r, next_obs, term, batch_size=None, step=0):
+        self.update_running_stats(next_obs, r)
+        r = self.ext_rms.normalize(r, clip_range=self.ext_r_clamp)
         # Sample a random minibatch
         if batch_size is None:
             idx = torch.arange(0, len(r))
@@ -241,7 +246,7 @@ class RainbowDQN:
         return extrinsic_loss.item()
 
     @torch.no_grad()
-    def update_running_stats(self, next_obs: torch.Tensor):
+    def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
         """Update observation and intrinsic reward running stats with a single environment step.
 
         This does not train any networks; it only updates the normalizers so that
@@ -257,6 +262,7 @@ class RainbowDQN:
             norm_x64 = norm_x64.unsqueeze(0)
         rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
+        self.ext_rms.update(r.to(dtype=torch.float64))
 
     def sample_action(
         self,
@@ -347,18 +353,23 @@ class RainbowDQN:
         b_r_final = b_r
         device = b_obs.device
         taus = self._sample_taus(batch_size, self.n_quantiles, device)
-        quantiles = self.ext_online(b_obs, taus)  # [B,N,D,Bins]
+
         with torch.no_grad():
             target_taus = self._sample_taus(batch_size, self.n_target_quantiles, device)
-            target_quantiles_all = (
-                self.ext_target if self.delayed_target else self.ext_online
-            )(
-                b_next_obs, target_taus
-            )  # [B,Nt,D,Bins]
-            online_next_q = self.ext_online(b_next_obs, taus).mean(dim=1)  # [B,D,Bins]
+            # [B,Nt,D,Bins]
+            t_net = self.ext_target if self.delayed_target else self.ext_online
+            target_quantiles_all = t_net.forward(
+                b_next_obs, target_taus, normalized=False
+            )
+
+            online_next_q_norm = self.ext_online.forward(
+                b_next_obs, taus, normalized=True
+            ).mean(
+                dim=1
+            )  # [B,D,Bins]
             if self.soft or self.munchausen:
                 # Soft reward for future policy entropy
-                logpi_next = torch.log_softmax(online_next_q / self.tau, dim=-1)
+                logpi_next = torch.log_softmax(online_next_q_norm / self.tau, dim=-1)
                 pi_next = torch.exp(logpi_next)  # [B,D,Bins]
                 ent_bonus_per_dim = -(pi_next * logpi_next).sum(dim=-1)  # [B,D]
                 ent_bonus = ent_bonus_per_dim.sum(dim=-1).unsqueeze(1)  # [B,1]
@@ -372,15 +383,10 @@ class RainbowDQN:
 
             else:
                 # Simplified target selection: directly take max over bins per dimension
-                # (drops Double-DQN style online selection; slight increase in overestimation bias).
-                # target_quantiles_all: [B,Nt,D,Bins] -> max over bins gives [B,Nt,D]
-                # ... inside _rl_update_extrinsic ...
                 # 1. Calculate Mean Q-values for selection (average over quantiles/tau dim 1)
                 # shape: [B, D, Bins]
                 # Double DQN Logic: Use Online Network for selection
-                online_next_quantiles = self.ext_online(b_next_obs, taus)
-                online_next_q = online_next_quantiles.mean(dim=1)  # [B, D, Bins]
-                target_actions = online_next_q.argmax(dim=-1)  # [B, D]
+                target_actions = online_next_q_norm.argmax(dim=-1)  # [B, D]
 
                 # 3. Gather the quantiles corresponding to the best action
                 # Expand indices to match target_quantiles_all shape: [B, Nt, D, 1]
@@ -408,10 +414,13 @@ class RainbowDQN:
 
             # Do entropy loss and cache pi/logpi
             pi, logpi = None, None
+            quantiles_norm = self.ext_online.forward(
+                b_obs, taus, normalized=True
+            )  # [B,N,D,Bins]
             e_loss = 0.0
             if self.ent_reg_coef > 0.0:
                 # Policy over actions from expected values (mean quantiles)
-                qm = quantiles.mean(dim=1)
+                qm = quantiles_norm.mean(dim=1)
                 logpi = torch.log_softmax(qm / self.tau, dim=-1)
                 pi = torch.exp(logpi)  # [B,D,Bins]
                 entropy_per_dim = -(pi * logpi).sum(dim=-1)  # [B,D]
@@ -421,7 +430,7 @@ class RainbowDQN:
             m_r = 0
             if self.munchausen or self.soft:
                 if logpi is None:
-                    qm = quantiles.mean(dim=1)
+                    qm = quantiles_norm.mean(dim=1)
                     logpi = torch.log_softmax(qm / self.tau, dim=-1)
 
                 if self.munchausen:
@@ -442,7 +451,15 @@ class RainbowDQN:
             ) * self.gamma * (mixed_target + ent_bonus)
             # [B,Nt]
 
+            # Popart happens before loss step to rescale properly
+            if self.popart:
+                self.ext_online.output_layer.update_stats(target_values)
+                target_values = self.ext_online.output_layer.normalize(target_values)
+
         # Gather predicted quantiles for taken actions
+        quantiles = self.ext_online.forward(
+            b_obs, taus, normalized=True
+        )  # [B,N,D,Bins]
         # Gather predicted quantiles per dimension and aggregate
         gather_index_pred = (
             b_actions_view.unsqueeze(1)
@@ -566,8 +583,12 @@ class EVRainbowDQN:
         intrinsic_lr: float = 1e-3,
         norm_obs: bool = True,
         burn_in_updates: int = 0,
+        int_r_clip=5,
+        ext_r_clip=5,
     ):
         self.popart = popart
+        self.int_r_clip = int_r_clip
+        self.ext_r_clip = ext_r_clip
         self.ext_online = EV_Q_Network(
             input_dim,
             n_action_dims,
@@ -631,6 +652,7 @@ class EVRainbowDQN:
         self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
         self.int_rms = RunningMeanStd(shape=())
+        self.ext_rms = RunningMeanStd(shape=())
         self.tb_writer = None
         self.tb_prefix = "agent"
 
@@ -659,7 +681,8 @@ class EVRainbowDQN:
         return pi, logpi, ent
 
     def update(self, obs, a, r, next_obs, term, batch_size, step=0):
-
+        self.update_running_stats(next_obs, r)
+        r = self.ext_rms.normalize(r, self.ext_r_clip).to(dtype=torch.float32)
         # Get Batch items
         if batch_size is None:
             idx = torch.arange(0, len(r))
@@ -818,7 +841,7 @@ class EVRainbowDQN:
         return float(extrinsic_loss.item())
 
     @torch.no_grad()
-    def update_running_stats(self, next_obs: torch.Tensor):
+    def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
         x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
         self.obs_rms.update(x64)
         if self.norm_obs:
@@ -829,6 +852,7 @@ class EVRainbowDQN:
             norm_x64 = norm_x64.unsqueeze(0)
         rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
+        self.ext_rms.update(r.to(dtype=torch.float64))
 
     def sample_action(
         self,
