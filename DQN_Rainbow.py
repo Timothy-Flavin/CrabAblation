@@ -359,8 +359,13 @@ class RainbowDQN:
         # 2) IQN forward passes
         device = b_obs.device
         taus = self._sample_taus(batch_size, self.n_quantiles, device)
-        quantiles = self.online(b_obs, taus, normalized=self.popart)  # [B,N,D,Bins]
+
+        # A. Evaluation / Target Calculation (No Grad)
         with torch.no_grad():
+            # Get unnormalized Qs for action selection / Munchausen
+            # Note: We use the same taus for consistency, though resampling is also valid IQN
+            q_eval = self.online(b_obs, taus, normalized=False)  # [B,N,D,Bins]
+
             target_taus = self._sample_taus(batch_size, self.n_target_quantiles, device)
             target_quantiles_all = (
                 self.target if self.delayed_target else self.online
@@ -403,7 +408,7 @@ class RainbowDQN:
             r_aug = b_r_total
             logpi_a = 0
             if self.munchausen:
-                ev_hist = quantiles.mean(dim=1)  # [B,D,Bins]
+                ev_hist = q_eval.mean(dim=1)  # [B,D,Bins]
                 logpi_hist = torch.log_softmax(ev_hist / self.tau, dim=-1)
                 # b_actions shape [B,D]
                 if b_actions.ndim == 1:
@@ -428,6 +433,10 @@ class RainbowDQN:
             if self.popart:
                 self.online.output_layer.update_stats(target_values)
                 target_values = self.online.output_layer.normalize(target_values)
+
+        # B. Training Forward Pass (Grad)
+        # Now we run forward pass with updated weights
+        quantiles = self.online(b_obs, taus, normalized=self.popart)  # [B,N,D,Bins]
 
         # Gather predicted quantiles for taken actions
         # Gather predicted quantiles per dimension and aggregate
@@ -456,6 +465,13 @@ class RainbowDQN:
         if self.ent_reg_coef > 0.0:
             # Policy over actions from expected values (mean quantiles)
             ev_all = quantiles.mean(dim=1)  # [B,D,Bins]
+            # If popart is on, ev_all is normalized. We should unnormalize for policy entropy?
+            if self.popart:
+                # Reconstruct unnormalized Qs for entropy calculation
+                sigma = self.online.output_layer.sigma
+                mu = self.online.output_layer.mu
+                ev_all = ev_all * sigma + mu
+
             pi = torch.softmax(ev_all / self.tau, dim=-1)
             logpi = torch.log_softmax(ev_all / self.tau, dim=-1)
             entropy_per_dim = -(pi * logpi).sum(dim=-1)  # [B,D]
@@ -763,39 +779,30 @@ class EVRainbowDQN:
                 r_int = norm_int.to(dtype=torch.float32)
         b_r_total = b_r + self.Beta * r_int
 
-        # Current and next Q-values
-        q_now = self.online(b_obs, normalized=self.popart)  # [B,D,Bins]
-        logpi_now = None
-        pi_now = None
-        entropy_loss = 0
-
-        # Grab entropy loss here if we need to so that we can reuse
-        # logpi and pi or calculate then later without grad if ent
-        # reg is not being used
-        if self.ent_reg_coef > 0.0:
-            logpi_now = torch.log_softmax(q_now / self.tau, dim=-1)
-            pi_now = torch.exp(logpi_now)
-            entropy_loss = -torch.sum(pi_now * logpi_now, dim=-1).mean()
-
+        # A. Evaluation / Target Calculation (No Grad)
         with torch.no_grad():
+            # Get unnormalized Qs for action selection / Munchausen
+            q_eval = self.online(b_obs, normalized=False)  # [B,D,Bins]
+
             if b_actions.ndim == 1:
                 b_act_view = b_actions.view(-1, 1)
             else:
                 b_act_view = b_actions  # [B,D]
             action_idx_now = b_act_view.unsqueeze(-1)
-            # q_next_online = self.online(b_next_obs)  # [B,D,Bins]
+
             q_next = (self.target if self.delayed_target else self.online)(
                 b_next_obs, normalized=False
             )  # [B,D,Bins]
-            if self.munchausen:
-                # only need this right now for ln(pi(a)) for munchausen loss
-                if logpi_now is None:
-                    logpi_now = torch.log_softmax(q_now / self.tau, dim=-1)
 
-                logpi_now = torch.gather(logpi_now, -1, action_idx_now).squeeze(
+            if self.munchausen:
+                # Calculate logpi from q_eval (unnormalized)
+                logpi_eval = torch.log_softmax(q_eval / self.tau, dim=-1)
+                logpi_eval_selected = torch.gather(
+                    logpi_eval, -1, action_idx_now
+                ).squeeze(
                     -1
                 )  # [B,D]
-                r_kl = torch.clamp(logpi_now, min=self.l_clip)
+                r_kl = torch.clamp(logpi_eval_selected, min=self.l_clip)
                 if r_kl.ndim > 1:
                     r_kl = r_kl.sum(-1)
                 b_r_total += self.alpha * self.tau * r_kl
@@ -817,6 +824,22 @@ class EVRainbowDQN:
             if self.popart:
                 self.online.output_layer.update_stats(td_target)
                 td_target = self.online.output_layer.normalize(td_target)
+
+        # B. Training Forward Pass (Grad)
+        q_now = self.online(b_obs, normalized=self.popart)  # [B,D,Bins]
+
+        entropy_loss = 0
+        if self.ent_reg_coef > 0.0:
+            # Unnormalize if needed for entropy
+            q_for_ent = q_now
+            if self.popart:
+                sigma = self.online.output_layer.sigma
+                mu = self.online.output_layer.mu
+                q_for_ent = q_now * sigma + mu
+
+            logpi_now = torch.log_softmax(q_for_ent / self.tau, dim=-1)
+            pi_now = torch.exp(logpi_now)
+            entropy_loss = -torch.sum(pi_now * logpi_now, dim=-1).mean()
 
         q_selected = torch.gather(q_now, -1, action_idx_now).squeeze(
             -1
@@ -933,3 +956,174 @@ class EVRainbowDQN:
                     0, self.n_action_bins, (self.n_action_dims,)
                 ).tolist()
             return torch.argmax(q_comb, dim=-1).tolist()
+
+
+if __name__ == "__main__":
+    import itertools
+
+    print("Starting Integration Tests for RainbowDQN and EVRainbowDQN...")
+
+    # Hyperparameters
+    OBS_DIM = 16
+    ACTION_BINS = 4
+    HIDDEN_LAYER_SIZES = [128, 128]
+
+    # Grid Search Parameters
+    SOFT_AND_MUNCHAUSEN = [[True, True], [False, False]]
+    DUELING = [True, False]
+    POPART = [True, False]
+    BETA = [0.0, 0.2]
+    D_ACTION_DIMS = [1, 3]
+
+    # Data Generation
+    buffer_size = 100
+    batch_size = 32
+    torch.manual_seed(42)
+    # torch.autograd.set_detect_anomaly(True) # Optional for debugging
+
+    single_obs = torch.rand(size=[OBS_DIM])
+
+    # Create "Replay Buffer"
+    buffer_obs = torch.rand(size=[buffer_size, OBS_DIM])
+    buffer_next_obs = torch.rand(size=[buffer_size, OBS_DIM])
+    buffer_rewards = torch.randn(size=[buffer_size]) * 5.0 + 2.0
+    buffer_terminated = torch.randint(0, 2, [buffer_size])
+
+    # Actions for D=1 and D=3
+    buffer_actions_1 = torch.randint(0, ACTION_BINS, [buffer_size])
+    buffer_actions_3 = torch.randint(0, ACTION_BINS, [buffer_size, 3])
+
+    # Iterate over models
+    models_to_test = [RainbowDQN, EVRainbowDQN]
+
+    total_tests = (
+        len(models_to_test)
+        * len(SOFT_AND_MUNCHAUSEN)
+        * len(DUELING)
+        * len(POPART)
+        * len(BETA)
+        * len(D_ACTION_DIMS)
+    )
+    current_test = 0
+    n_extrinsic_tests = 0
+    n_extrinsic_run = 0
+    n_extrinsic_passed = 0
+
+    n_rnd_tests = 0
+    n_rnd_run = 0
+    n_rnd_pass = 0
+    for ModelClass in models_to_test:
+        print(f"\n{'='*20} Testing {ModelClass.__name__} {'='*20}")
+
+        # Grid Search
+        combinations = itertools.product(
+            SOFT_AND_MUNCHAUSEN, DUELING, POPART, BETA, D_ACTION_DIMS
+        )
+
+        for sm, dueling, popart, beta, d_dim in combinations:
+            current_test += 1
+            soft, munchausen = sm
+
+            print(
+                f"\nTest {current_test}/{total_tests}: Soft={soft}, Munch={munchausen}, Dueling={dueling}, PopArt={popart}, Beta={beta}, D_Dim={d_dim}"
+            )
+
+            # Initialize Model
+            try:
+                agent = ModelClass(
+                    input_dim=OBS_DIM,
+                    n_action_dims=d_dim,
+                    n_action_bins=ACTION_BINS,
+                    hidden_layer_sizes=HIDDEN_LAYER_SIZES,
+                    soft=soft,
+                    munchausen=munchausen,
+                    dueling=dueling,
+                    popart=popart,
+                    Beta=beta,
+                    rnd_lr=1e-2,  # Higher LR to see RND convergence faster
+                    intrinsic_lr=1e-3,
+                )
+                # Pre-warm running stats to avoid non-stationary input distribution for RND
+                # This prevents the RND loss from spiking due to shifting normalization statistics
+                agent.update_running_stats(buffer_obs)
+            except Exception as e:
+                print(f"FAILED to initialize model: {e}")
+                raise e
+
+            # 1. Test sample_action
+            try:
+                action = agent.sample_action(single_obs, eps=0.1, step=0)
+                assert (
+                    len(action) == d_dim
+                ), f"Sampled action dim mismatch. Expected {d_dim}, got {len(action)}"
+            except Exception as e:
+                print(f"FAILED in sample_action: {e}")
+                raise e
+
+            # 2. Test update loop (10 steps)
+            actions = buffer_actions_1 if d_dim == 1 else buffer_actions_3
+
+            initial_rnd_loss = None
+            initial_sigma = None
+
+            # Get initial sigma if popart
+            if popart:
+                if hasattr(agent.online, "output_layer"):
+                    layer = agent.online.output_layer
+                    initial_sigma = layer.sigma.mean().item()
+            n_extrinsic_run += 1
+            if beta > 0:
+                n_rnd_run += 1
+            try:
+                initial_ext_loss = 0
+                loss = torch.zeros(1)
+                for step in range(50):
+                    # Pass step=buffer_size to allow sampling from the full buffer
+                    loss = agent.update(
+                        buffer_obs,
+                        actions,
+                        buffer_rewards,
+                        buffer_next_obs,
+                        buffer_terminated,
+                        batch_size,
+                        step=buffer_size,
+                    )
+                    if step == 0:
+                        print(f"Initial Extrinsic loss: {loss:.4f}")
+                    # Update running stats (usually done in runner, but needed for RND/PopArt to see shifts)
+                    # We use a random batch from the buffer for this simulation
+                    idx = torch.randint(0, buffer_size, (batch_size,))
+                    agent.update_running_stats(buffer_next_obs[idx])
+
+                    if step == 0:
+                        initial_rnd_loss = agent.last_losses.get("rnd", 0.0)
+                        initial_ext_loss = loss
+                # Post-loop checks
+                print(f"  Final Extrinsic Loss: {loss:.4f}")
+                if loss < initial_ext_loss:
+                    n_extrinsic_passed += 1
+                # Check RND
+                if beta > 0:
+                    final_rnd = agent.last_losses.get("rnd", 0.0)
+                    print(f"  RND Loss: {initial_rnd_loss:.4f} -> {final_rnd:.4f}")
+                    if initial_rnd_loss > final_rnd:
+                        n_rnd_pass += 1
+                # Check PopArt
+                if popart:
+                    layer = agent.online.output_layer
+                    final_sigma = layer.sigma.mean().item()
+                    print(f"  PopArt Sigma: {initial_sigma:.4f} -> {final_sigma:.4f}")
+
+                    # Check if sigma updated (it starts at 1.0)
+                    if abs(final_sigma - 1.0) < 1e-6:
+                        print("  WARNING: PopArt sigma did not change from 1.0!")
+                    else:
+                        print("  PopArt sigma updated successfully.")
+
+            except Exception as e:
+                print(f"FAILED in update loop: {e}")
+                raise e
+    print(
+        f"Extrinsic experiments tried: {n_extrinsic_run} run: {n_extrinsic_run} passed: {n_extrinsic_passed}"
+    )
+    print(f"RND experiments tried: {n_rnd_tests} run: {n_rnd_run} passed: {n_rnd_pass}")

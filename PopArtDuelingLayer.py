@@ -23,7 +23,7 @@ class PopArtDuelingHead(nn.Module):
         self.register_buffer("nu", torch.ones(1))  # E[x^2]
         self.register_buffer("sigma", torch.ones(1))
 
-    def forward(self, x, normalize=False):
+    def forward(self, x, normalized=False):
         # 1. Forward pass through heads (Normalized Space)
         v_norm = self.fc_V(x)
         a_norm = self.fc_A(x)
@@ -32,7 +32,7 @@ class PopArtDuelingHead(nn.Module):
         # Q_norm = V_norm + (A_norm - mean(A_norm))
         q_norm = v_norm + (a_norm - a_norm.mean(dim=1, keepdim=True))
 
-        if normalize:
+        if normalized:
             return q_norm
 
         # 3. Denormalize on the fly for action selection / targets
