@@ -173,11 +173,11 @@ if __name__ == "__main__":
     rnd_lr = dqn.rnd_optim.param_groups[0]["lr"] if hasattr(dqn, "rnd_optim") else 1e-3
 
     # Move networks/RND and normalizers to device
-    if hasattr(dqn, "online"):
-        dqn.online.to(device)
-    if hasattr(dqn, "target"):
-        dqn.target.to(device)
-        dqn.target.requires_grad_(False)
+    if hasattr(dqn, "ext_online"):
+        dqn.ext_online.to(device)
+    if hasattr(dqn, "ext_target"):
+        dqn.ext_target.to(device)
+        dqn.ext_target.requires_grad_(False)
     if hasattr(dqn, "int_online"):
         dqn.int_online.to(device)
     if hasattr(dqn, "int_target"):
@@ -192,8 +192,8 @@ if __name__ == "__main__":
         dqn.int_rms.to(device)
 
     # Recreate optimizers on moved parameters
-    if hasattr(dqn, "online"):
-        dqn.optim = torch.optim.Adam(dqn.online.parameters(), lr=main_lr)
+    if hasattr(dqn, "ext_online"):
+        dqn.optim = torch.optim.Adam(dqn.ext_online.parameters(), lr=main_lr)
     if hasattr(dqn, "int_online"):
         dqn.int_optim = torch.optim.Adam(dqn.int_online.parameters(), lr=int_lr)
     if hasattr(dqn, "rnd"):
