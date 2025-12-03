@@ -1,136 +1,9 @@
 import torch
-import torch.nn as nn
 import random
 from typing import Optional
 from torch.utils.tensorboard import SummaryWriter
 from RandomDistilation import RNDModel, RunningMeanStd
-
-
-class EV_Q_Network(nn.Module):
-    """Single-valued (non-distributional) multi-dimensional Q network with optional dueling.
-
-    Outputs Q-values per action dimension and per bin: [B, D, Bins].
-    Dueling implemented by producing a single value head plus an advantage head of size D*Bins,
-    which is reshaped and mean-subtracted across all (D*Bins) entries.
-    """
-
-    def __init__(
-        self,
-        input_dim: int,
-        n_action_dims: int,
-        n_action_bins: int,
-        hidden_layer_sizes=[128, 128],
-        dueling: bool = False,
-    ):
-        super().__init__()
-        self.dueling = dueling
-        self.n_action_dims = n_action_dims
-        self.n_action_bins = n_action_bins
-        self.n_actions_total = n_action_dims * n_action_bins  # legacy convenience
-        layers = [nn.Linear(input_dim, hidden_layer_sizes[0])]
-        for li in range(len(hidden_layer_sizes) - 1):
-            layers.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
-        self.layers = nn.ModuleList(layers)
-        self.relu = nn.ReLU()
-        last_hidden = hidden_layer_sizes[-1]
-        if self.dueling:
-            self.value_layer = nn.Linear(last_hidden, 1)
-            self.advantage_layer = nn.Linear(last_hidden, self.n_actions_total)
-        else:
-            self.out_layer = nn.Linear(last_hidden, self.n_actions_total)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = x
-        for layer in self.layers:
-            h = self.relu(layer(h))
-        if not self.dueling:
-            out = self.out_layer(h)
-            if h.ndim == 1:
-                return out.view(self.n_action_dims, self.n_action_bins)
-            return out.view(h.shape[0], self.n_action_dims, self.n_action_bins)
-        if h.ndim == 1:
-            v = self.value_layer(h).view(1)  # scalar value
-            a = self.advantage_layer(h).view(self.n_action_dims, self.n_action_bins)
-            a_mean = a.mean()
-            q = a - a_mean + v
-            return q
-        bsz = h.shape[0]
-        v = self.value_layer(h).view(bsz, 1, 1)
-        a = self.advantage_layer(h).view(bsz, self.n_action_dims, self.n_action_bins)
-        a_mean = a.mean(dim=(1, 2), keepdim=True)
-        q = a - a_mean + v
-        return q
-
-    def expected_value(self, x: torch.Tensor, probs: bool = False):
-        # For EV network, expected value per dimension/bin is x itself.
-        return x
-
-
-class IQN_Network(nn.Module):
-    """Implicit Quantile Network supporting multi-dimensional discrete actions.
-
-    Output shape: [B, Nq, D, Bins].
-    Dueling implemented similarly to EV_Q_Network using a shared advantage head sized D*Bins.
-    """
-
-    def __init__(
-        self,
-        input_dim: int,
-        n_action_dims: int,
-        n_action_bins: int,
-        hidden_layer_sizes=[128, 128],
-        n_cosines: int = 64,
-        dueling: bool = False,
-    ):
-        super().__init__()
-        self.dueling = dueling
-        self.n_action_dims = n_action_dims
-        self.n_action_bins = n_action_bins
-        self.n_actions_total = n_action_dims * n_action_bins
-        self.n_cosines = n_cosines
-        base = [nn.Linear(input_dim, hidden_layer_sizes[0])]
-        for li in range(len(hidden_layer_sizes) - 1):
-            base.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
-        self.base_layers = nn.ModuleList(base)
-        self.relu = nn.ReLU()
-        last_hidden = hidden_layer_sizes[-1]
-        self.cosine_layer = nn.Linear(n_cosines, last_hidden)
-        if dueling:
-            self.value_head = nn.Linear(last_hidden, 1)
-            self.adv_head = nn.Linear(last_hidden, self.n_actions_total)
-        else:
-            self.out_head = nn.Linear(last_hidden, self.n_actions_total)
-
-    def _phi(self, tau: torch.Tensor) -> torch.Tensor:
-        i = torch.arange(self.n_cosines, device=tau.device, dtype=tau.dtype).view(
-            1, 1, -1
-        )
-        cosines = torch.cos(i * torch.pi * tau.unsqueeze(-1))
-        emb = self.relu(self.cosine_layer(cosines))  # [B,N,H]
-        return emb
-
-    def forward(self, x: torch.Tensor, tau: torch.Tensor) -> torch.Tensor:
-        h = x
-        for layer in self.base_layers:
-            h = self.relu(layer(h))  # [B,H]
-        h = h.unsqueeze(1)  # [B,1,H]
-        tau_emb = self._phi(tau)  # [B,N,H]
-        h = h * tau_emb  # [B,N,H]
-        if not self.dueling:
-            out = self.out_head(h)  # [B,N,D*Bins]
-            return out.view(
-                out.shape[0], out.shape[1], self.n_action_dims, self.n_action_bins
-            )
-        v = self.value_head(h)  # [B,N,1]
-        a = self.adv_head(h)  # [B,N,D*Bins]
-        a = a.view(a.shape[0], a.shape[1], self.n_action_dims, self.n_action_bins)
-        a_mean = a.mean(dim=(2, 3), keepdim=True)
-        q = a - a_mean + v.unsqueeze(-1)  # broadcast v
-        return q  # [B,N,D,Bins]
-
-    def expected_value(self, quantiles: torch.Tensor) -> torch.Tensor:
-        # Mean over quantile dimension -> [B,D,Bins]
-        return quantiles.mean(dim=1)
+from RainbowNetworks import EV_Q_Network, IQN_Network
 
 
 class RainbowDQN:
@@ -152,6 +25,7 @@ class RainbowDQN:
         munchausen: bool = False,
         Thompson: bool = False,
         dueling: bool = False,
+        popart: bool = False,
         Beta: float = 0.0,
         # Delayed target usage (pillar 5). If False, use online net as target.
         delayed: bool = True,
@@ -161,17 +35,20 @@ class RainbowDQN:
         rnd_output_dim: int = 128,
         rnd_lr: float = 1e-3,
         intrinsic_lr: float = 1e-3,
-        int_r_clamp: float = 10.0,
+        int_r_clamp: float = 5.0,
+        ext_r_clamp: float = 5.0,
         Beta_half_life_steps: Optional[int] = None,
         norm_obs: bool = True,
         burn_in_updates: int = 0,
     ):
+        self.popart = popart
         self.ext_online = IQN_Network(
             input_dim,
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.ext_target = IQN_Network(
             input_dim,
@@ -179,6 +56,7 @@ class RainbowDQN:
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         # Intrinsic Q networks (separate head trained on intrinsic rewards only)
         self.int_online = IQN_Network(
@@ -187,6 +65,7 @@ class RainbowDQN:
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.int_target = IQN_Network(
             input_dim,
@@ -194,11 +73,13 @@ class RainbowDQN:
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.beta_half_life_steps = Beta_half_life_steps
         self.burn_in_updates = burn_in_updates
         self.norm_obs = norm_obs
         self.int_r_clamp = int_r_clamp
+        self.ext_r_clamp = ext_r_clamp
         self.alpha = alpha
         self.tau = tau
         self.polyak_tau = polyak_tau
@@ -233,6 +114,7 @@ class RainbowDQN:
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
         # Scalar running stats for intrinsic reward
         self.int_rms = RunningMeanStd(shape=())
+        self.ext_rms = RunningMeanStd(shape=())
         # Optional TensorBoard writer
         self.tb_writer = None
         self.tb_prefix = "agent"
@@ -288,7 +170,144 @@ class RainbowDQN:
         loss = (torch.abs(taus_expanded - I) * huber).mean()
         return loss
 
-    def _update_RND(self, next_obs: torch.Tensor, batch_norm=False):
+    def update(self, obs, a, r, next_obs, term, batch_size=None, step=0):
+        self.update_running_stats(next_obs, r)
+        r = self.ext_rms.normalize(r, clip_range=self.ext_r_clamp)
+        # Sample a random minibatch
+        if batch_size is None:
+            idx = torch.arange(0, len(r))
+            batch_size = len(r)
+        else:
+            idx = torch.randint(low=0, high=step, size=(batch_size,))
+        b_next_obs = next_obs[idx]
+
+        self.step += 1
+        if self.step < self.burn_in_updates:
+            # During burn-in, do not train RL networks; only RND and running stats
+            rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=True)
+            return 0.0
+        else:
+            rnd_errors, rnd_loss = self._update_RND(b_next_obs)
+        b_obs = obs[idx]
+        b_r = r[idx]
+        b_term = term[idx]
+        b_actions = a[idx]
+
+        if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
+            # Exponentially decay Beta towards zero
+            self.Beta = self.start_Beta * (
+                0.5 ** (self.step / self.beta_half_life_steps)
+            )
+
+        b_r_int = self._int_reward(b_r, rnd_errors)
+        extrinsic_loss, munchausen_reward, entropy_loss = self._rl_update_extrinsic(
+            b_obs, b_actions, b_r, b_next_obs, b_term, batch_size
+        )
+        intrinsic_loss = torch.tensor(0.0)
+        if self.Beta > 0.0:
+            assert isinstance(b_r_int, torch.Tensor)
+            intrinsic_loss = self._rl_update_intrinsic(
+                b_obs, b_actions, b_r_int, b_next_obs, batch_size, b_term=b_term
+            )
+        if isinstance(entropy_loss, torch.Tensor):
+            entropy_loss = float(entropy_loss.item())
+        with torch.no_grad():
+            taus = self._sample_taus(b_obs.shape[0], self.n_quantiles, b_obs.device)
+            Q_ext = self.ext_online(b_obs, taus).mean(dim=1)
+            Q_int = self.int_online(b_obs, taus).mean(dim=1)
+        # Store last auxiliary losses for logging (optional)
+        self.last_losses = {
+            "extrinsic": float(extrinsic_loss.item()),
+            "intrinsic": float(intrinsic_loss.item()),
+            "rnd": float(rnd_loss.item()),
+            "entropy_reg": entropy_loss,
+            "abs_r_ext": float(b_r.abs().mean().item()),
+            "avg_r_int": (
+                b_r_int.mean().item() if isinstance(b_r_int, torch.Tensor) else 0.0
+            ),
+            "munchausen_r": float(munchausen_reward),
+            "Beta": float(self.Beta),
+            "Q_ext_mean": float(Q_ext.mean().item()),
+            "Q_int_mean": float(Q_int.mean().item()),
+            "last_eps": float(self.last_eps),
+        }
+
+        # Inline TensorBoard logging if writer attached
+        if self.tb_writer is not None:
+            try:
+                for k, v in self.last_losses.items():
+                    if isinstance(v, (int, float)):
+                        self.tb_writer.add_scalar(
+                            f"{self.tb_prefix}/{k}", float(v), self.step
+                        )
+            except Exception:
+                pass
+
+        return extrinsic_loss.item()
+
+    @torch.no_grad()
+    def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
+        """Update observation and intrinsic reward running stats with a single environment step.
+
+        This does not train any networks; it only updates the normalizers so that
+        later batch updates can use stable statistics.
+        """
+        # Update observation stats
+        x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
+        self.obs_rms.update(x64)
+        # Compute a single-step intrinsic error to update intrinsic RMS
+        norm_x64 = self.obs_rms.normalize(x64)
+        # Ensure batch dimension for RND
+        if norm_x64.ndim == 1:
+            norm_x64 = norm_x64.unsqueeze(0)
+        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
+        self.int_rms.update(rnd_err.to(dtype=torch.float64))
+        self.ext_rms.update(r.to(dtype=torch.float64))
+
+    def sample_action(
+        self,
+        obs: torch.Tensor,
+        eps: float,
+        step: int,
+        n_steps: int = 100000,
+        min_eps=0.01,
+    ):
+        """Return vector of length D with selected bin indices for each action dimension."""
+        r = random.random()
+        self.last_eps = eps
+        if r < min_eps or ((not (self.soft or self.munchausen)) and r < eps):
+            return torch.randint(0, self.n_action_bins, (self.n_action_dims,)).tolist()
+        with torch.no_grad():
+            obs_b = obs.unsqueeze(0) if obs.ndim == 1 else obs
+            taus = self._sample_taus(obs_b.shape[0], self.n_quantiles, obs_b.device)
+            ext_q = self.ext_online(obs_b, taus).mean(dim=1)  # [B,D,Bins]
+            if self.Beta > 0.0:
+                int_taus = self._sample_taus(
+                    obs_b.shape[0], self.n_quantiles, obs_b.device
+                )
+                int_q = self.int_online(obs_b, int_taus).mean(dim=1)  # [B,D,Bins]
+                q_comb = ext_q + self.Beta * int_q
+
+            else:
+                q_comb = ext_q
+            if self.Thompson:
+                g = -torch.log(-torch.log(torch.rand_like(q_comb)))
+                q_comb = q_comb + g
+            # eps_curr = 1 - step / n_steps
+
+            if self.soft or self.munchausen:
+                # Sample per dimension from softmax policy
+                actions = []
+                for d in range(self.n_action_dims):
+                    logits_d = q_comb[0, d] / self.tau
+                    dst = torch.distributions.Categorical(logits=logits_d)
+                    a_d = dst.sample().item()
+                    actions.append(a_d)
+                return actions
+            # Greedy per dimension
+            return torch.argmax(q_comb.squeeze(0), dim=-1).tolist()
+
+    def _update_RND(self, next_obs: torch.Tensor, batch_norm=True):
         # 1) Intrinsic reward via RND (train predictor to reduce novelty on visited states)
         # Use existing running stats (updated per-environment step) to normalize inputs for RND
         if batch_norm:
@@ -333,18 +352,23 @@ class RainbowDQN:
         b_r_final = b_r
         device = b_obs.device
         taus = self._sample_taus(batch_size, self.n_quantiles, device)
-        quantiles = self.ext_online(b_obs, taus)  # [B,N,D,Bins]
+
         with torch.no_grad():
             target_taus = self._sample_taus(batch_size, self.n_target_quantiles, device)
-            target_quantiles_all = (
-                self.ext_target if self.delayed_target else self.ext_online
-            )(
-                b_next_obs, target_taus
-            )  # [B,Nt,D,Bins]
-            online_next_q = self.ext_online(b_next_obs, taus).mean(dim=1)  # [B,D,Bins]
+            # [B,Nt,D,Bins]
+            t_net = self.ext_target if self.delayed_target else self.ext_online
+            target_quantiles_all = t_net.forward(
+                b_next_obs, target_taus, normalized=False
+            )
+
+            online_next_q_norm = self.ext_online.forward(
+                b_next_obs, taus, normalized=True
+            ).mean(
+                dim=1
+            )  # [B,D,Bins]
             if self.soft or self.munchausen:
                 # Soft reward for future policy entropy
-                logpi_next = torch.log_softmax(online_next_q / self.tau, dim=-1)
+                logpi_next = torch.log_softmax(online_next_q_norm / self.tau, dim=-1)
                 pi_next = torch.exp(logpi_next)  # [B,D,Bins]
                 ent_bonus_per_dim = -(pi_next * logpi_next).sum(dim=-1)  # [B,D]
                 ent_bonus = ent_bonus_per_dim.sum(dim=-1).unsqueeze(1)  # [B,1]
@@ -357,8 +381,11 @@ class RainbowDQN:
                 )  # [B,Nt]s
 
             else:
+                # Simplified target selection: directly take max over bins per dimension
                 # 1. Calculate Mean Q-values for selection (average over quantiles/tau dim 1)
-                target_actions = online_next_q.argmax(dim=-1)  # [B, D]
+                # shape: [B, D, Bins]
+                # Double DQN Logic: Use Online Network for selection
+                target_actions = online_next_q_norm.argmax(dim=-1)  # [B, D]
 
                 # 3. Gather the quantiles corresponding to the best action
                 # Expand indices to match target_quantiles_all shape: [B, Nt, D, 1]
@@ -386,10 +413,13 @@ class RainbowDQN:
 
             # Do entropy loss and cache pi/logpi
             pi, logpi = None, None
+            quantiles_norm = self.ext_online.forward(
+                b_obs, taus, normalized=True
+            )  # [B,N,D,Bins]
             e_loss = 0.0
             if self.ent_reg_coef > 0.0:
                 # Policy over actions from expected values (mean quantiles)
-                qm = quantiles.mean(dim=1)
+                qm = quantiles_norm.mean(dim=1)
                 logpi = torch.log_softmax(qm / self.tau, dim=-1)
                 pi = torch.exp(logpi)  # [B,D,Bins]
                 entropy_per_dim = (pi * logpi).sum(dim=-1)  # [B,D]
@@ -399,7 +429,7 @@ class RainbowDQN:
             m_r = 0
             if self.munchausen or self.soft:
                 if logpi is None:
-                    qm = quantiles.mean(dim=1)
+                    qm = quantiles_norm.mean(dim=1)
                     logpi = torch.log_softmax(qm / self.tau, dim=-1)
 
                 if self.munchausen:
@@ -420,8 +450,16 @@ class RainbowDQN:
             ) * self.gamma * (mixed_target + ent_bonus)
             # [B,Nt]
 
+            # Popart happens before loss step to rescale properly
+            if self.popart:
+                self.ext_online.output_layer.update_stats(target_values)
+                target_values = self.ext_online.output_layer.normalize(target_values)
+
         # Gather predicted quantiles for taken actions
-        # Gather predicted quanstiles per dimension and aggregate
+        quantiles = self.ext_online.forward(
+            b_obs, taus, normalized=True
+        )  # [B,N,D,Bins]
+        # Gather predicted quantiles per dimension and aggregate
         gather_index_pred = (
             b_actions_view.unsqueeze(1)
             .unsqueeze(-1)
@@ -520,148 +558,6 @@ class RainbowDQN:
         self.int_optim.step()
         return int_loss
 
-    def update(
-        self, obs, a, r, next_obs, term, batch_size, step=0, extrinsic_only=False
-    ):
-        # Sample a random minibatch
-
-        idx = torch.randint(low=0, high=step, size=(batch_size,))
-        b_next_obs = next_obs[idx]
-
-        self.step += 1
-        if self.step < self.burn_in_updates:
-            # During burn-in, do not train RL networks; only RND and running stats
-            rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=True)
-            return 0.0
-        else:
-            rnd_errors, rnd_loss = self._update_RND(b_next_obs)
-        b_obs = obs[idx]
-        b_r = r[idx]
-        b_term = term[idx]
-        b_actions = a[idx]
-
-        if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
-            # Exponentially decay Beta towards zero
-            self.Beta = self.start_Beta * (
-                0.5 ** (self.step / self.beta_half_life_steps)
-            )
-
-        b_r_int = self._int_reward(b_r, rnd_errors)
-        b_r_aug = b_r  # + self.Beta * b_r_int
-        extrinsic_loss, munchausen_reward, entropy_loss = self._rl_update_extrinsic(
-            b_obs, b_actions, b_r_aug, b_next_obs, b_term, batch_size
-        )
-        if extrinsic_only:
-            return extrinsic_loss.item()
-        intrinsic_loss = torch.tensor(0.0)
-        if self.Beta > 0.0:
-            assert isinstance(b_r_int, torch.Tensor)
-            intrinsic_loss = self._rl_update_intrinsic(
-                b_obs, b_actions, b_r_int, b_next_obs, batch_size, b_term
-            )
-        if isinstance(entropy_loss, torch.Tensor):
-            entropy_loss = float(entropy_loss.item())
-        with torch.no_grad():
-            taus = self._sample_taus(b_obs.shape[0], self.n_quantiles, b_obs.device)
-            Q_ext = self.ext_online(b_obs, taus).mean(dim=1)
-            Q_int = self.int_online(b_obs, taus).mean(dim=1)
-        # Store last auxiliary losses for logging (optional)
-        self.last_losses = {
-            "extrinsic": float(extrinsic_loss.item()),
-            "intrinsic": float(intrinsic_loss.item()),
-            "rnd": float(rnd_loss.item()),
-            "entropy_reg": entropy_loss,
-            "abs_r_ext": float(b_r.abs().mean().item()),
-            "avg_r_int": (
-                b_r_int.mean().item() if isinstance(b_r_int, torch.Tensor) else 0.0
-            ),
-            "munchausen_r": float(munchausen_reward),
-            "Beta": float(self.Beta),
-            "Q_ext_mean": float(Q_ext.mean().item()),
-            "Q_int_mean": float(Q_int.mean().item()),
-            "last_eps": float(self.last_eps),
-        }
-
-        # Inline TensorBoard logging if writer attached
-        if self.tb_writer is not None:
-            try:
-                for k, v in self.last_losses.items():
-                    if isinstance(v, (int, float)):
-                        self.tb_writer.add_scalar(
-                            f"{self.tb_prefix}/{k}", float(v), self.step
-                        )
-            except Exception:
-                pass
-
-        return extrinsic_loss.item()
-
-    @torch.no_grad()
-    def update_running_stats(self, next_obs: torch.Tensor):
-        """Update observation and intrinsic reward running stats with a single environment step.
-
-        This does not train any networks; it only updates the normalizers so that
-        later batch updates can use stable statistics.
-        """
-        # Update observation stats
-        x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
-        self.obs_rms.update(x64)
-        # Compute a single-step intrinsic error to update intrinsic RMS
-        norm_x64 = self.obs_rms.normalize(x64)
-        # Ensure batch dimension for RND
-        if norm_x64.ndim == 1:
-            norm_x64 = norm_x64.unsqueeze(0)
-        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
-        self.int_rms.update(rnd_err.to(dtype=torch.float64))
-
-    def sample_action(
-        self,
-        obs: torch.Tensor,
-        eps: float,
-        step: int,
-        n_steps: int = 100000,
-        min_eps=0.01,
-        verbose: bool = False,
-    ):
-        """Return vector of length D with selected bin indices for each action dimension."""
-        r = random.random()
-        self.last_eps = eps
-        if r < min_eps or ((not (self.soft or self.munchausen)) and r < eps):
-            return torch.randint(0, self.n_action_bins, (self.n_action_dims,)).tolist()
-        with torch.no_grad():
-            obs_b = obs.unsqueeze(0) if obs.ndim == 1 else obs
-            taus = self._sample_taus(obs_b.shape[0], self.n_quantiles, obs_b.device)
-            ext_q = self.ext_online(obs_b, taus).mean(dim=1)  # [B,D,Bins]
-            if self.Beta > 0.0:
-                int_taus = self._sample_taus(
-                    obs_b.shape[0], self.n_quantiles, obs_b.device
-                )
-                int_q = self.int_online(obs_b, int_taus).mean(dim=1)  # [B,D,Bins]
-                q_comb = self.Beta * int_q + ext_q
-            else:
-                q_comb = ext_q
-            if self.Thompson:
-                g = -torch.log(-torch.log(torch.rand_like(q_comb)))
-                q_comb = q_comb + g
-            # eps_curr = 1 - step / n_steps
-
-            if self.soft or self.munchausen:
-                # Sample per dimension from softmax policy
-                actions = []
-                for d in range(self.n_action_dims):
-                    logits_d = q_comb[0, d] / self.tau
-                    dst = torch.distributions.Categorical(logits=logits_d)
-                    if verbose:
-                        print(
-                            f"Action dim {d}: logits {logits_d.cpu().numpy()}, probs {dst.probs.cpu().numpy()}"
-                        )
-                    a_d = dst.sample().item()
-                    actions.append(a_d)
-                return actions
-            # Greedy per dimension
-            if verbose:
-                print(f"Q-values combined: {q_comb.squeeze(0).cpu().numpy()}")
-            return torch.argmax(q_comb.squeeze(0), dim=-1).tolist()
-
 
 class EVRainbowDQN:
     """Non-distributional counterpart to RainbowDQN with optional dueling and all five pillars."""
@@ -682,6 +578,7 @@ class EVRainbowDQN:
         munchausen: bool = False,
         Thompson: bool = False,
         dueling: bool = False,
+        popart: bool = False,
         Beta: float = 0.0,
         delayed: bool = True,
         ent_reg_coef: float = 0.0,
@@ -691,13 +588,19 @@ class EVRainbowDQN:
         intrinsic_lr: float = 1e-3,
         norm_obs: bool = True,
         burn_in_updates: int = 0,
+        int_r_clip=5,
+        ext_r_clip=5,
     ):
+        self.popart = popart
+        self.int_r_clip = int_r_clip
+        self.ext_r_clip = ext_r_clip
         self.ext_online = EV_Q_Network(
             input_dim,
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.ext_target = EV_Q_Network(
             input_dim,
@@ -705,13 +608,16 @@ class EVRainbowDQN:
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
+        # Intrinsic Q networks (separate head trained on intrinsic rewards only)
         self.int_online = EV_Q_Network(
             input_dim,
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.int_target = EV_Q_Network(
             input_dim,
@@ -719,6 +625,7 @@ class EVRainbowDQN:
             n_action_bins,
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
+            popart=popart,
         ).float()
         self.norm_obs = norm_obs
         self.burn_in_updates = burn_in_updates
@@ -750,6 +657,7 @@ class EVRainbowDQN:
         self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
         self.int_rms = RunningMeanStd(shape=())
+        self.ext_rms = RunningMeanStd(shape=())
         self.tb_writer = None
         self.tb_prefix = "agent"
 
@@ -777,11 +685,15 @@ class EVRainbowDQN:
         ent = -(pi * logpi).sum(dim=-1)  # [B]
         return pi, logpi, ent
 
-    def update(
-        self, obs, a, r, next_obs, term, batch_size, step=0, extrinsic_only=False
-    ):
+    def update(self, obs, a, r, next_obs, term, batch_size, step=0):
+        self.update_running_stats(next_obs, r)
+        r = self.ext_rms.normalize(r, self.ext_r_clip).to(dtype=torch.float32)
         # Get Batch items
-        idx = torch.randint(low=0, high=step, size=(batch_size,))
+        if batch_size is None:
+            idx = torch.arange(0, len(r))
+            batch_size = len(r)
+        else:
+            idx = torch.randint(low=0, high=step, size=(batch_size,))
         b_obs = obs[idx]
         b_r = r[idx]
         b_next_obs = next_obs[idx]
@@ -802,11 +714,11 @@ class EVRainbowDQN:
         r_int = 0
         if self.Beta > 0.0:
             with torch.no_grad():
-                r_int = rnd_errors.detach() / torch.std(
-                    rnd_errors.detach().to(dtype=torch.float32)
+                norm_int = self.int_rms.normalize(
+                    rnd_errors.detach().to(dtype=torch.float64)
                 )
-                r_int = r_int.clamp(-10.0, 10.0)
-        b_r_total = b_r
+                r_int = norm_int.to(dtype=torch.float32)
+        b_r_total = b_r + self.Beta * r_int
 
         # Current and next Q-values
         q_now = self.ext_online(b_obs)  # [B,D,Bins]
@@ -935,7 +847,7 @@ class EVRainbowDQN:
         return float(extrinsic_loss.item())
 
     @torch.no_grad()
-    def update_running_stats(self, next_obs: torch.Tensor):
+    def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
         x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
         self.obs_rms.update(x64)
         if self.norm_obs:
@@ -946,6 +858,7 @@ class EVRainbowDQN:
             norm_x64 = norm_x64.unsqueeze(0)
         rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
+        self.ext_rms.update(r.to(dtype=torch.float64))
 
     def sample_action(
         self,
