@@ -171,9 +171,11 @@ class RainbowDQN:
         loss = (torch.abs(taus_expanded - I) * huber).mean()
         return loss
 
-    def update(self, obs, a, r, next_obs, term, batch_size=None, step=0):
+    def update(
+        self, obs, a, r, next_obs, term, batch_size=None, step=0, extrinsic_only=False
+    ):
         self.update_running_stats(next_obs, r)
-        r = self.ext_rms.normalize(r, clip_range=self.ext_r_clamp)
+        r = self.ext_rms.normalize(r, clip_range=self.ext_r_clamp).to(device=obs.device)
         # Sample a random minibatch
         if batch_size is None:
             idx = torch.arange(0, len(r))
@@ -444,8 +446,9 @@ class RainbowDQN:
                             selected_logpi.mean(dim=-1), min=self.l_clip
                         )  # average over dims
                         m_r = self.alpha * self.tau * logpi_a
+                        # print(b_r_final.device, m_r.device)
                         b_r_final = b_r_final + m_r
-
+            # print(b_term.device, mixed_target.device, b_r_final.device)
             target_values = b_r_final.unsqueeze(1) + (1 - b_term).unsqueeze(
                 1
             ) * self.gamma * (mixed_target + ent_bonus)
@@ -687,9 +690,13 @@ class EVRainbowDQN:
         ent = -(pi * logpi).sum(dim=-1)  # [B]
         return pi, logpi, ent
 
-    def update(self, obs, a, r, next_obs, term, batch_size, step=0):
+    def update(
+        self, obs, a, r, next_obs, term, batch_size, step=0, extrinsic_only=False
+    ):
         self.update_running_stats(next_obs, r)
-        r = self.ext_rms.normalize(r, self.ext_r_clip).to(dtype=torch.float32)
+        r = self.ext_rms.normalize(r, self.ext_r_clip).to(
+            dtype=torch.float32, device=obs.device
+        )
         # Get Batch items
         if batch_size is None:
             idx = torch.arange(0, len(r))
@@ -720,6 +727,7 @@ class EVRainbowDQN:
                     rnd_errors.detach().to(dtype=torch.float64)
                 )
                 r_int = norm_int.to(dtype=torch.float32)
+        # TODO: dont merge reward channels
         b_r_total = b_r + self.Beta * r_int
 
         # Current and next Q-values
@@ -785,7 +793,7 @@ class EVRainbowDQN:
         self.optim.zero_grad()
         extrinsic_loss.backward()
         self.optim.step()
-        if self.Beta == 0.0:
+        if extrinsic_only:
             return float(extrinsic_loss.item())
         # Intrinsic Q update
         int_q_now = self.int_online(b_obs)  # [B,D,Bins]

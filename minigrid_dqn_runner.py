@@ -28,8 +28,8 @@ def setup_config():
     # (5) Delayed / Two-Timescale Optimization
     configurations = {
         "all": {
-            "munchausen": False,  # pillar (1)
-            "soft": False,  # pillar (3) always enabled if munchausen on
+            "munchausen": True,  # pillar (1)
+            "soft": True,  # pillar (3) always enabled if munchausen on
             "Beta": (
                 0.7 if args.ablation != 4 else 0.1
             ),  # pillar (3) optimism scale (match mujoco)
@@ -37,6 +37,7 @@ def setup_config():
             "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.05,  # pillar (2)
             "delayed": True,  # pillar (5)
+            "popart": True,
             "tau": 0.03,  # exploration / policy temperature
             "alpha": 0.9,  # munchausen log-policy scaling
         }
@@ -73,10 +74,11 @@ def setup_config():
         soft=cfg.get("soft", True),
         munchausen=cfg.get("munchausen", True),
         Thompson=False,
-        dueling=cfg.get("dueling", False),
+        dueling=cfg.get("dueling", True),
         Beta=cfg.get("Beta", 0.0),
         ent_reg_coef=cfg.get("ent_reg_coef", 0.0),
         delayed=cfg.get("delayed", True),
+        popart=cfg.get("popart", True),
         tau=cfg.get("tau", 0.03),
         polyak_tau=0.005,
         alpha=cfg.get("alpha", 0.7),
@@ -372,7 +374,8 @@ if __name__ == "__main__":
         # Update running stats with the freshly collected transition (single step)
         if hasattr(dqn, "update_running_stats"):
             dqn.update_running_stats(
-                torch.from_numpy(np.asarray(next_obs)).to(device).float()
+                torch.from_numpy(np.asarray(next_obs)).to(device).float(),
+                torch.tensor(r, device=device).float(),
             )
 
         # Save transition to memory buffer (flattened obs vectors)
