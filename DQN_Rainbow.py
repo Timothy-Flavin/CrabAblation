@@ -120,6 +120,7 @@ class RainbowDQN:
         self.tb_prefix = "agent"
         self.step = 0
         self.last_eps = 1.0
+        self.last_losses = {}
 
     def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
         """Attach a TensorBoard SummaryWriter to enable internal logging during updates."""
@@ -591,6 +592,7 @@ class EVRainbowDQN:
         int_r_clip=5,
         ext_r_clip=5,
     ):
+        self.last_losses = {}
         self.popart = popart
         self.int_r_clip = int_r_clip
         self.ext_r_clip = ext_r_clip
@@ -783,7 +785,7 @@ class EVRainbowDQN:
         self.optim.zero_grad()
         extrinsic_loss.backward()
         self.optim.step()
-        if extrinsic_only:
+        if self.Beta == 0.0:
             return float(extrinsic_loss.item())
         # Intrinsic Q update
         int_q_now = self.int_online(b_obs)  # [B,D,Bins]
