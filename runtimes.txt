@@ -1,0 +1,36 @@
+timpc 1 env
+=== Configuration ===
+Ablation Level: 0
+Obs Dim: 3668
+=====================
+
+--- Benchmarking Updates on CPU ---
+Batch Size   64: 49.48 ms / update | Updates/sec: 20.21
+Batch Size  256: 139.64 ms / update | Updates/sec: 7.16
+Batch Size 1024: 450.28 ms / update | Updates/sec: 2.22
+
+--- Benchmarking Updates on CUDA ---
+Batch Size   64: 23.90 ms / update | Updates/sec: 41.85
+Batch Size  256: 22.72 ms / update | Updates/sec: 44.01
+Batch Size 1024: 40.30 ms / update | Updates/sec: 24.82
+
+--- Benchmarking Action Sampling on CPU ---
+Batch Size (Num Envs)    1: 1.18 ms / sample | Batched Samples/sec: 851.06
+Batch Size (Num Envs)    4: 1.46 ms / sample | Batched Samples/sec: 682.59
+Batch Size (Num Envs)   16: 2.01 ms / sample | Batched Samples/sec: 497.51
+Batch Size (Num Envs)   64: 4.05 ms / sample | Batched Samples/sec: 246.91
+Batch Size (Num Envs)  256: 12.21 ms / sample | Batched Samples/sec: 81.90
+
+--- Benchmarking Action Sampling on CUDA ---
+Batch Size (Num Envs)    1: 2.80 ms / sample | Batched Samples/sec: 357.54
+Batch Size (Num Envs)    4: 2.74 ms / sample | Batched Samples/sec: 365.63
+Batch Size (Num Envs)   16: 2.73 ms / sample | Batched Samples/sec: 365.63
+Batch Size (Num Envs)   64: 2.91 ms / sample | Batched Samples/sec: 343.64
+Batch Size (Num Envs)  256: 2.73 ms / sample | Batched Samples/sec: 365.97
+
+--- Benchmarking Environment Rollouts ---
+Num Parallel Envs: 1, Device: cpu
+Initializing Vector Environment...
+Starting 5000 parallel steps...
+Total time for 5000 frame steps: 9.42s
+Real Steps/sec: 530.93

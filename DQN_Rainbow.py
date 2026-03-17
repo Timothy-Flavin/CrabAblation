@@ -272,40 +272,50 @@ class RainbowDQN:
         n_steps: int = 100000,
         min_eps=0.01,
     ):
-        """Return vector of length D with selected bin indices for each action dimension."""
-        r = random.random()
+        """Return selected bin indices for each action dimension. Supports batched obs."""
         self.last_eps = eps
-        if r < min_eps or ((not (self.soft or self.munchausen)) and r < eps):
-            return torch.randint(0, self.n_action_bins, (self.n_action_dims,)).tolist()
+        is_batched = obs.ndim > 1
+        obs_b = obs if is_batched else obs.unsqueeze(0)
+        batch_size = obs_b.size(0)
+
         with torch.no_grad():
-            obs_b = obs.unsqueeze(0) if obs.ndim == 1 else obs
-            taus = self._sample_taus(obs_b.shape[0], self.n_quantiles, obs_b.device)
+            taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
             ext_q = self.ext_online(obs_b, taus).mean(dim=1)  # [B,D,Bins]
             if self.Beta > 0.0:
-                int_taus = self._sample_taus(
-                    obs_b.shape[0], self.n_quantiles, obs_b.device
-                )
+                int_taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
                 int_q = self.int_online(obs_b, int_taus).mean(dim=1)  # [B,D,Bins]
                 q_comb = ext_q + self.Beta * int_q
-
             else:
                 q_comb = ext_q
+
             if self.Thompson:
                 g = -torch.log(-torch.log(torch.rand_like(q_comb)))
                 q_comb = q_comb + g
-            # eps_curr = 1 - step / n_steps
 
             if self.soft or self.munchausen:
-                # Sample per dimension from softmax policy
-                actions = []
-                for d in range(self.n_action_dims):
-                    logits_d = q_comb[0, d] / self.tau
-                    dst = torch.distributions.Categorical(logits=logits_d)
-                    a_d = dst.sample().item()
-                    actions.append(a_d)
-                return actions
-            # Greedy per dimension
-            return torch.argmax(q_comb.squeeze(0), dim=-1).tolist()
+                logits = q_comb / self.tau
+                actions = torch.distributions.Categorical(
+                    logits=logits
+                ).sample()  # [B,D]
+            else:
+                actions = torch.argmax(q_comb, dim=-1)  # [B,D]
+                rand_vals = torch.rand(batch_size, device=obs_b.device)
+                explore_mask = (rand_vals < min_eps) | (rand_vals < eps)
+                if explore_mask.any():
+                    random_actions = torch.randint(
+                        0,
+                        self.n_action_bins,
+                        (batch_size, self.n_action_dims),
+                        device=obs_b.device,
+                    )
+                    actions = torch.where(
+                        explore_mask.unsqueeze(1), random_actions, actions
+                    )
+
+            if is_batched:
+                return actions.tolist()
+            else:
+                return actions.squeeze(0).tolist()
 
     def _update_RND(self, next_obs: torch.Tensor, batch_norm=True):
         # 1) Intrinsic reward via RND (train predictor to reduce novelty on visited states)
@@ -862,30 +872,40 @@ class EVRainbowDQN:
         n_steps: int = 100000,
         min_ent=0.01,
     ):
-        with torch.no_grad():
-            q_ext = self.ext_online(obs.unsqueeze(0) if obs.ndim == 1 else obs).squeeze(
-                0
-            )  # [D,Bins]
-            if self.Beta > 0.0:
-                q_int = self.int_online(
-                    obs.unsqueeze(0) if obs.ndim == 1 else obs
-                ).squeeze(0)
-                q_comb = q_ext + self.Beta * q_int
+        is_batched = obs.ndim > 1
+        obs_b = obs if is_batched else obs.unsqueeze(0)
+        batch_size = obs_b.size(0)
 
+        with torch.no_grad():
+            q_ext = self.ext_online(obs_b)  # [B,D,Bins]
+            if self.Beta > 0.0:
+                q_int = self.int_online(obs_b)
+                q_comb = q_ext + self.Beta * q_int
             else:
                 q_comb = q_ext
+
             eps_curr = 1 - step / n_steps
             if self.soft or self.munchausen:
-                actions = []
-                for d in range(self.n_action_dims):
-                    logits_d = q_comb[d] / self.tau
-                    a_d = (
-                        torch.distributions.Categorical(logits=logits_d).sample().item()
+                logits = q_comb / self.tau
+                actions = torch.distributions.Categorical(
+                    logits=logits
+                ).sample()  # [B,D]
+            else:
+                actions = torch.argmax(q_comb, dim=-1)  # [B,D]
+                rand_vals = torch.rand(batch_size, device=obs_b.device)
+                explore_mask = rand_vals < eps_curr
+                if explore_mask.any():
+                    random_actions = torch.randint(
+                        0,
+                        self.n_action_bins,
+                        (batch_size, self.n_action_dims),
+                        device=obs_b.device,
                     )
-                    actions.append(a_d)
-                return actions
-            if random.random() < eps_curr:
-                return torch.randint(
-                    0, self.n_action_bins, (self.n_action_dims,)
-                ).tolist()
-            return torch.argmax(q_comb, dim=-1).tolist()
+                    actions = torch.where(
+                        explore_mask.unsqueeze(1), random_actions, actions
+                    )
+
+            if is_batched:
+                return actions.tolist()
+            else:
+                return actions.squeeze(0).tolist()
