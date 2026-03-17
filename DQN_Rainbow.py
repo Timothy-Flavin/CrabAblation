@@ -126,6 +126,37 @@ class RainbowDQN:
         self.tb_writer = writer
         self.tb_prefix = prefix
 
+    def to(self, device):
+        """Move the agent to a specific device."""
+        main_lr = self.optim.param_groups[0]["lr"] if hasattr(self, "optim") else 1e-3
+        int_lr = self.int_optim.param_groups[0]["lr"] if hasattr(self, "int_optim") else 1e-3
+        rnd_lr = self.rnd_optim.param_groups[0]["lr"] if hasattr(self, "rnd_optim") else 1e-3
+
+        if hasattr(self, "ext_online"):
+            self.ext_online.to(device)
+        if hasattr(self, "ext_target"):
+            self.ext_target.to(device)
+        if hasattr(self, "int_online"):
+            self.int_online.to(device)
+        if hasattr(self, "int_target"):
+            self.int_target.to(device)
+        if hasattr(self, "rnd") and hasattr(self.rnd, "to"):
+            self.rnd.to(device)
+        if hasattr(self, "obs_rms") and hasattr(self.obs_rms, "to"):
+            self.obs_rms.to(device)
+        if hasattr(self, "int_rms") and hasattr(self.int_rms, "to"):
+            self.int_rms.to(device)
+        if hasattr(self, "ext_rms") and hasattr(self.ext_rms, "to"):
+            self.ext_rms.to(device)
+
+        if hasattr(self, "ext_online"):
+            self.optim = torch.optim.Adam(self.ext_online.parameters(), lr=main_lr)
+        if hasattr(self, "int_online"):
+            self.int_optim = torch.optim.Adam(self.int_online.parameters(), lr=int_lr)
+        if hasattr(self, "rnd"):
+            self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
+        return self
+
     def update_target(self):
         """Polyak averaging: target = (1 - tau) * target + tau * online."""
         if not self.delayed_target:
@@ -669,6 +700,37 @@ class EVRainbowDQN:
     def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
         self.tb_writer = writer
         self.tb_prefix = prefix
+
+    def to(self, device):
+        """Move the agent to a specific device."""
+        main_lr = self.optim.param_groups[0]["lr"] if hasattr(self, "optim") else 1e-3
+        int_lr = self.int_optim.param_groups[0]["lr"] if hasattr(self, "int_optim") else 1e-3
+        rnd_lr = self.rnd_optim.param_groups[0]["lr"] if hasattr(self, "rnd_optim") else 1e-3
+
+        if hasattr(self, "ext_online"):
+            self.ext_online.to(device)
+        if hasattr(self, "ext_target"):
+            self.ext_target.to(device)
+        if hasattr(self, "int_online"):
+            self.int_online.to(device)
+        if hasattr(self, "int_target"):
+            self.int_target.to(device)
+        if hasattr(self, "rnd") and hasattr(self.rnd, "to"):
+            self.rnd.to(device)
+        if hasattr(self, "obs_rms") and hasattr(self.obs_rms, "to"):
+            self.obs_rms.to(device)
+        if hasattr(self, "int_rms") and hasattr(self.int_rms, "to"):
+            self.int_rms.to(device)
+        if hasattr(self, "ext_rms") and hasattr(self.ext_rms, "to"):
+            self.ext_rms.to(device)
+
+        if hasattr(self, "ext_online"):
+            self.optim = torch.optim.Adam(self.ext_online.parameters(), lr=main_lr)
+        if hasattr(self, "int_online"):
+            self.int_optim = torch.optim.Adam(self.int_online.parameters(), lr=int_lr)
+        if hasattr(self, "rnd"):
+            self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
+        return self
 
     def update_target(self):
         if not self.delayed_target:

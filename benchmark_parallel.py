@@ -85,42 +85,11 @@ def setup_config(args, obs_dim):
     return dqn
 
 
-def move_agent_to_device(dqn, device):
-    main_lr = dqn.optim.param_groups[0]["lr"] if hasattr(dqn, "optim") else 1e-3
-    int_lr = dqn.int_optim.param_groups[0]["lr"] if hasattr(dqn, "int_optim") else 1e-3
-    rnd_lr = dqn.rnd_optim.param_groups[0]["lr"] if hasattr(dqn, "rnd_optim") else 1e-3
-
-    if hasattr(dqn, "ext_online"):
-        dqn.ext_online.to(device)
-    if hasattr(dqn, "ext_target"):
-        dqn.ext_target.to(device)
-    if hasattr(dqn, "int_online"):
-        dqn.int_online.to(device)
-    if hasattr(dqn, "int_target"):
-        dqn.int_target.to(device)
-    if hasattr(dqn, "rnd") and hasattr(dqn.rnd, "to"):
-        dqn.rnd.to(device)
-    if hasattr(dqn, "obs_rms") and hasattr(dqn.obs_rms, "to"):
-        dqn.obs_rms.to(device)
-    if hasattr(dqn, "int_rms") and hasattr(dqn.int_rms, "to"):
-        dqn.int_rms.to(device)
-    if hasattr(dqn, "ext_rms") and hasattr(dqn.ext_rms, "to"):
-        dqn.ext_rms.to(device)
-
-    # Recreate optimizers since parameters moved to a new device
-    if hasattr(dqn, "ext_online"):
-        dqn.optim = torch.optim.Adam(dqn.ext_online.parameters(), lr=main_lr)
-    if hasattr(dqn, "int_online"):
-        dqn.int_optim = torch.optim.Adam(dqn.int_online.parameters(), lr=int_lr)
-    if hasattr(dqn, "rnd"):
-        dqn.rnd_optim = torch.optim.Adam(dqn.rnd.predictor.parameters(), lr=rnd_lr)
-
-
 def benchmark_updates(
     dqn, obs_dim, device="cpu", batch_sizes=[64, 256, 1024], iters=50
 ):
     print(f"\n--- Benchmarking Updates on {device.upper()} ---")
-    move_agent_to_device(dqn, torch.device(device))
+    dqn.to(torch.device(device))
 
     for bs in batch_sizes:
         # Create dummy buffer
@@ -155,7 +124,7 @@ def benchmark_action_sampling(
     dqn, obs_dim, device="cpu", batch_sizes=[1, 4, 16, 64], iters=200
 ):
     print(f"\n--- Benchmarking Action Sampling on {device.upper()} ---")
-    move_agent_to_device(dqn, torch.device(device))
+    dqn.to(torch.device(device))
 
     for bs in batch_sizes:
         obs = torch.randn((bs, obs_dim), device=device)
@@ -181,11 +150,11 @@ def benchmark_action_sampling(
         )
 
 
-def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000):
+def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
     print(f"\n--- Benchmarking Environment Rollouts ---")
     print(f"Num Parallel Envs: {args.num_envs}, Device: {args.device}")
     device = torch.device(args.device)
-    move_agent_to_device(dqn, device)
+    dqn.to(device)
 
     # Init VecEnv
     print("Initializing Vector Environment...")
@@ -194,14 +163,27 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000):
 
     obs, info = vec_env.reset()
 
-    # Warmup
-    actions = np.random.randint(0, 7, size=(args.num_envs,))
-    obs, _, _, _, _ = vec_env.step(actions)
+    # Warmup and desynchronization
+    # Step the vectorized environment with random actions to break experience synchronization
+    for _ in range(np.random.randint(20, 50)):
+        actions = np.random.randint(0, 7, size=(args.num_envs,))
+        obs, _, _, _, _ = vec_env.step(actions)
 
     print(f"Starting {total_steps} parallel steps...")
     start_time = time.time()
 
+    buffer_size = 512
+    obs_buffer = torch.zeros((buffer_size, obs_dim), device=device)
+    next_obs_buffer = torch.zeros((buffer_size, obs_dim), device=device)
+    actions_buffer = torch.zeros((buffer_size,), dtype=torch.long, device=device)
+    rewards_buffer = torch.zeros((buffer_size,), device=device)
+    terms_buffer = torch.zeros((buffer_size,), device=device)
+    buffer_ptr = 0
+    buffer_full = False
+
     steps_taken = 0
+    steps_since_update = 0
+    updates_performed = 0
     while steps_taken < total_steps:
         # 1. CPU -> GPU for obs
         tobs = torch.from_numpy(obs).to(device).float()
@@ -215,21 +197,127 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000):
         actions = np.array(actions)
 
         # 4. Env step (multiprocessing over CPU)
-        obs, r, term, trunc, info = vec_env.step(actions)
+        next_obs, r, term, trunc, info = vec_env.step(actions)
+
+        tabs = torch.tensor(actions, device=device)
+        tr = torch.tensor(r, dtype=torch.float32, device=device)
+        tterms = torch.tensor(term, dtype=torch.float32, device=device)
+        tnext_obs = torch.tensor(next_obs, dtype=torch.float32, device=device)
+
+        for i in range(args.num_envs):
+            idx = (buffer_ptr + i) % buffer_size
+            obs_buffer[idx] = tobs[i]
+            actions_buffer[idx] = tabs[i]
+            rewards_buffer[idx] = tr[i]
+            next_obs_buffer[idx] = tnext_obs[i]
+            terms_buffer[idx] = tterms[i]
+
+        buffer_ptr = (buffer_ptr + args.num_envs) % buffer_size
+        if buffer_ptr < args.num_envs:
+            buffer_full = True
 
         steps_taken += args.num_envs
+        steps_since_update += args.num_envs
+
+        while steps_since_update >= 8:
+            if buffer_full or buffer_ptr >= batch_size:
+                updates_performed += 1
+                max_idx = buffer_size if buffer_full else buffer_ptr
+                dqn.update(
+                    obs_buffer[:max_idx],
+                    actions_buffer[:max_idx],
+                    rewards_buffer[:max_idx],
+                    next_obs_buffer[:max_idx],
+                    terms_buffer[:max_idx],
+                    batch_size=batch_size,
+                    step=max_idx,
+                )
+            steps_since_update -= 8
+
+        obs = next_obs
 
     end_time = time.time()
     duration = end_time - start_time
     sps = steps_taken / duration
     print(f"Total time for {steps_taken} frame steps: {duration:.2f}s")
     print(f"Real Steps/sec: {sps:.2f}")
+    print(f"Updates/sec: {updates_performed/duration}")
 
     vec_env.close()
+    return sps, updates_performed / duration
+
+
+def run_grid_search(obs_dim, fully_obs=False, total_steps=2000):
+    import json
+    import os
+    
+    print("\n=== Starting Grid Search for Best Parameters ===")
+    
+    devices = ["cpu"]
+    if torch.cuda.is_available():
+        devices.append("cuda")
+        
+    num_envs_list = [1, 4, 8, 12, 16]
+    best_results = {}
+    
+    class DummyArgs:
+        pass
+    
+    args = DummyArgs()
+    args.fully_obs = fully_obs
+    
+    for ablation in range(6):
+        print(f"\n--- Grid Search: Ablation {ablation} ---")
+        args.ablation = ablation
+        
+        # Instantiate DQN
+        dqn = setup_config(args, obs_dim)
+        
+        best_sps = 0.0
+        best_config = None
+        
+        for dev in devices:
+            for num_envs in num_envs_list:
+                args.device = dev
+                args.num_envs = num_envs
+                
+                try:
+                    sps, ups = benchmark_env_rollouts(
+                        args, dqn, obs_dim, total_steps=total_steps, batch_size=64
+                    )
+                    
+                    if sps > best_sps:
+                        best_sps = sps
+                        best_config = {
+                            "device": dev,
+                            "num_envs": num_envs,
+                            "steps_per_sec": sps,
+                            "updates_per_sec": ups
+                        }
+                except Exception as e:
+                    print(f"Error for device={dev}, num_envs={num_envs}: {e}")
+                    
+        best_results[f"ablation_{ablation}"] = best_config
+        print(f"Best for Ablation {ablation}: {best_config}")
+        
+    try:
+        username = os.getlogin()
+    except Exception:
+        import getpass
+        username = getpass.getuser()
+        
+    output_filename = f"{username}.json"
+    with open(output_filename, "w") as f:
+        json.dump(best_results, f, indent=4)
+        
+    print(f"\nGrid search complete. Saved best configurations to {output_filename}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parallel Environment Benchmarking")
+    parser.add_argument(
+        "--grid_search", action="store_true", help="Run parameter grid search and save json"
+    )
     parser.add_argument(
         "--device",
         type=str,
@@ -254,29 +342,32 @@ if __name__ == "__main__":
     print(f"Obs Dim: {obs_dim}")
     print("=====================")
 
-    dqn = setup_config(args, obs_dim)
+    if args.grid_search:
+        run_grid_search(obs_dim, fully_obs=args.fully_obs, total_steps=5000)
+    else:
+        dqn = setup_config(args, obs_dim)
 
-    # # 1. Benchmark Updates
-    # benchmark_updates(dqn, obs_dim, device="cpu", batch_sizes=[64, 256, 1024])
-    # if torch.cuda.is_available():
-    #     benchmark_updates(dqn, obs_dim, device="cuda", batch_sizes=[64, 256, 1024])
+        # 1. Benchmark Updates
+        benchmark_updates(dqn, obs_dim, device="cpu", batch_sizes=[64, 256, 1024])
+        if torch.cuda.is_available():
+            benchmark_updates(dqn, obs_dim, device="cuda", batch_sizes=[64, 256, 1024])
 
-    # # 2. Benchmark Action Sampling
-    # benchmark_action_sampling(
-    #     dqn, obs_dim, device="cpu", batch_sizes=[1, 4, 16, 64, 256]
-    # )
-    # if torch.cuda.is_available():
-    #     benchmark_action_sampling(
-    #         dqn, obs_dim, device="cuda", batch_sizes=[1, 4, 16, 64, 256]
-    #     )
+        # 2. Benchmark Action Sampling
+        benchmark_action_sampling(
+            dqn, obs_dim, device="cpu", batch_sizes=[1, 4, 16, 64, 256]
+        )
+        if torch.cuda.is_available():
+            benchmark_action_sampling(
+                dqn, obs_dim, device="cuda", batch_sizes=[1, 4, 16, 64, 256]
+            )
 
-    # 3. Benchmark Parallel Env Execution
-    args.device = "cpu"
-    for i in [1, 16, 32]:
-        args.num_envs = i
-        benchmark_env_rollouts(args, dqn, obs_dim, total_steps=5000)
-    if torch.cuda.is_available():
-        args.device = "cuda"
-        for i in [1, 16, 32]:
+        # 3. Benchmark Parallel Env Execution
+        args.device = "cpu"
+        for i in [1, 4, 8]:
             args.num_envs = i
             benchmark_env_rollouts(args, dqn, obs_dim, total_steps=5000)
+        if torch.cuda.is_available():
+            args.device = "cuda"
+            for i in [1, 4, 8, 12, 16]:
+                args.num_envs = i
+                benchmark_env_rollouts(args, dqn, obs_dim, total_steps=5000)
