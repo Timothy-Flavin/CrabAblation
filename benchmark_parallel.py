@@ -163,12 +163,6 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
 
     obs, info = vec_env.reset()
 
-    # Warmup and desynchronization
-    # Step the vectorized environment with random actions to break experience synchronization
-    for _ in range(np.random.randint(20, 50)):
-        actions = np.random.randint(0, 7, size=(args.num_envs,))
-        obs, _, _, _, _ = vec_env.step(actions)
-
     print(f"Starting {total_steps} parallel steps...")
     start_time = time.time()
 
@@ -250,73 +244,76 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
 def run_grid_search(obs_dim, fully_obs=False, total_steps=2000):
     import json
     import os
-    
+
     print("\n=== Starting Grid Search for Best Parameters ===")
-    
+
     devices = ["cpu"]
     if torch.cuda.is_available():
         devices.append("cuda")
-        
+
     num_envs_list = [1, 4, 8, 12, 16]
     best_results = {}
-    
+
     class DummyArgs:
         pass
-    
+
     args = DummyArgs()
     args.fully_obs = fully_obs
-    
+
     for ablation in range(6):
         print(f"\n--- Grid Search: Ablation {ablation} ---")
         args.ablation = ablation
-        
+
         # Instantiate DQN
         dqn = setup_config(args, obs_dim)
-        
+
         best_sps = 0.0
         best_config = None
-        
+
         for dev in devices:
             for num_envs in num_envs_list:
                 args.device = dev
                 args.num_envs = num_envs
-                
+
                 try:
                     sps, ups = benchmark_env_rollouts(
                         args, dqn, obs_dim, total_steps=total_steps, batch_size=64
                     )
-                    
+
                     if sps > best_sps:
                         best_sps = sps
                         best_config = {
                             "device": dev,
                             "num_envs": num_envs,
                             "steps_per_sec": sps,
-                            "updates_per_sec": ups
+                            "updates_per_sec": ups,
                         }
                 except Exception as e:
                     print(f"Error for device={dev}, num_envs={num_envs}: {e}")
-                    
+
         best_results[f"ablation_{ablation}"] = best_config
         print(f"Best for Ablation {ablation}: {best_config}")
-        
+
     try:
         username = os.getlogin()
     except Exception:
         import getpass
+
         username = getpass.getuser()
-        
+
     output_filename = f"{username}.json"
     with open(output_filename, "w") as f:
         json.dump(best_results, f, indent=4)
-        
+
     print(f"\nGrid search complete. Saved best configurations to {output_filename}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parallel Environment Benchmarking")
     parser.add_argument(
-        "--grid_search", action="store_true", help="Run parameter grid search and save json"
+        "--grid_search",
+        action="store_true",
+        help="Run parameter grid search and save json",
     )
     parser.add_argument(
         "--device",

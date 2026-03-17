@@ -67,6 +67,7 @@ def setup_config():
             "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.01,  # pillar (2)
             "delayed": True,  # pillar (5)
+            "popart": True,
             "tau": 0.03,  # softmax temperature for exploration
             "alpha": 0.7,  # munchausen log-policy scaling
         }
@@ -90,7 +91,7 @@ def setup_config():
         # Distributional off (use EV agent)
         cfg["distributional"] = False
         cfg["dueling"] = False
-        cfg["ent_reg_coef"] = 0.003
+        cfg["ent_reg_coef"] = 0.01
     elif args.ablation == 5:
         # Delayed target off
         cfg["delayed"] = False
@@ -105,6 +106,7 @@ def setup_config():
         Beta=cfg.get("Beta", 0.0),
         ent_reg_coef=cfg.get("ent_reg_coef", 0.0),
         delayed=cfg.get("delayed", True),
+        popart=cfg.get("popart", True),
     )
     n_action_dims = 6
     n_action_bins = 3
@@ -114,6 +116,7 @@ def setup_config():
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=[512, 512],
+            # polyak_tau=0.03,
             **common_kwargs,
         )
     else:
@@ -122,6 +125,7 @@ def setup_config():
             n_action_dims,
             n_action_bins,
             hidden_layer_sizes=[512, 512],
+            # polyak_tau=0.03,
             **common_kwargs,
         )
 
@@ -242,7 +246,10 @@ if __name__ == "__main__":
         )
         next_obs, r, term, trunc, info = env.step(bins_to_continuous(action_bins))
         # Update running stats with the freshly collected transition (single step)
-        dqn.update_running_stats(torch.from_numpy(next_obs).to(device).float())
+        dqn.update_running_stats(
+            torch.from_numpy(next_obs).to(device).float(),
+            torch.tensor(r, device=device).float(),
+        )
 
         # Save transition to memory buffer
         buff_actions[i % blen] = torch.tensor(action_bins, device=device)

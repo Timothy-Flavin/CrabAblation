@@ -19,7 +19,7 @@ class RainbowDQN:
         gamma: float = 0.99,
         alpha: float = 0.9,
         tau: float = 0.03,
-        polyak_tau: float = 0.005,
+        polyak_tau: float = 0.03,
         l_clip: float = -1.0,
         soft: bool = False,
         munchausen: bool = False,
@@ -120,6 +120,7 @@ class RainbowDQN:
         self.tb_prefix = "agent"
         self.step = 0
         self.last_eps = 1.0
+        self.last_losses = {}
 
     def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
         """Attach a TensorBoard SummaryWriter to enable internal logging during updates."""
@@ -129,8 +130,12 @@ class RainbowDQN:
     def to(self, device):
         """Move the agent to a specific device."""
         main_lr = self.optim.param_groups[0]["lr"] if hasattr(self, "optim") else 1e-3
-        int_lr = self.int_optim.param_groups[0]["lr"] if hasattr(self, "int_optim") else 1e-3
-        rnd_lr = self.rnd_optim.param_groups[0]["lr"] if hasattr(self, "rnd_optim") else 1e-3
+        int_lr = (
+            self.int_optim.param_groups[0]["lr"] if hasattr(self, "int_optim") else 1e-3
+        )
+        rnd_lr = (
+            self.rnd_optim.param_groups[0]["lr"] if hasattr(self, "rnd_optim") else 1e-3
+        )
 
         if hasattr(self, "ext_online"):
             self.ext_online.to(device)
@@ -154,7 +159,9 @@ class RainbowDQN:
         if hasattr(self, "int_online"):
             self.int_optim = torch.optim.Adam(self.int_online.parameters(), lr=int_lr)
         if hasattr(self, "rnd"):
-            self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
+            self.rnd_optim = torch.optim.Adam(
+                self.rnd.predictor.parameters(), lr=rnd_lr
+            )
         return self
 
     def update_target(self):
@@ -201,9 +208,11 @@ class RainbowDQN:
         loss = (torch.abs(taus_expanded - I) * huber).mean()
         return loss
 
-    def update(self, obs, a, r, next_obs, term, batch_size=None, step=0):
+    def update(
+        self, obs, a, r, next_obs, term, batch_size=None, step=0, extrinsic_only=False
+    ):
         self.update_running_stats(next_obs, r)
-        r = self.ext_rms.normalize(r, clip_range=self.ext_r_clamp)
+        r = self.ext_rms.normalize(r, clip_range=self.ext_r_clamp).to(device=obs.device)
         # Sample a random minibatch
         if batch_size is None:
             idx = torch.arange(0, len(r))
@@ -230,7 +239,7 @@ class RainbowDQN:
                 0.5 ** (self.step / self.beta_half_life_steps)
             )
 
-        b_r_int = self._int_ext_reward(b_r, rnd_errors)
+        b_r_int = self._int_reward(b_r, rnd_errors)
         extrinsic_loss, munchausen_reward, entropy_loss = self._rl_update_extrinsic(
             b_obs, b_actions, b_r, b_next_obs, b_term, batch_size
         )
@@ -238,7 +247,7 @@ class RainbowDQN:
         if self.Beta > 0.0:
             assert isinstance(b_r_int, torch.Tensor)
             intrinsic_loss = self._rl_update_intrinsic(
-                b_obs, b_actions, b_r_int, b_next_obs, batch_size
+                b_obs, b_actions, b_r_int, b_next_obs, batch_size, b_term=b_term
             )
         if isinstance(entropy_loss, torch.Tensor):
             entropy_loss = float(entropy_loss.item())
@@ -357,7 +366,7 @@ class RainbowDQN:
             )
         elif self.norm_obs:
             with torch.no_grad():
-                norm_next_obs = self.obs_rms.scale(next_obs.to(dtype=torch.float64))
+                norm_next_obs = self.obs_rms.normalize(next_obs.to(dtype=torch.float64))
             norm_next_obs_f32 = norm_next_obs.to(dtype=torch.float32)
         else:
             norm_next_obs_f32 = next_obs.to(dtype=torch.float32)
@@ -370,17 +379,16 @@ class RainbowDQN:
         self.rnd_optim.step()
         return rnd_errors, rnd_loss
 
-    def _int_ext_reward(self, b_r: torch.Tensor, rnd_errors: torch.Tensor):
+    def _int_reward(self, b_r: torch.Tensor, rnd_errors: torch.Tensor):
         # Normalize intrinsic reward magnitude using running stats (updated per step)
-        r_int = 0
-        if self.Beta > 0.0:
-            with torch.no_grad():
-                norm_int = self.int_rms.scale(
-                    rnd_errors.detach().to(dtype=torch.float64)
+        with torch.no_grad():
+            norm_rnd_err = self.int_rms.normalize(rnd_errors.to(dtype=torch.float64))
+            # Clamp to avoid extreme intrinsic rewards destabilizing training
+            if self.int_r_clamp is not None and self.int_r_clamp > 0.0:
+                norm_rnd_err = torch.clamp(
+                    norm_rnd_err, max=self.int_r_clamp, min=-self.int_r_clamp
                 )
-                r_int = norm_int.to(dtype=torch.float32)
-                r_int = r_int.clamp(-self.int_r_clamp, self.int_r_clamp)
-        return r_int
+            return norm_rnd_err.to(dtype=b_r.dtype)
 
     def _rl_update_extrinsic(
         self,
@@ -438,7 +446,7 @@ class RainbowDQN:
                 )
                 # Gather along the bins dimension
                 mixed_target = torch.gather(
-                    target_quantiles_all, -1, action_idx
+                    target_quantiles_all, 3, action_idx
                 ).squeeze(
                     -1
                 )  # [B, Nt, D]
@@ -464,7 +472,7 @@ class RainbowDQN:
                 qm = quantiles_norm.mean(dim=1)
                 logpi = torch.log_softmax(qm / self.tau, dim=-1)
                 pi = torch.exp(logpi)  # [B,D,Bins]
-                entropy_per_dim = -(pi * logpi).sum(dim=-1)  # [B,D]
+                entropy_per_dim = (pi * logpi).sum(dim=-1)  # [B,D]
                 entropy = entropy_per_dim.mean()  # average over dims
                 e_loss = self.ent_reg_coef * entropy
 
@@ -481,12 +489,13 @@ class RainbowDQN:
                         selected_logpi = torch.gather(logpi, -1, gather_m_hist).squeeze(
                             -1
                         )  # [B,D]
-                        logpi_a = torch.clamp(selected_logpi, min=self.l_clip).mean(
-                            dim=-1
+                        logpi_a = torch.clamp(
+                            selected_logpi.mean(dim=-1), min=self.l_clip
                         )  # average over dims
                         m_r = self.alpha * self.tau * logpi_a
+                        # print(b_r_final.device, m_r.device)
                         b_r_final = b_r_final + m_r
-
+            # print(b_term.device, mixed_target.device, b_r_final.device)
             target_values = b_r_final.unsqueeze(1) + (1 - b_term).unsqueeze(
                 1
             ) * self.gamma * (mixed_target + ent_bonus)
@@ -524,7 +533,7 @@ class RainbowDQN:
         loss.backward()
         self.optim.step()
         if isinstance(m_r, torch.Tensor):
-            m_r = m_r.sum()
+            m_r = m_r.mean()
         return loss, m_r, e_loss
 
     def _rl_update_intrinsic(
@@ -534,6 +543,7 @@ class RainbowDQN:
         b_r_int: torch.Tensor,
         b_next_obs: torch.Tensor,
         batch_size: int,
+        b_term: torch.Tensor,
     ):
         # Update intrinsic Q network on intrinsic rewards only
         device = b_obs.device
@@ -550,10 +560,12 @@ class RainbowDQN:
             )  # [B,Nt,D,Bins]
             # 1. Calculate Mean Q-values for selection (average over quantiles/tau dim 1)
             # shape: [B, D, Bins]
-            target_q_means = int_target_all.mean(dim=1)
+            # target_q_means = int_target_all.mean(dim=1)
+            # online_q_means = int_quantiles.mean(dim=1)
+            online_q_means = self.int_online(b_next_obs, int_taus).mean(dim=1)
             # 2. Select best action based on expected value
             # shape: [B, D]
-            target_actions = target_q_means.argmax(dim=-1)
+            target_actions = online_q_means.argmax(dim=-1)
             # 3. Gather the quantiles corresponding to the best action
             # Expand indices to match target_quantiles_all shape: [B, Nt, D, 1]
             action_idx = (
@@ -567,7 +579,10 @@ class RainbowDQN:
             )  # [B, Nt, D]
             # Sum over action dimensions (if multi-dim actions)
             mixed_target = mixed_target.sum(dim=-1)  # [B, Nt]
-            int_target_values = b_r_int.unsqueeze(1) + self.gamma * mixed_target
+            int_target_values = (
+                b_r_int.unsqueeze(1)
+                + self.gamma * (1 - b_term).unsqueeze(1) * mixed_target
+            )
 
         # Gather current quantile values from taken actions
         if b_actions.ndim == 1:
@@ -627,6 +642,7 @@ class EVRainbowDQN:
         int_r_clip=5,
         ext_r_clip=5,
     ):
+        self.last_losses = {}
         self.popart = popart
         self.int_r_clip = int_r_clip
         self.ext_r_clip = ext_r_clip
@@ -704,8 +720,12 @@ class EVRainbowDQN:
     def to(self, device):
         """Move the agent to a specific device."""
         main_lr = self.optim.param_groups[0]["lr"] if hasattr(self, "optim") else 1e-3
-        int_lr = self.int_optim.param_groups[0]["lr"] if hasattr(self, "int_optim") else 1e-3
-        rnd_lr = self.rnd_optim.param_groups[0]["lr"] if hasattr(self, "rnd_optim") else 1e-3
+        int_lr = (
+            self.int_optim.param_groups[0]["lr"] if hasattr(self, "int_optim") else 1e-3
+        )
+        rnd_lr = (
+            self.rnd_optim.param_groups[0]["lr"] if hasattr(self, "rnd_optim") else 1e-3
+        )
 
         if hasattr(self, "ext_online"):
             self.ext_online.to(device)
@@ -729,7 +749,9 @@ class EVRainbowDQN:
         if hasattr(self, "int_online"):
             self.int_optim = torch.optim.Adam(self.int_online.parameters(), lr=int_lr)
         if hasattr(self, "rnd"):
-            self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
+            self.rnd_optim = torch.optim.Adam(
+                self.rnd.predictor.parameters(), lr=rnd_lr
+            )
         return self
 
     def update_target(self):
@@ -752,9 +774,13 @@ class EVRainbowDQN:
         ent = -(pi * logpi).sum(dim=-1)  # [B]
         return pi, logpi, ent
 
-    def update(self, obs, a, r, next_obs, term, batch_size, step=0):
+    def update(
+        self, obs, a, r, next_obs, term, batch_size, step=0, extrinsic_only=False
+    ):
         self.update_running_stats(next_obs, r)
-        r = self.ext_rms.normalize(r, self.ext_r_clip).to(dtype=torch.float32)
+        r = self.ext_rms.normalize(r, self.ext_r_clip).to(
+            dtype=torch.float32, device=obs.device
+        )
         # Get Batch items
         if batch_size is None:
             idx = torch.arange(0, len(r))
@@ -785,6 +811,7 @@ class EVRainbowDQN:
                     rnd_errors.detach().to(dtype=torch.float64)
                 )
                 r_int = norm_int.to(dtype=torch.float32)
+        # TODO: dont merge reward channels
         b_r_total = b_r + self.Beta * r_int
 
         # Current and next Q-values
@@ -799,7 +826,7 @@ class EVRainbowDQN:
         if self.ent_reg_coef > 0.0:
             logpi_now = torch.log_softmax(q_now / self.tau, dim=-1)
             pi_now = torch.exp(logpi_now)
-            entropy_loss = -torch.sum(pi_now * logpi_now, dim=-1).mean()
+            entropy_loss = (pi_now * logpi_now).sum(dim=-1).mean()
 
         with torch.no_grad():
             if b_actions.ndim == 1:
@@ -846,11 +873,12 @@ class EVRainbowDQN:
             q_selected = q_selected.sum(-1)
 
         extrinsic_loss = torch.nn.functional.smooth_l1_loss(q_selected, td_target)
-        extrinsic_loss = extrinsic_loss + self.alpha * entropy_loss
+        extrinsic_loss = extrinsic_loss + self.ent_reg_coef * entropy_loss
         self.optim.zero_grad()
         extrinsic_loss.backward()
         self.optim.step()
-
+        if extrinsic_only:
+            return float(extrinsic_loss.item())
         # Intrinsic Q update
         int_q_now = self.int_online(b_obs)  # [B,D,Bins]
         int_q_selected = torch.gather(int_q_now, -1, action_idx_now).squeeze(-1)
@@ -933,6 +961,7 @@ class EVRainbowDQN:
         step: int,
         n_steps: int = 100000,
         min_ent=0.01,
+        verbose: bool = False,
     ):
         is_batched = obs.ndim > 1
         obs_b = obs if is_batched else obs.unsqueeze(0)
@@ -941,33 +970,33 @@ class EVRainbowDQN:
         with torch.no_grad():
             q_ext = self.ext_online(obs_b)  # [B,D,Bins]
             if self.Beta > 0.0:
-                q_int = self.int_online(obs_b)
-                q_comb = q_ext + self.Beta * q_int
+                if random.random() < self.Beta:
+                    q_comb = self.int_online(
+                        obs.unsqueeze(0) if obs.ndim == 1 else obs
+                    ).squeeze(0)
+                else:
+                    q_comb = q_ext
+
             else:
                 q_comb = q_ext
 
             eps_curr = 1 - step / n_steps
             if self.soft or self.munchausen:
-                logits = q_comb / self.tau
-                actions = torch.distributions.Categorical(
-                    logits=logits
-                ).sample()  # [B,D]
-            else:
-                actions = torch.argmax(q_comb, dim=-1)  # [B,D]
-                rand_vals = torch.rand(batch_size, device=obs_b.device)
-                explore_mask = rand_vals < eps_curr
-                if explore_mask.any():
-                    random_actions = torch.randint(
-                        0,
-                        self.n_action_bins,
-                        (batch_size, self.n_action_dims),
-                        device=obs_b.device,
-                    )
-                    actions = torch.where(
-                        explore_mask.unsqueeze(1), random_actions, actions
-                    )
-
-            if is_batched:
-                return actions.tolist()
-            else:
-                return actions.squeeze(0).tolist()
+                actions = []
+                for d in range(self.n_action_dims):
+                    logits_d = q_comb[d] / self.tau
+                    dst = torch.distributions.Categorical(logits=logits_d)
+                    a_d = dst.sample().item()
+                    if verbose:
+                        print(
+                            f"Action dim {d}: logits {logits_d.cpu().numpy()}, probs {dst.probs.cpu().numpy()}"
+                        )
+                    actions.append(a_d)
+                return actions
+            if random.random() < eps_curr:
+                return torch.randint(
+                    0, self.n_action_bins, (self.n_action_dims,)
+                ).tolist()
+            if verbose:
+                print(f"Q-values combined: {q_comb.cpu().numpy()}")
+            return torch.argmax(q_comb, dim=-1).tolist()

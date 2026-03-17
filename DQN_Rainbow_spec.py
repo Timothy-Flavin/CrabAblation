@@ -86,7 +86,7 @@ if __name__ == "__main__":
                 )
                 # Pre-warm running stats to avoid non-stationary input distribution for RND
                 # This prevents the RND loss from spiking due to shifting normalization statistics
-                agent.update_running_stats(buffer_obs)
+                agent.update_running_stats(buffer_obs, buffer_rewards)
             except Exception as e:
                 print(f"FAILED to initialize model: {e}")
                 raise e
@@ -109,8 +109,8 @@ if __name__ == "__main__":
 
             # Get initial sigma if popart
             if popart:
-                if hasattr(agent.online, "output_layer"):
-                    layer = agent.online.output_layer
+                if hasattr(agent.ext_online, "output_layer"):
+                    layer = agent.ext_online.output_layer
                     initial_sigma = layer.sigma.mean().item()
             n_extrinsic_run += 1
             if beta > 0:
@@ -133,7 +133,7 @@ if __name__ == "__main__":
                         print(f"Initial Extrinsic loss: {loss:.4f}")
                     # Update running stats (usually done in runner, but needed for RND/PopArt to see shifts)
                     # We use a random batch from the buffer for this simulation
-                    agent.update_running_stats(buffer_next_obs)
+                    agent.update_running_stats(buffer_next_obs, buffer_rewards)
 
                     if step == 0:
                         initial_rnd_loss = agent.last_losses.get("rnd", 0.0)
@@ -150,7 +150,7 @@ if __name__ == "__main__":
                         n_rnd_pass += 1
                 # Check PopArt
                 if popart:
-                    layer = agent.online.output_layer
+                    layer = agent.ext_online.output_layer
                     final_sigma = layer.sigma.mean().item()
                     print(f"  PopArt Sigma: {initial_sigma:.4f} -> {final_sigma:.4f}")
 

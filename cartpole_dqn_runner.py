@@ -63,6 +63,7 @@ def setup_config():
             "distributional": True,  # pillar (4)
             "ent_reg_coef": 0.01,  # pillar (2)
             "delayed": True,  # pillar (5)
+            "popart": False,
         }
     }
 
@@ -97,13 +98,11 @@ def setup_config():
         Beta=cfg.get("Beta", 0.0),
         ent_reg_coef=cfg.get("ent_reg_coef", 0.0),
         delayed=cfg.get("delayed", True),
+        popart=cfg.get("popart", True),
     )
     if AgentClass is RainbowDQN:
         dqn = AgentClass(
             obs_dim,
-            zmin=0,
-            zmax=200,
-            n_atoms=51,
             n_action_bins=2,
             n_action_dims=1,
             **common_kwargs,
@@ -134,12 +133,12 @@ if __name__ == "__main__":
                     # IQN forward expects batch + taus
                     obs_b = obs_t.unsqueeze(0)  # [1, obs_dim]
                     taus = agent._sample_taus(1, agent.n_quantiles, obs_b.device)
-                    quantiles = agent.online(obs_b, taus)  # [1, Nq, A]
+                    quantiles = agent.ext_online(obs_b, taus)  # [1, Nq, A]
                     ev = quantiles.mean(dim=1).squeeze(0)  # [A]
                     action = torch.argmax(ev, dim=-1).item()
                 else:
-                    q_vals = agent.online(obs_t)
-                    ev = agent.online.expected_value(q_vals)
+                    q_vals = agent.ext_online(obs_t)
+                    ev = agent.ext_online.expected_value(q_vals)
                     action = torch.argmax(ev, dim=-1).item()
             obs, r, term, trunc, info = lenv.step(action)
             reward += float(r)
@@ -162,11 +161,11 @@ if __name__ == "__main__":
     rnd_lr = dqn.rnd_optim.param_groups[0]["lr"] if hasattr(dqn, "rnd_optim") else 1e-3
 
     # Move networks/RND and normalizers to device
-    if hasattr(dqn, "online"):
-        dqn.online.to(device)
-    if hasattr(dqn, "target"):
-        dqn.target.to(device)
-        dqn.target.requires_grad_(False)
+    if hasattr(dqn, "ext_online"):
+        dqn.ext_online.to(device)
+    if hasattr(dqn, "ext_target"):
+        dqn.ext_target.to(device)
+        dqn.ext_target.requires_grad_(False)
     if hasattr(dqn, "int_online"):
         dqn.int_online.to(device)
     if hasattr(dqn, "int_target"):
@@ -181,8 +180,8 @@ if __name__ == "__main__":
         dqn.int_rms.to(device)
 
     # Recreate optimizers on moved parameters
-    if hasattr(dqn, "online"):
-        dqn.optim = torch.optim.Adam(dqn.online.parameters(), lr=main_lr)
+    if hasattr(dqn, "ext_online"):
+        dqn.optim = torch.optim.Adam(dqn.ext_online.parameters(), lr=main_lr)
     if hasattr(dqn, "int_online"):
         dqn.int_optim = torch.optim.Adam(dqn.int_online.parameters(), lr=int_lr)
     if hasattr(dqn, "rnd"):
@@ -231,7 +230,10 @@ if __name__ == "__main__":
 
         next_obs, r, term, trunc, info = env.step(action)
         # Update running stats with the freshly collected transition (single step)
-        dqn.update_running_stats(torch.from_numpy(next_obs).to(device).float())
+        dqn.update_running_stats(
+            torch.from_numpy(next_obs).to(device).float(),
+            torch.tensor(r, device=device).float(),
+        )
 
         # Save transition to memory buffer
         buff_actions[i % blen] = action
