@@ -8,14 +8,68 @@ from minigrid.wrappers import FlatObsWrapper, OneHotPartialObsWrapper, FullyObsW
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 
 
+class obs_transformer:
+    def __init__(self):
+        # 7x7 image, 3 channels (one-hot for IDs 1, 2, 8)
+        self.image_flat_size = 7 * 7 * 2
+        # Direction is one-hot encoded (4 values)
+        self.direction_size = 4
+        self.frame_size = self.image_flat_size + self.direction_size
+
+        # Last obs includes image and direction
+        self.last_obs = np.zeros(self.frame_size)
+
+    def transform(self, obs):
+        # Extract object ID channel
+        img = obs["image"][:, :, 0]
+        direction = obs["direction"]
+
+        # One-hot encode IDs: 2=Wall, 8=Goal
+        one_hot_img = np.zeros((7, 7, 2), dtype=np.float32)
+        one_hot_img[:, :, 0] = img == 2
+        one_hot_img[:, :, 1] = img == 8
+
+        # One-hot encode direction
+        one_hot_dir = np.zeros(4, dtype=np.float32)
+        one_hot_dir[direction] = 1.0
+
+        current_obs = one_hot_img.flatten()
+
+        # Combine current image and direction
+        current_full = np.concatenate([current_obs, one_hot_dir])
+
+        # Stack current and last frame
+        transformed_obs = np.concatenate([current_full, self.last_obs])
+
+        self.last_obs = current_full
+        return transformed_obs
+
+    def reset(self):
+        self.last_obs = np.zeros(self.frame_size)
+        return np.concatenate([self.last_obs, self.last_obs])
+
+
+class FastObsWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.transformer = obs_transformer()
+        dummy_obs = self.transformer.reset()
+        self.observation_space = gym.spaces.Box(
+            low=0, high=1, shape=(len(dummy_obs),), dtype=np.float32
+        )
+
+    def observation(self, obs):
+        return self.transformer.transform(obs)
+
+    def reset(self, **kwargs):
+        self.transformer.reset()
+        return super().reset(**kwargs)
+
+
 def make_env_thunk(fully_obs):
     def thunk():
         env = gym.make("MiniGrid-FourRooms-v0")
-        if fully_obs:
-            env = FullyObsWrapper(env)
-        else:
-            env = OneHotPartialObsWrapper(env)
-        env = FlatObsWrapper(env)
+        env = FastObsWrapper(env)
         return env
 
     return thunk
@@ -241,7 +295,7 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
     return sps, updates_performed / duration
 
 
-def run_grid_search(obs_dim, fully_obs=False, total_steps=2000):
+def run_grid_search(args, obs_dim, fully_obs=False, total_steps=2000):
     import json
     import os
 
@@ -253,11 +307,7 @@ def run_grid_search(obs_dim, fully_obs=False, total_steps=2000):
 
     num_envs_list = [1, 4, 8, 12, 16]
     best_results = {}
-
-    class DummyArgs:
-        pass
-
-    args = DummyArgs()
+    all_results = {}
     args.fully_obs = fully_obs
 
     for ablation in range(6):
@@ -269,6 +319,7 @@ def run_grid_search(obs_dim, fully_obs=False, total_steps=2000):
 
         best_sps = 0.0
         best_config = None
+        all_results[f"ablation_{ablation}"] = []
 
         for dev in devices:
             for num_envs in num_envs_list:
@@ -280,32 +331,46 @@ def run_grid_search(obs_dim, fully_obs=False, total_steps=2000):
                         args, dqn, obs_dim, total_steps=total_steps, batch_size=64
                     )
 
+                    current_config = {
+                        "device": dev,
+                        "num_envs": num_envs,
+                        "steps_per_sec": sps,
+                        "updates_per_sec": ups,
+                    }
+                    all_results[f"ablation_{ablation}"].append(current_config)
+
                     if sps > best_sps:
                         best_sps = sps
-                        best_config = {
-                            "device": dev,
-                            "num_envs": num_envs,
-                            "steps_per_sec": sps,
-                            "updates_per_sec": ups,
-                        }
+                        best_config = current_config
                 except Exception as e:
+                    import traceback
                     print(f"Error for device={dev}, num_envs={num_envs}: {e}")
+                    traceback.print_exc()
 
         best_results[f"ablation_{ablation}"] = best_config
         print(f"Best for Ablation {ablation}: {best_config}")
 
-    try:
-        username = os.getlogin()
-    except Exception:
-        import getpass
+    if hasattr(args, "grid_name") and args.grid_name is not None:
+        file_prefix = args.grid_name
+    else:
+        try:
+            file_prefix = os.getlogin()
+        except Exception:
+            import getpass
+            file_prefix = getpass.getuser()
 
-        username = getpass.getuser()
+    best_filename = f"{file_prefix}_best.json"
+    all_filename = f"{file_prefix}_all.json"
 
-    output_filename = f"{username}.json"
-    with open(output_filename, "w") as f:
+    with open(best_filename, "w") as f:
         json.dump(best_results, f, indent=4)
 
-    print(f"\nGrid search complete. Saved best configurations to {output_filename}")
+    with open(all_filename, "w") as f:
+        json.dump(all_results, f, indent=4)
+
+    print(
+        f"\nGrid search complete. Saved best configs to {best_filename} and all configs to {all_filename}"
+    )
 
 
 if __name__ == "__main__":
@@ -314,6 +379,12 @@ if __name__ == "__main__":
         "--grid_search",
         action="store_true",
         help="Run parameter grid search and save json",
+    )
+    parser.add_argument(
+        "--grid_name",
+        type=str,
+        default=None,
+        help="Custom prefix for the grid search json output file (default: system username)",
     )
     parser.add_argument(
         "--device",
@@ -340,7 +411,7 @@ if __name__ == "__main__":
     print("=====================")
 
     if args.grid_search:
-        run_grid_search(obs_dim, fully_obs=args.fully_obs, total_steps=5000)
+        run_grid_search(args, obs_dim, fully_obs=args.fully_obs, total_steps=5000)
     else:
         dqn = setup_config(args, obs_dim)
 

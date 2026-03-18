@@ -982,21 +982,28 @@ class EVRainbowDQN:
 
             eps_curr = 1 - step / n_steps
             if self.soft or self.munchausen:
-                actions = []
-                for d in range(self.n_action_dims):
-                    logits_d = q_comb[d] / self.tau
-                    dst = torch.distributions.Categorical(logits=logits_d)
-                    a_d = dst.sample().item()
-                    if verbose:
-                        print(
-                            f"Action dim {d}: logits {logits_d.cpu().numpy()}, probs {dst.probs.cpu().numpy()}"
-                        )
-                    actions.append(a_d)
-                return actions
-            if random.random() < eps_curr:
-                return torch.randint(
-                    0, self.n_action_bins, (self.n_action_dims,)
-                ).tolist()
-            if verbose:
-                print(f"Q-values combined: {q_comb.cpu().numpy()}")
-            return torch.argmax(q_comb, dim=-1).tolist()
+                logits = q_comb / self.tau
+                actions = torch.distributions.Categorical(logits=logits).sample()
+                if verbose:
+                    print(f"Logits: {logits.cpu().numpy()}")
+            else:
+                actions = torch.argmax(q_comb, dim=-1)
+                rand_vals = torch.rand(batch_size, device=obs_b.device)
+                explore_mask = rand_vals < eps_curr
+                if explore_mask.any():
+                    random_actions = torch.randint(
+                        0,
+                        self.n_action_bins,
+                        (batch_size, self.n_action_dims),
+                        device=obs_b.device,
+                    )
+                    actions = torch.where(
+                        explore_mask.unsqueeze(1), random_actions, actions
+                    )
+                if verbose:
+                    print(f"Q-values combined: {q_comb.cpu().numpy()}")
+
+            if is_batched:
+                return actions.tolist()
+            else:
+                return actions.squeeze(0).tolist()
