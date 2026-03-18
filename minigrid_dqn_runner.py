@@ -233,7 +233,7 @@ def make_env_thunk(fully_obs):
 
     return thunk
 
-def eval(agent, device, env_eval=None, step=0):
+def eval(agent, device, step=0, n_steps=300000, env_eval=None):
     """Greedy evaluation using agent.sample_action with eps=0 for IQN/Rainbow/EV parity."""
     if env_eval is None:
         env_eval = gym.make("MiniGrid-FourRooms-v0")
@@ -251,7 +251,7 @@ def eval(agent, device, env_eval=None, step=0):
                 eps=eps_current,
                 step=step,
                 n_steps=n_steps,
-                verbose=True,
+                verbose=False,
             )
         # action_bins may be list/tensor length 1 for minigrid
         if isinstance(action_bins, (list, tuple, np.ndarray)):
@@ -268,8 +268,9 @@ def eval(agent, device, env_eval=None, step=0):
         done = term or trunc
     return reward
 
-def train_dqn(vec_env, dqn, configurations, args):
-    vec_obs, info = vec_env.reset()
+def train_dqn(env, dqn, configurations, args, device, obs_dim):
+    obs_raw, _ = env.reset()
+    obs = env.unwrapped.transformer.transform(obs_raw) if hasattr(env.unwrapped, "transformer") else obs_raw
 
     n_steps = 300000
     rhist = []
@@ -335,7 +336,6 @@ def train_dqn(vec_env, dqn, configurations, args):
         if isinstance(action, list):
             action = action[0]
         next_obs, r, term, trunc, info = env.step(action)
-        next_obs = env1_transformer.transform(next_obs)
         # print(next_obs.shape)
         r = float(r) * 10.0
         # Update running stats with the freshly collected transition (single step)
@@ -397,10 +397,6 @@ def train_dqn(vec_env, dqn, configurations, args):
         ep_len += 1
         if term or trunc:
             next_obs_raw, info = env.reset()
-            next_obs = env1_transformer.reset()
-            next_obs = env1_transformer.transform(
-                next_obs_raw
-            )  # ensure last_obs updated
             rhist.append(r_ep)
             if len(rhist) < 20:
                 dt = time() - start_time
@@ -425,7 +421,7 @@ def train_dqn(vec_env, dqn, configurations, args):
             if ep % 50 == 0 and i > n_steps // 2:
                 evalr = 0.0
                 for k in range(5):
-                    evalr += eval(dqn, device, env_eval=env2, step=i, n_steps=n_steps)
+                    evalr += eval(dqn, device, step=i, n_steps=n_steps)
                 print(f"eval mean: {evalr/5}")
                 eval_hist.append(evalr / 5)
                 writer.add_scalar("eval/reward", float(eval_hist[-1]), i)
@@ -446,31 +442,35 @@ def train_dqn(vec_env, dqn, configurations, args):
             ep_len = 0
             r_ep = 0.0
         obs = next_obs
+    
+    writer.flush()
+    writer.close()
+    return {"rhist": rhist, "smooth_rhist": smooth_rhist, "lhist": lhist, "eval_hist": eval_hist, "train_time": time() - start_time}
 
-def plot_results(results):
+def plot_results(results, args):
     runner_name = "minigrid"
     results_dir = os.path.join("results", runner_name)
     os.makedirs(results_dir, exist_ok=True)
 
     np.save(
-        os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}.npy"), rhist
+        os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}.npy"), results["rhist"]
     )
     np.save(
         os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}.npy"),
-        eval_hist,
+        results["eval_hist"],
     )
     np.save(
-        os.path.join(results_dir, f"loss_hist_{args.run}_{args.ablation}.npy"), lhist
+        os.path.join(results_dir, f"loss_hist_{args.run}_{args.ablation}.npy"), results["lhist"]
     )
     np.save(
         os.path.join(
             results_dir, f"smooth_train_scores_{args.run}_{args.ablation}.npy"
         ),
-        smooth_rhist,
+        results["smooth_rhist"],
     )
 
-    plt.plot(rhist)
-    plt.plot(smooth_rhist)
+    plt.plot(results["rhist"])
+    plt.plot(results["smooth_rhist"])
     plt.legend(["R hist", "Smooth R hist"])
     plt.xlabel("Episode")
     plt.ylabel("Training Episode Reward")
@@ -478,41 +478,35 @@ def plot_results(results):
     plt.title(f"Training rewards, run {args.run} ablated: {args.ablation}")
     plt.savefig(os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}"))
     plt.close()
-    plt.plot(eval_hist)
+    plt.plot(results["eval_hist"])
     plt.grid()
     plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
     plt.savefig(os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}"))
     plt.close()
 
     # Save total wall clock training time
-    end_time = time()
-    train_time_seconds = end_time - start_time
+    train_time_seconds = results["train_time"]
     np.save(
         os.path.join(results_dir, f"train_time_{args.run}_{args.ablation}.npy"),
         train_time_seconds,
     )
     print(f"Training wall clock time: {train_time_seconds:.2f} seconds")
-    # Close TensorBoard writer
-    writer.flush()
-    writer.close()
 
 if __name__ == "__main__":
     
-    # Make ENV and vec env
-    env = gym.make("MiniGrid-FourRooms-v0")
-    env = FastObsWrapper(env)
-    obs, _ = env.reset()
-    obs_dim = len(obs)
-    env_fns = [make_env_thunk(args.fully_obs) for _ in range(args.num_envs)]
-    vec_env = gym.vector.AsyncVectorEnv(env_fns)
-
-    # Make DQN with correct device and args
-    action_dim = 3
+    # Setup config gets args inside
     dqn, device, configurations, args = setup_config()
     dqn.to(device)
 
+    # Make ENV 
+    env = gym.make("MiniGrid-FourRooms-v0")
+    env = FastObsWrapper(env)
+    obs_raw, _ = env.reset()
+    obs = env.unwrapped.transformer.transform(obs_raw) if hasattr(env.unwrapped, "transformer") else obs_raw
+    obs_dim = len(obs)
+
     # Train Model with intermittent eval
-    results = train_dqn(vec_env, dqn, configurations, args)
+    results = train_dqn(env, dqn, configurations, args, device, obs_dim)
 
     # Save artifacts under results/{runner_name}/
-    plot_results(results)
+    plot_results(results, args)
