@@ -9,9 +9,70 @@ from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 import argparse
 from torch.utils.tensorboard import SummaryWriter
 
+def get_args():
+    # Parse CLI arguments
+    parser = argparse.ArgumentParser(
+        description="MiniGrid DQN Runner (Rainbow/EV/ IQN-ready)"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Torch device to use (e.g., cpu, cuda, cuda:0)",
+    )
+    parser.add_argument(
+        "--ablation",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3, 4, 5],
+        help=(
+            "Which pillar to ablate: 0=None, 1=Mirror Descent (munchausen), "
+            "2=Magnet Regularization (entropy reg), 3=Optimism (Beta), "
+            "4=Distributional (use EV agent), 5=Delayed targets"
+        ),
+    )
+    parser.add_argument(
+        "--fully_obs",
+        action="store_true",
+        help="Use FullyObsWrapper instead of Partial OneHot wrapper (mutually exclusive).",
+    )
+    parser.add_argument(
+        "--run",
+        "--run_id",
+        dest="run",
+        type=int,
+        default=1,
+        help="Run id index for distinguishing multiple trials",
+    )
+    parser.add_argument(
+        "--best_params",
+        type=str,
+        default="timpc",
+        help="Prefix to the <prefix>_best.json file storing parallel hyper-parameters.",
+    )
+    args = parser.parse_args()
+
+    import json
+
+    if args.best_params:
+        best_json_path = f"{args.best_params}_best.json"
+
+        try:
+            with open(best_json_path, "r") as f:
+                best_results = json.load(f)
+                best_config = best_results.get(f"ablation_{args.ablation}")
+                if best_config:
+                    args.num_envs = best_config.get("num_envs", 1)
+                    args.device = best_config.get("device", args.device)
+        except Exception as e:
+            print(f"Failed to load best params from {best_json_path}: {e}")
+            args.num_envs = 1
+    else:
+        args.num_envs = 1
+    return args
 
 def setup_config():
-
+    args = get_args()
     # Resolve torch device; allow cuda or cuda:0 while safely falling back to cpu
     requested_device = args.device.strip()
     if requested_device.startswith("cuda") and not torch.cuda.is_available():
@@ -107,7 +168,6 @@ def setup_config():
 
     return dqn, device, configurations, args
 
-
 class obs_transformer:
     def __init__(self):
         # 7x7 image, 3 channels (one-hot for IDs 1, 2, 8)
@@ -149,7 +209,6 @@ class obs_transformer:
         self.last_obs = np.zeros(self.frame_size)
         return np.concatenate([self.last_obs, self.last_obs])
 
-
 class FastObsWrapper(gym.ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
@@ -166,7 +225,6 @@ class FastObsWrapper(gym.ObservationWrapper):
         self.transformer.reset()
         return super().reset(**kwargs)
 
-
 def make_env_thunk(fully_obs):
     def thunk():
         env = gym.make("MiniGrid-FourRooms-v0")
@@ -174,7 +232,6 @@ def make_env_thunk(fully_obs):
         return env
 
     return thunk
-
 
 def eval(agent, device, env_eval=None, step=0):
     """Greedy evaluation using agent.sample_action with eps=0 for IQN/Rainbow/EV parity."""
@@ -211,8 +268,9 @@ def eval(agent, device, env_eval=None, step=0):
         done = term or trunc
     return reward
 
+def train_dqn(vec_env, dqn, configurations, args):
+    vec_obs, info = vec_env.reset()
 
-def train_dqn():
     n_steps = 300000
     rhist = []
     smooth_rhist = []
@@ -389,86 +447,7 @@ def train_dqn():
             r_ep = 0.0
         obs = next_obs
 
-
-if __name__ == "__main__":
-    # Parse CLI arguments
-    parser = argparse.ArgumentParser(
-        description="MiniGrid DQN Runner (Rainbow/EV/ IQN-ready)"
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cpu",
-        help="Torch device to use (e.g., cpu, cuda, cuda:0)",
-    )
-    parser.add_argument(
-        "--ablation",
-        type=int,
-        default=0,
-        choices=[0, 1, 2, 3, 4, 5],
-        help=(
-            "Which pillar to ablate: 0=None, 1=Mirror Descent (munchausen), "
-            "2=Magnet Regularization (entropy reg), 3=Optimism (Beta), "
-            "4=Distributional (use EV agent), 5=Delayed targets"
-        ),
-    )
-    parser.add_argument(
-        "--fully_obs",
-        action="store_true",
-        help="Use FullyObsWrapper instead of Partial OneHot wrapper (mutually exclusive).",
-    )
-    parser.add_argument(
-        "--run",
-        "--run_id",
-        dest="run",
-        type=int,
-        default=1,
-        help="Run id index for distinguishing multiple trials",
-    )
-    parser.add_argument(
-        "--best_params",
-        type=str,
-        default="timpc",
-        help="Prefix to the <prefix>_best.json file storing parallel hyper-parameters.",
-    )
-    args = parser.parse_args()
-
-    import json
-
-    if args.best_params:
-        best_json_path = f"{args.best_params}_best.json"
-
-        try:
-            with open(best_json_path, "r") as f:
-                best_results = json.load(f)
-                best_config = best_results.get(f"ablation_{args.ablation}")
-                if best_config:
-                    args.num_envs = best_config.get("num_envs", 1)
-                    args.device = best_config.get("device", args.device)
-        except Exception as e:
-            print(f"Failed to load best params from {best_json_path}: {e}")
-            args.num_envs = 1
-    else:
-        args.num_envs = 1
-
-    env = gym.make("MiniGrid-FourRooms-v0")
-    env = FastObsWrapper(env)
-    obs, _ = env.reset()
-
-    env_fns = [make_env_thunk(args.fully_obs) for _ in range(args.num_envs)]
-    vec_env = gym.vector.AsyncVectorEnv(env_fns)
-    vec_obs, info = vec_env.reset()
-
-    env2 = gym.make("MiniGrid-FourRooms-v0")  # , render_mode="human")
-    env2 = FastObsWrapper(env2)
-
-    obs_dim = len(obs)
-
-    action_dim = 3
-    dqn, device, configurations, args = setup_config()
-    dqn.to(device)
-
-    # Save artifacts under results/{runner_name}/
+def plot_results(results):
     runner_name = "minigrid"
     results_dir = os.path.join("results", runner_name)
     os.makedirs(results_dir, exist_ok=True)
@@ -516,3 +495,24 @@ if __name__ == "__main__":
     # Close TensorBoard writer
     writer.flush()
     writer.close()
+
+if __name__ == "__main__":
+    
+    # Make ENV and vec env
+    env = gym.make("MiniGrid-FourRooms-v0")
+    env = FastObsWrapper(env)
+    obs, _ = env.reset()
+    obs_dim = len(obs)
+    env_fns = [make_env_thunk(args.fully_obs) for _ in range(args.num_envs)]
+    vec_env = gym.vector.AsyncVectorEnv(env_fns)
+
+    # Make DQN with correct device and args
+    action_dim = 3
+    dqn, device, configurations, args = setup_config()
+    dqn.to(device)
+
+    # Train Model with intermittent eval
+    results = train_dqn(vec_env, dqn, configurations, args)
+
+    # Save artifacts under results/{runner_name}/
+    plot_results(results)
