@@ -8,6 +8,8 @@ import numpy as np
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 import argparse
 from torch.utils.tensorboard import SummaryWriter
+import json
+
 
 def get_args():
     # Parse CLI arguments
@@ -52,8 +54,6 @@ def get_args():
     )
     args = parser.parse_args()
 
-    import json
-
     if args.best_params:
         best_json_path = f"{args.best_params}_best.json"
 
@@ -71,7 +71,8 @@ def get_args():
         args.num_envs = 1
     return args
 
-def setup_config():
+
+def setup_config(obs_dim):
     args = get_args()
     # Resolve torch device; allow cuda or cuda:0 while safely falling back to cpu
     requested_device = args.device.strip()
@@ -122,7 +123,7 @@ def setup_config():
         cfg["distributional"] = False
         cfg["dueling"] = False
         # Slightly reduce entropy reg to keep losses comparable (mirrors mujoco tweak)
-        cfg["ent_reg_coef"] = 0.01
+        cfg["ent_reg_coef"] = 0.005
     elif args.ablation == 5:
         # Delayed target off
         cfg["delayed"] = False
@@ -168,6 +169,7 @@ def setup_config():
 
     return dqn, device, configurations, args
 
+
 class obs_transformer:
     def __init__(self):
         # 7x7 image, 3 channels (one-hot for IDs 1, 2, 8)
@@ -209,6 +211,7 @@ class obs_transformer:
         self.last_obs = np.zeros(self.frame_size)
         return np.concatenate([self.last_obs, self.last_obs])
 
+
 class FastObsWrapper(gym.ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
@@ -225,6 +228,7 @@ class FastObsWrapper(gym.ObservationWrapper):
         self.transformer.reset()
         return super().reset(**kwargs)
 
+
 def make_env_thunk(fully_obs):
     def thunk():
         env = gym.make("MiniGrid-FourRooms-v0")
@@ -233,55 +237,57 @@ def make_env_thunk(fully_obs):
 
     return thunk
 
+
 def eval(agent, device, step=0, n_steps=300000, env_eval=None):
     """Greedy evaluation using agent.sample_action with eps=0 for IQN/Rainbow/EV parity."""
     if env_eval is None:
         env_eval = gym.make("MiniGrid-FourRooms-v0")
-        env_eval = FlatObsWrapper(env_eval)
-    et = obs_transformer()
+        env_eval = FastObsWrapper(env_eval)
     obs, info = env_eval.reset()
-    obs = et.transform(obs)
     done = False
     reward = 0.0
-    eps_current = 0.0
     while not done:
         with torch.no_grad():
             action_bins = agent.sample_action(
                 torch.from_numpy(np.asarray(obs)).to(device).float(),
-                eps=eps_current,
+                eps=0.0,
                 step=step,
                 n_steps=n_steps,
                 verbose=False,
             )
-        # action_bins may be list/tensor length 1 for minigrid
+
         if isinstance(action_bins, (list, tuple, np.ndarray)):
             action = int(action_bins[0])
         elif torch.is_tensor(action_bins):
             action = int(action_bins.view(-1)[0].item())
         else:
             action = int(action_bins)
-        print(action)
+
         obs, r, term, trunc, info = env_eval.step(action)
-        obs = et.transform(obs)
 
         reward += float(r)
         done = term or trunc
     return reward
 
-def train_dqn(env, dqn, configurations, args, device, obs_dim):
-    obs_raw, _ = env.reset()
-    obs = env.unwrapped.transformer.transform(obs_raw) if hasattr(env.unwrapped, "transformer") else obs_raw
 
-    n_steps = 300000
+def train_dqn(vec_env, dqn, configurations, args, device, obs_dim):
+    obs_raw, info = vec_env.reset()
+    obs = obs_raw
+
+    n_steps = 300000 // args.num_envs
     rhist = []
     smooth_rhist = []
     lhist = []
     eval_hist = []
-    r_ep = 0.0
+
+    # We maintain r_ep and ep_len for each parallel environment
+    r_ep = np.zeros(args.num_envs)
+    ep_len = np.zeros(args.num_envs, dtype=int)
     smooth_r = 0.0
     ep = 0
+
     blen = 10000
-    update_every = 8
+    update_every = 4
 
     # Memory buffer
     buff_actions = torch.zeros((blen,), dtype=torch.long, device=device)
@@ -305,147 +311,182 @@ def train_dqn(env, dqn, configurations, args, device, obs_dim):
     priority_r = torch.zeros((blen // 4,), dtype=torch.float32, device=device)
     priority_actions = torch.zeros((blen // 4,), dtype=torch.long, device=device)
 
+    from time import time
+
     start_time = time()
-    # Initialize TensorBoard writer
     runner_name = "minigrid"
     results_dir = os.path.join("results", runner_name)
     os.makedirs(results_dir, exist_ok=True)
     tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
     writer = SummaryWriter(log_dir=tb_dir)
     writer.add_scalar("run/started", 1, 0)
-    # Attach writer to agent so internal Rainbow/EV losses (extrinsic, intrinsic, rnd, etc.) are logged.
+
     if hasattr(dqn, "attach_tensorboard"):
         dqn.attach_tensorboard(writer, prefix="agent")
+
     n_updates = 0
+    steps_since_update = 0
     RND_BURN_IN = 1000
     BATCH_SIZE = 64
-    ep_len = 0
     priority_idx = 0
     priority_filled = 0
+
+    total_samples = 0
+    buffer_ptr = 0
+
     for i in range(n_steps):
-        # Decay epsilon faster (over 1/4 of training) to ensure policy stabilizes and fills buffer with successes
-        eps_current = 1 - i * 2 / n_steps
+        eps_current = 1 - (i * args.num_envs) * 2 / (n_steps * args.num_envs)
         eps_current = max(eps_current, 0.05)
-        tobs = torch.from_numpy(np.asarray(obs)).to(device).float()
+
+        tobs = torch.from_numpy(obs).to(device).float()
         action = dqn.sample_action(
             tobs,
             eps=eps_current,
-            step=i,
-            n_steps=n_steps,
+            step=total_samples,
+            n_steps=n_steps * args.num_envs,
         )
-        if isinstance(action, list):
-            action = action[0]
-        next_obs, r, term, trunc, info = env.step(action)
-        # print(next_obs.shape)
-        r = float(r) * 10.0
-        # Update running stats with the freshly collected transition (single step)
+
+        if isinstance(action, list) and isinstance(action[0], list):
+            action = [a[0] for a in action]
+
+        action = np.array(action)
+        next_obs, r, term, trunc, info = vec_env.step(action)
+
+        r_mult = r * 10.0
+
         if hasattr(dqn, "update_running_stats"):
             dqn.update_running_stats(
-                torch.from_numpy(np.asarray(next_obs)).to(device).float(),
-                torch.tensor(r, device=device).float(),
+                torch.from_numpy(next_obs).to(device).float(),
+                torch.tensor(r_mult, device=device).float(),
             )
 
-        # Save transition to memory buffer (flattened obs vectors)
-        buff_actions[i % blen] = int(action)
-        # copy into preallocated buffers
-        buff_obs[i % blen].copy_(torch.from_numpy(np.asarray(obs)).to(device).float())
-        buff_next_obs[i % blen].copy_(
-            torch.from_numpy(np.asarray(next_obs)).to(device).float()
-        )
-        buff_term[i % blen] = term or trunc
-        buff_r[i % blen] = float(r)
+        for env_i in range(args.num_envs):
+            idx = buffer_ptr % blen
 
-        if i > BATCH_SIZE and i % 2 == 0:
-            if i + BATCH_SIZE < RND_BURN_IN:
-                dqn.update(
-                    buff_obs,
-                    buff_actions,
-                    buff_r,
-                    buff_next_obs,
-                    buff_term,
-                    batch_size=BATCH_SIZE,
-                    step=min(i, blen),
-                )
-            else:
-                loss_val = dqn.update(
-                    buff_obs,
-                    buff_actions,
-                    buff_r,
-                    buff_next_obs,
-                    buff_term,
-                    batch_size=BATCH_SIZE,
-                    step=min(i, blen),
-                )
-                lhist.append(loss_val)
-                n_updates += 1
-                if priority_filled >= BATCH_SIZE:
-                    loss_priority = dqn.update(
-                        priority_obs,
-                        priority_actions,
-                        priority_r,
-                        priority_next_obs,
-                        priority_term,
-                        batch_size=BATCH_SIZE,
-                        step=min(priority_filled, blen // 4),
-                        extrinsic_only=True,
-                    )
-                    n_updates += 1
+            buff_actions[idx] = int(action[env_i])
+            buff_obs[idx].copy_(torch.from_numpy(obs[env_i]).to(device).float())
+            buff_next_obs[idx].copy_(
+                torch.from_numpy(next_obs[env_i]).to(device).float()
+            )
+            buff_term[idx] = float(term[env_i] or trunc[env_i])
+            buff_r[idx] = float(r_mult[env_i])
 
-                dqn.update_target()
+            buffer_ptr += 1
+            total_samples += 1
+            r_ep[env_i] += float(r_mult[env_i])
+            ep_len[env_i] += 1
 
-        r_ep += float(r)
-        ep_len += 1
-        if term or trunc:
-            next_obs_raw, info = env.reset()
-            rhist.append(r_ep)
-            if len(rhist) < 20:
-                dt = time() - start_time
-                print(
-                    f"reward for episode: {ep}: {r_ep} at {i/dt:.2f} steps/sec {n_updates/dt:.2f} updates/s {100*i/n_steps:.2f}%"
-                )
-                smooth_r = sum(rhist) / len(rhist)
-            else:
-                smooth_r = 0.05 * rhist[-1] + 0.95 * smooth_r
+            if term[env_i] or trunc[env_i]:
+                rhist.append(r_ep[env_i])
+                if len(rhist) < 20:
+                    smooth_r = sum(rhist) / len(rhist)
+                else:
+                    smooth_r = 0.05 * rhist[-1] + 0.95 * smooth_r
+
+                smooth_rhist.append(smooth_r)
+                ep += 1
+
                 if ep % 10 == 0:
                     dt = time() - start_time
                     print(
-                        f"reward for episode: {ep}: {r_ep} at {i/dt:.2f} steps/sec {n_updates/dt:.2f} updates/s {100*i/n_steps:.2f}%"
+                        f"reward for episode: {ep}: {r_ep[env_i]:.2f} at {total_samples/dt:.2f} steps/sec {n_updates/dt:.2f} updates/s {100*total_samples/(n_steps*args.num_envs):.2f}%"
                     )
-            smooth_rhist.append(smooth_r)
 
-            ep += 1
-            # TensorBoard: episode metrics
-            writer.add_scalar("episode/reward", float(rhist[-1]), i)
-            writer.add_scalar("episode/smooth_reward", float(smooth_r), i)
+                writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
+                writer.add_scalar(
+                    "episode/smooth_reward", float(smooth_r), total_samples
+                )
 
-            if ep % 50 == 0 and i > n_steps // 2:
-                evalr = 0.0
-                for k in range(5):
-                    evalr += eval(dqn, device, step=i, n_steps=n_steps)
-                print(f"eval mean: {evalr/5}")
-                eval_hist.append(evalr / 5)
-                writer.add_scalar("eval/reward", float(eval_hist[-1]), i)
+                if ep % 50 == 0 and total_samples > (n_steps * args.num_envs) // 2:
+                    evalr = 0.0
+                    for k in range(5):
+                        evalr += eval(
+                            dqn,
+                            device,
+                            step=total_samples,
+                            n_steps=n_steps * args.num_envs,
+                        )
+                    print(f"eval mean: {evalr/5}")
+                    eval_hist.append(evalr / 5)
+                    writer.add_scalar(
+                        "eval/reward", float(eval_hist[-1]), total_samples
+                    )
 
-            # if this episode was better than the running smooth reward, add to priority buffer
-            if r_ep > smooth_r:
-                store_len = min(ep_len, blen // 4)
-                for idx in range(store_len, 0, -1):
-                    buff_idx = (i - idx) % blen
-                    pidx = (priority_idx + store_len - idx) % (blen // 4)
-                    priority_obs[pidx].copy_(buff_obs[buff_idx])
-                    priority_next_obs[pidx].copy_(buff_next_obs[buff_idx])
-                    priority_term[pidx] = buff_term[buff_idx]
-                    priority_r[pidx] = buff_r[buff_idx]
-                    priority_actions[pidx] = buff_actions[buff_idx]
-                priority_idx = (priority_idx + store_len) % (blen // 4)
-                priority_filled = min(priority_filled + store_len, blen // 4)
-            ep_len = 0
-            r_ep = 0.0
+                if r_ep[env_i] > smooth_r:
+                    store_len = min(ep_len[env_i], blen // 4)
+                    for k in range(store_len, 0, -1):
+                        # The transitions for env_i are spaced apart by args.num_envs in the flat buffer
+                        # Since buffer_ptr was just incremented by 1 for this env_i, its current index is buffer_ptr - 1
+                        # Wait, we need to go back (k-1) more steps. Each previous step is back args.num_envs indices.
+                        steps_back = store_len - k
+                        buff_idx = (buffer_ptr - 1 - steps_back * args.num_envs) % blen
+
+                        pidx = (priority_idx + store_len - k) % (blen // 4)
+                        priority_obs[pidx].copy_(buff_obs[buff_idx])
+                        priority_next_obs[pidx].copy_(buff_next_obs[buff_idx])
+                        priority_term[pidx] = buff_term[buff_idx]
+                        priority_r[pidx] = buff_r[buff_idx]
+                        priority_actions[pidx] = buff_actions[buff_idx]
+                    priority_idx = (priority_idx + store_len) % (blen // 4)
+                    priority_filled = min(priority_filled + store_len, blen // 4)
+
+                ep_len[env_i] = 0
+                r_ep[env_i] = 0.0
+
         obs = next_obs
-    
+
+        steps_since_update += args.num_envs
+        while steps_since_update >= update_every:
+            if total_samples > BATCH_SIZE:
+                if total_samples < RND_BURN_IN:
+                    dqn.update(
+                        buff_obs,
+                        buff_actions,
+                        buff_r,
+                        buff_next_obs,
+                        buff_term,
+                        batch_size=BATCH_SIZE,
+                        step=min(total_samples, blen),
+                    )
+                    n_updates += 1
+                else:
+                    loss_val = dqn.update(
+                        buff_obs,
+                        buff_actions,
+                        buff_r,
+                        buff_next_obs,
+                        buff_term,
+                        batch_size=BATCH_SIZE,
+                        step=min(total_samples, blen),
+                    )
+                    lhist.append(loss_val)
+                    n_updates += 1
+                    if priority_filled >= BATCH_SIZE:
+                        loss_priority = dqn.update(
+                            priority_obs,
+                            priority_actions,
+                            priority_r,
+                            priority_next_obs,
+                            priority_term,
+                            batch_size=BATCH_SIZE,
+                            step=min(priority_filled, blen // 4),
+                            extrinsic_only=True,
+                        )
+                        n_updates += 1
+
+                    dqn.update_target()
+            steps_since_update -= update_every
+
     writer.flush()
     writer.close()
-    return {"rhist": rhist, "smooth_rhist": smooth_rhist, "lhist": lhist, "eval_hist": eval_hist, "train_time": time() - start_time}
+    return {
+        "rhist": rhist,
+        "smooth_rhist": smooth_rhist,
+        "lhist": lhist,
+        "eval_hist": eval_hist,
+        "train_time": time() - start_time,
+    }
+
 
 def plot_results(results, args):
     runner_name = "minigrid"
@@ -453,14 +494,16 @@ def plot_results(results, args):
     os.makedirs(results_dir, exist_ok=True)
 
     np.save(
-        os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}.npy"), results["rhist"]
+        os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}.npy"),
+        results["rhist"],
     )
     np.save(
         os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}.npy"),
         results["eval_hist"],
     )
     np.save(
-        os.path.join(results_dir, f"loss_hist_{args.run}_{args.ablation}.npy"), results["lhist"]
+        os.path.join(results_dir, f"loss_hist_{args.run}_{args.ablation}.npy"),
+        results["lhist"],
     )
     np.save(
         os.path.join(
@@ -492,21 +535,32 @@ def plot_results(results, args):
     )
     print(f"Training wall clock time: {train_time_seconds:.2f} seconds")
 
+
 if __name__ == "__main__":
-    
+
+    args = get_args()
+    print(f"Args: {args}")
+
+    # Make a dummy ENV to get obs_dim
+    dummy_env = gym.make("MiniGrid-FourRooms-v0")
+    dummy_env = FastObsWrapper(dummy_env)
+    obs_raw, _ = dummy_env.reset()
+    obs_dim = len(obs_raw)
+    dummy_env.close()
+
     # Setup config gets args inside
-    dqn, device, configurations, args = setup_config()
+    dqn, device, configurations, _ = setup_config(obs_dim)
     dqn.to(device)
 
-    # Make ENV 
-    env = gym.make("MiniGrid-FourRooms-v0")
-    env = FastObsWrapper(env)
-    obs_raw, _ = env.reset()
-    obs = env.unwrapped.transformer.transform(obs_raw) if hasattr(env.unwrapped, "transformer") else obs_raw
-    obs_dim = len(obs)
+    # Make real ENV
+    env_fns = [make_env_thunk(args.fully_obs) for _ in range(args.num_envs)]
+    vec_env = gym.vector.AsyncVectorEnv(env_fns)
+    obs_raw, _ = vec_env.reset()
+    obs_dim = obs_raw.shape[1] if len(obs_raw.shape) > 1 else len(obs_raw[0])
 
     # Train Model with intermittent eval
-    results = train_dqn(env, dqn, configurations, args, device, obs_dim)
+    results = train_dqn(vec_env, dqn, configurations, args, device, obs_dim)
 
     # Save artifacts under results/{runner_name}/
     plot_results(results, args)
+    vec_env.close()

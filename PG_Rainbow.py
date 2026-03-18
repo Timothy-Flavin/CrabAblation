@@ -11,25 +11,25 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 
 class Agent(nn.Module):
-    def __init__(self, envs):
+    def __init__(self, envs, hidden_size=128):
         super().__init__()
         self.critic = nn.Sequential(
             layer_init(
                 nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)
             ),
             nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
+            layer_init(nn.Linear(hidden_size, hidden_size)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, 1), std=1.0),
+            layer_init(nn.Linear(hidden_size, 1), std=1.0),
         )
         self.actor = nn.Sequential(
             layer_init(
                 nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)
             ),
             nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
+            layer_init(nn.Linear(hidden_size, hidden_size)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
+            layer_init(nn.Linear(hidden_size, envs.single_action_space.n), std=0.01),
         )
 
     def get_value(self, x):
