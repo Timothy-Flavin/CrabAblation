@@ -312,7 +312,7 @@ if __name__ == "__main__":
     r_ep = 0.0
     smooth_r = 0.0
     ep = 0
-    blen = 50000
+    blen = 10000
     update_every = 1
 
     # Memory buffer
