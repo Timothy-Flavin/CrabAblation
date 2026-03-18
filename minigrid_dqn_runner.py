@@ -150,160 +150,69 @@ class obs_transformer:
         return np.concatenate([self.last_obs, self.last_obs])
 
 
-if __name__ == "__main__":
-    # Parse CLI arguments
-    parser = argparse.ArgumentParser(
-        description="MiniGrid DQN Runner (Rainbow/EV/ IQN-ready)"
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cpu",
-        help="Torch device to use (e.g., cpu, cuda, cuda:0)",
-    )
-    parser.add_argument(
-        "--ablation",
-        type=int,
-        default=0,
-        choices=[0, 1, 2, 3, 4, 5],
-        help=(
-            "Which pillar to ablate: 0=None, 1=Mirror Descent (munchausen), "
-            "2=Magnet Regularization (entropy reg), 3=Optimism (Beta), "
-            "4=Distributional (use EV agent), 5=Delayed targets"
-        ),
-    )
-    parser.add_argument(
-        "--fully_obs",
-        action="store_true",
-        help="Use FullyObsWrapper instead of Partial OneHot wrapper (mutually exclusive).",
-    )
-    parser.add_argument(
-        "--run",
-        "--run_id",
-        dest="run",
-        type=int,
-        default=1,
-        help="Run id index for distinguishing multiple trials",
-    )
-    args = parser.parse_args()
+class FastObsWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.transformer = obs_transformer()
+        dummy_obs = self.transformer.reset()
+        self.observation_space = gym.spaces.Box(
+            low=0, high=1, shape=(len(dummy_obs),), dtype=np.float32
+        )
 
-    def eval(agent, device, env_eval=None, step=0, n_steps=200000):
-        """Greedy evaluation using agent.sample_action with eps=0 for IQN/Rainbow/EV parity."""
-        if env_eval is None:
-            env_eval = gym.make("MiniGrid-FourRooms-v0")
-            env_eval = FlatObsWrapper(env_eval)
-        et = obs_transformer()
-        obs, info = env_eval.reset()
+    def observation(self, obs):
+        return self.transformer.transform(obs)
+
+    def reset(self, **kwargs):
+        self.transformer.reset()
+        return super().reset(**kwargs)
+
+
+def make_env_thunk(fully_obs):
+    def thunk():
+        env = gym.make("MiniGrid-FourRooms-v0")
+        env = FastObsWrapper(env)
+        return env
+
+    return thunk
+
+
+def eval(agent, device, env_eval=None, step=0):
+    """Greedy evaluation using agent.sample_action with eps=0 for IQN/Rainbow/EV parity."""
+    if env_eval is None:
+        env_eval = gym.make("MiniGrid-FourRooms-v0")
+        env_eval = FlatObsWrapper(env_eval)
+    et = obs_transformer()
+    obs, info = env_eval.reset()
+    obs = et.transform(obs)
+    done = False
+    reward = 0.0
+    eps_current = 0.0
+    while not done:
+        with torch.no_grad():
+            action_bins = agent.sample_action(
+                torch.from_numpy(np.asarray(obs)).to(device).float(),
+                eps=eps_current,
+                step=step,
+                n_steps=n_steps,
+                verbose=True,
+            )
+        # action_bins may be list/tensor length 1 for minigrid
+        if isinstance(action_bins, (list, tuple, np.ndarray)):
+            action = int(action_bins[0])
+        elif torch.is_tensor(action_bins):
+            action = int(action_bins.view(-1)[0].item())
+        else:
+            action = int(action_bins)
+        print(action)
+        obs, r, term, trunc, info = env_eval.step(action)
         obs = et.transform(obs)
-        done = False
-        reward = 0.0
-        eps_current = 1 - step * 2 / n_steps
-        eps_current = max(eps_current, 0.05)
-        while not done:
-            with torch.no_grad():
-                action_bins = agent.sample_action(
-                    torch.from_numpy(np.asarray(obs)).to(device).float(),
-                    eps=eps_current,
-                    step=step,
-                    n_steps=n_steps,
-                    verbose=True,
-                )
-            # action_bins may be list/tensor length 1 for minigrid
-            if isinstance(action_bins, (list, tuple, np.ndarray)):
-                action = int(action_bins[0])
-            elif torch.is_tensor(action_bins):
-                action = int(action_bins.view(-1)[0].item())
-            else:
-                action = int(action_bins)
-            print(action)
-            obs, r, term, trunc, info = env_eval.step(action)
-            obs = et.transform(obs)
 
-            reward += float(r)
-            done = term or trunc
-        return reward
+        reward += float(r)
+        done = term or trunc
+    return reward
 
-    env = gym.make("MiniGrid-FourRooms-v0")
-    obs, _ = env.reset()
-    env1_transformer = obs_transformer()
-    obs = env1_transformer.transform(obs)
-    # print(obs)
-    # print(obs["image"].shape)
-    # print(obs["direction"])
-    # env = FlatObsWrapper(env)
-    # print(obs.shape)
-    # print(obs)
-    # exit()
-    # if args.fully_obs:
-    #     # Fully observed grid; DO NOT stack partial one-hot wrapper (they conflict)
-    #     env = FullyObsWrapper(env)
-    # else:
-    #     # Partial observation -> one-hot encode
-    #     env = OneHotPartialObsWrapper(env)
-    # env = FlatObsWrapper(env)
 
-    env2 = gym.make("MiniGrid-FourRooms-v0")  # , render_mode="human")
-    env2_transformer = obs_transformer()
-    # if args.fully_obs:
-    #     env2 = FullyObsWrapper(env2)
-    # else:
-    #     env2 = OneHotPartialObsWrapper(env2)
-    # env2 = FlatObsWrapper(env2)
-    # obs2, _ = env2.reset()  # This now produces an RGB tensor only
-    # obs2, info2 = env2.reset()
-    # obs2 = obs2["image"].flatten()
-    obs_dim = len(obs)
-    # Determine action and observation dimensions
-    # if (
-    #     isinstance(env.observation_space, gym.spaces.Box)
-    #     and env.observation_space.shape is not None
-    # ):
-    #     obs_dim = len(obs)  # int(np.prod(env.observation_space.shape))
-    # else:
-    #     # for dict observation spaces, infer from a sample obs
-    #     sample = obs
-    #     if isinstance(sample, dict):
-    #         img = sample.get("image") or sample.get("obs")
-    #         obs_dim = int(np.prod(np.asarray(img).shape))
-    #     else:
-    #         obs_dim = int(np.prod(np.asarray(sample).shape))
-
-    action_dim = 3
-    dqn, device, configurations, args = setup_config()
-    # Move all agent submodules to the selected device and reinitialize optimizers
-    # Note: Optimizers need to be recreated after moving parameters across devices.
-    # Capture learning rates prior to reinitialization
-    main_lr = dqn.optim.param_groups[0]["lr"] if hasattr(dqn, "optim") else 1e-3
-    int_lr = dqn.int_optim.param_groups[0]["lr"] if hasattr(dqn, "int_optim") else 1e-3
-    rnd_lr = dqn.rnd_optim.param_groups[0]["lr"] if hasattr(dqn, "rnd_optim") else 1e-3
-
-    # Move networks/RND and normalizers to device
-    if hasattr(dqn, "ext_online"):
-        dqn.ext_online.to(device)
-    if hasattr(dqn, "ext_target"):
-        dqn.ext_target.to(device)
-        dqn.ext_target.requires_grad_(False)
-    if hasattr(dqn, "int_online"):
-        dqn.int_online.to(device)
-    if hasattr(dqn, "int_target"):
-        dqn.int_target.to(device)
-        dqn.int_target.requires_grad_(False)
-    if hasattr(dqn, "rnd") and hasattr(dqn.rnd, "to"):
-        dqn.rnd.to(device)
-    # Running stats modules
-    if hasattr(dqn, "obs_rms") and hasattr(dqn.obs_rms, "to"):
-        dqn.obs_rms.to(device)
-    if hasattr(dqn, "int_rms") and hasattr(dqn.int_rms, "to"):
-        dqn.int_rms.to(device)
-
-    # Recreate optimizers on moved parameters
-    if hasattr(dqn, "ext_online"):
-        dqn.optim = torch.optim.Adam(dqn.ext_online.parameters(), lr=1e-3)
-    if hasattr(dqn, "int_online"):
-        dqn.int_optim = torch.optim.Adam(dqn.int_online.parameters(), lr=1e-3)
-    if hasattr(dqn, "rnd"):
-        dqn.rnd_optim = torch.optim.Adam(dqn.rnd.predictor.parameters(), lr=1e-3)
-
+def train_dqn():
     n_steps = 300000
     rhist = []
     smooth_rhist = []
@@ -313,7 +222,7 @@ if __name__ == "__main__":
     smooth_r = 0.0
     ep = 0
     blen = 10000
-    update_every = 1
+    update_every = 8
 
     # Memory buffer
     buff_actions = torch.zeros((blen,), dtype=torch.long, device=device)
@@ -479,6 +388,85 @@ if __name__ == "__main__":
             ep_len = 0
             r_ep = 0.0
         obs = next_obs
+
+
+if __name__ == "__main__":
+    # Parse CLI arguments
+    parser = argparse.ArgumentParser(
+        description="MiniGrid DQN Runner (Rainbow/EV/ IQN-ready)"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Torch device to use (e.g., cpu, cuda, cuda:0)",
+    )
+    parser.add_argument(
+        "--ablation",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3, 4, 5],
+        help=(
+            "Which pillar to ablate: 0=None, 1=Mirror Descent (munchausen), "
+            "2=Magnet Regularization (entropy reg), 3=Optimism (Beta), "
+            "4=Distributional (use EV agent), 5=Delayed targets"
+        ),
+    )
+    parser.add_argument(
+        "--fully_obs",
+        action="store_true",
+        help="Use FullyObsWrapper instead of Partial OneHot wrapper (mutually exclusive).",
+    )
+    parser.add_argument(
+        "--run",
+        "--run_id",
+        dest="run",
+        type=int,
+        default=1,
+        help="Run id index for distinguishing multiple trials",
+    )
+    parser.add_argument(
+        "--best_params",
+        type=str,
+        default="timpc",
+        help="Prefix to the <prefix>_best.json file storing parallel hyper-parameters.",
+    )
+    args = parser.parse_args()
+
+    import json
+
+    if args.best_params:
+        best_json_path = f"{args.best_params}_best.json"
+
+        try:
+            with open(best_json_path, "r") as f:
+                best_results = json.load(f)
+                best_config = best_results.get(f"ablation_{args.ablation}")
+                if best_config:
+                    args.num_envs = best_config.get("num_envs", 1)
+                    args.device = best_config.get("device", args.device)
+        except Exception as e:
+            print(f"Failed to load best params from {best_json_path}: {e}")
+            args.num_envs = 1
+    else:
+        args.num_envs = 1
+
+    env = gym.make("MiniGrid-FourRooms-v0")
+    env = FastObsWrapper(env)
+    obs, _ = env.reset()
+
+    env_fns = [make_env_thunk(args.fully_obs) for _ in range(args.num_envs)]
+    vec_env = gym.vector.AsyncVectorEnv(env_fns)
+    vec_obs, info = vec_env.reset()
+
+    env2 = gym.make("MiniGrid-FourRooms-v0")  # , render_mode="human")
+    env2 = FastObsWrapper(env2)
+
+    obs_dim = len(obs)
+
+    action_dim = 3
+    dqn, device, configurations, args = setup_config()
+    dqn.to(device)
 
     # Save artifacts under results/{runner_name}/
     runner_name = "minigrid"
