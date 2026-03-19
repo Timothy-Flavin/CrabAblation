@@ -409,7 +409,7 @@ class RainbowDQN:
             ev_all = quantiles.mean(dim=1)  # [B,D,Bins]
             pi = torch.softmax(ev_all / self.tau, dim=-1)
             logpi = torch.log_softmax(ev_all / self.tau, dim=-1)
-            entropy_per_dim = -(pi * logpi).sum(dim=-1)  # [B,D]
+            entropy_per_dim = -(pi * torch.clamp(logpi, min=-1e8)).sum(dim=-1)  # [B,D]
             entropy = entropy_per_dim.mean()  # average over dims
             entropy_val = float(entropy.item())
             loss = loss - self.ent_reg_coef * entropy
@@ -672,7 +672,7 @@ class EVRainbowDQN:
     def _soft_policy(self, q_values: torch.Tensor):
         pi = torch.softmax(q_values / self.tau, dim=-1)
         logpi = torch.log_softmax(q_values / self.tau, dim=-1)
-        ent = -(pi * logpi).sum(dim=-1)  # [B]
+        ent = -(pi * torch.clamp(logpi, min=-1e8)).sum(dim=-1)  # [B]
         return pi, logpi, ent
 
     def update(self, obs, a, r, next_obs, term, batch_size, step=0):

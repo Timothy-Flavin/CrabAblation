@@ -420,7 +420,7 @@ class RainbowDQN:
                 # Soft reward for future policy entropy
                 logpi_next = torch.log_softmax(online_next_q_norm / self.tau, dim=-1)
                 pi_next = torch.exp(logpi_next)  # [B,D,Bins]
-                ent_bonus_per_dim = -(pi_next * logpi_next).sum(dim=-1)  # [B,D]
+                ent_bonus_per_dim = -(pi_next * torch.clamp(logpi_next, min=-1e8)).sum(dim=-1)  # [B,D]
                 ent_bonus = ent_bonus_per_dim.sum(dim=-1).unsqueeze(1)  # [B,1]
 
                 # Quantile target expected values
@@ -472,7 +472,7 @@ class RainbowDQN:
                 qm = quantiles_norm.mean(dim=1)
                 logpi = torch.log_softmax(qm / self.tau, dim=-1)
                 pi = torch.exp(logpi)  # [B,D,Bins]
-                entropy_per_dim = (pi * logpi).sum(dim=-1)  # [B,D]
+                entropy_per_dim = (pi * torch.clamp(logpi, min=-1e8)).sum(dim=-1)  # [B,D]
                 entropy = entropy_per_dim.mean()  # average over dims
                 e_loss = self.ent_reg_coef * entropy
 
@@ -531,6 +531,7 @@ class RainbowDQN:
         )
         self.optim.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.ext_online.parameters(), max_norm=10.0)
         self.optim.step()
         if isinstance(m_r, torch.Tensor):
             m_r = m_r.mean()
@@ -606,6 +607,7 @@ class RainbowDQN:
 
         self.int_optim.zero_grad()
         int_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.int_online.parameters(), max_norm=10.0)
         self.int_optim.step()
         return int_loss
 
@@ -771,7 +773,7 @@ class EVRainbowDQN:
     def _soft_policy(self, q_values: torch.Tensor):
         pi = torch.softmax(q_values / self.tau, dim=-1)
         logpi = torch.log_softmax(q_values / self.tau, dim=-1)
-        ent = -(pi * logpi).sum(dim=-1)  # [B]
+        ent = -(pi * torch.clamp(logpi, min=-1e8)).sum(dim=-1)  # [B]
         return pi, logpi, ent
 
     def update(
@@ -826,7 +828,7 @@ class EVRainbowDQN:
         if self.ent_reg_coef > 0.0:
             logpi_now = torch.log_softmax(q_now / self.tau, dim=-1)
             pi_now = torch.exp(logpi_now)
-            entropy_loss = (pi_now * logpi_now).sum(dim=-1).mean()
+            entropy_loss = (pi_now * torch.clamp(logpi_now, min=-1e8)).sum(dim=-1).mean()
 
         with torch.no_grad():
             if b_actions.ndim == 1:
@@ -855,7 +857,7 @@ class EVRainbowDQN:
                 # Need next probs for next entropy if soft
                 logpi_next = torch.log_softmax(q_next / self.tau, dim=-1)
                 pi_next = torch.exp(logpi_next)
-                next_head_vals = (pi_next * (self.alpha * logpi_next + q_next)).sum(-1)
+                next_head_vals = (pi_next * (self.alpha * torch.clamp(logpi_next, min=-1e8) + q_next)).sum(-1)
             else:
                 next_head_vals = torch.max(q_next, dim=-1).values
 
@@ -876,6 +878,8 @@ class EVRainbowDQN:
         extrinsic_loss = extrinsic_loss + self.ent_reg_coef * entropy_loss
         self.optim.zero_grad()
         extrinsic_loss.backward()
+        if hasattr(self, "ext_online"):
+            torch.nn.utils.clip_grad_norm_(self.ext_online.parameters(), max_norm=10.0)
         self.optim.step()
         if extrinsic_only:
             return float(extrinsic_loss.item())
@@ -906,6 +910,8 @@ class EVRainbowDQN:
         )
         self.int_optim.zero_grad()
         intrinsic_loss.backward()
+        if hasattr(self, "int_online"):
+            torch.nn.utils.clip_grad_norm_(self.int_online.parameters(), max_norm=10.0)
         self.int_optim.step()
 
         # collecting values for tensorboard
