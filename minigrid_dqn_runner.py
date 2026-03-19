@@ -253,7 +253,6 @@ def eval(agent, device, step=0, n_steps=300000, env_eval=None):
                 eps=0.0,
                 step=step,
                 n_steps=n_steps,
-                verbose=False,
             )
 
         if isinstance(action_bins, (list, tuple, np.ndarray)):
