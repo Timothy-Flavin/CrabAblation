@@ -2,7 +2,15 @@ from time import time
 import os
 import torch
 import gymnasium as gym
-from minigrid.wrappers import FlatObsWrapper, OneHotPartialObsWrapper, FullyObsWrapper
+
+try:
+    from minigrid.wrappers import (
+        FlatObsWrapper,
+        OneHotPartialObsWrapper,
+        FullyObsWrapper,
+    )
+except ModuleNotFoundError:
+    pass
 import matplotlib.pyplot as plt
 import numpy as np
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
@@ -11,10 +19,22 @@ from torch.utils.tensorboard import SummaryWriter
 import json
 
 
+# Map per-dimension discrete bin indices to continuous actions (-1, 0, 1)
+def bins_to_continuous(action_bins):
+    return np.array([b - 1.0 for b in action_bins], dtype=np.float32)
+
+
 def get_args():
     # Parse CLI arguments
     parser = argparse.ArgumentParser(
         description="MiniGrid DQN Runner (Rainbow/EV/ IQN-ready)"
+    )
+    parser.add_argument(
+        "--env_name",
+        type=str,
+        default="minigrid",
+        choices=["cartpole", "minigrid", "mujoco"],
+        help="Which environment to train",
     )
     parser.add_argument(
         "--device",
@@ -130,8 +150,22 @@ def setup_config(obs_dim):
 
     AgentClass = RainbowDQN if cfg.get("distributional", True) else EVRainbowDQN
     # Common args
-    n_action_dims = 1
-    n_action_bins = 3
+    if args.env_name == "minigrid":
+        n_action_dims = 1
+        n_action_bins = 3
+        hidden_layer_sizes = [128, 128]
+        norm_obs = False
+    elif args.env_name == "cartpole":
+        n_action_dims = 1
+        n_action_bins = 2
+        hidden_layer_sizes = [64, 64]
+        norm_obs = False
+    elif args.env_name == "mujoco":
+        n_action_dims = 6
+        n_action_bins = 3
+        hidden_layer_sizes = [512, 512]
+        norm_obs = False
+
     common_kwargs = dict(
         soft=cfg.get("soft", True),
         munchausen=cfg.get("munchausen", True),
@@ -150,9 +184,9 @@ def setup_config(obs_dim):
             obs_dim,
             n_action_dims,
             n_action_bins,
-            hidden_layer_sizes=[128, 128],
+            hidden_layer_sizes=hidden_layer_sizes,
             Beta_half_life_steps=50000,
-            norm_obs=False,
+            norm_obs=norm_obs,
             burn_in_updates=1000,
             **common_kwargs,
         )
@@ -161,8 +195,8 @@ def setup_config(obs_dim):
             obs_dim,
             n_action_dims,
             n_action_bins,
-            hidden_layer_sizes=[128, 128],
-            norm_obs=False,
+            hidden_layer_sizes=hidden_layer_sizes,
+            norm_obs=norm_obs,
             burn_in_updates=1000,
             **common_kwargs,
         )
@@ -229,20 +263,30 @@ class FastObsWrapper(gym.ObservationWrapper):
         return super().reset(**kwargs)
 
 
-def make_env_thunk(fully_obs):
+def make_env_thunk(fully_obs, env_name):
     def thunk():
-        env = gym.make("MiniGrid-FourRooms-v0")
-        env = FastObsWrapper(env)
+        if env_name == "minigrid":
+            env = gym.make("MiniGrid-FourRooms-v0")
+            env = FastObsWrapper(env)
+        elif env_name == "cartpole":
+            env = gym.make("CartPole-v1")
+        elif env_name == "mujoco":
+            env = gym.make("HalfCheetah-v5")
         return env
 
     return thunk
 
 
-def eval(agent, device, step=0, n_steps=300000, env_eval=None):
+def eval(agent, device, step=0, n_steps=300000, env_eval=None, env_name="minigrid"):
     """Greedy evaluation using agent.sample_action with eps=0 for IQN/Rainbow/EV parity."""
     if env_eval is None:
-        env_eval = gym.make("MiniGrid-FourRooms-v0")
-        env_eval = FastObsWrapper(env_eval)
+        if env_name == "minigrid":
+            env_eval = gym.make("MiniGrid-FourRooms-v0")
+            env_eval = FastObsWrapper(env_eval)
+        elif env_name == "cartpole":
+            env_eval = gym.make("CartPole-v1")
+        elif env_name == "mujoco":
+            env_eval = gym.make("HalfCheetah-v5")
     obs, info = env_eval.reset()
     done = False
     reward = 0.0
@@ -255,12 +299,15 @@ def eval(agent, device, step=0, n_steps=300000, env_eval=None):
                 n_steps=n_steps,
             )
 
-        if isinstance(action_bins, (list, tuple, np.ndarray)):
-            action = int(action_bins[0])
-        elif torch.is_tensor(action_bins):
-            action = int(action_bins.view(-1)[0].item())
+        if env_name == "mujoco":
+            action = bins_to_continuous(action_bins)
         else:
-            action = int(action_bins)
+            if isinstance(action_bins, (list, tuple, np.ndarray)):
+                action = int(action_bins[0])
+            elif torch.is_tensor(action_bins):
+                action = int(action_bins.view(-1)[0].item())
+            else:
+                action = int(action_bins)
 
         obs, r, term, trunc, info = env_eval.step(action)
 
@@ -269,11 +316,13 @@ def eval(agent, device, step=0, n_steps=300000, env_eval=None):
     return reward
 
 
-def train_dqn(vec_env, dqn, configurations, args, device, obs_dim):
+def train_dqn(vec_env, dqn, configurations, args, device, obs_dim, n_action_dims):
     obs_raw, info = vec_env.reset()
     obs = obs_raw
 
     n_steps = 300000 // args.num_envs
+    if args.env_name == "mujoco":
+        n_steps = 1000000 // args.num_envs
     rhist = []
     smooth_rhist = []
     lhist = []
@@ -286,10 +335,17 @@ def train_dqn(vec_env, dqn, configurations, args, device, obs_dim):
     ep = 0
 
     blen = 10000
+    if args.env_name == "mujoco":
+        blen = 20000
     update_every = 4
 
     # Memory buffer
-    buff_actions = torch.zeros((blen,), dtype=torch.long, device=device)
+    if n_action_dims > 1:
+        buff_actions = torch.zeros(
+            (blen, n_action_dims), dtype=torch.long, device=device
+        )
+    else:
+        buff_actions = torch.zeros((blen,), dtype=torch.long, device=device)
     buff_obs = torch.zeros(
         size=(blen, int(obs_dim)), dtype=torch.float32, device=device
     )
@@ -300,6 +356,13 @@ def train_dqn(vec_env, dqn, configurations, args, device, obs_dim):
     buff_r = torch.zeros((blen,), dtype=torch.float32, device=device)
 
     # Priority experience replay buffers
+    if n_action_dims > 1:
+        priority_actions = torch.zeros(
+            (blen // 4, n_action_dims), dtype=torch.long, device=device
+        )
+    else:
+        priority_actions = torch.zeros((blen // 4,), dtype=torch.long, device=device)
+
     priority_obs = torch.zeros(
         size=(blen // 4, int(obs_dim)), dtype=torch.float32, device=device
     )
@@ -308,12 +371,11 @@ def train_dqn(vec_env, dqn, configurations, args, device, obs_dim):
     )
     priority_term = torch.zeros((blen // 4,), dtype=torch.float32, device=device)
     priority_r = torch.zeros((blen // 4,), dtype=torch.float32, device=device)
-    priority_actions = torch.zeros((blen // 4,), dtype=torch.long, device=device)
 
     from time import time
 
     start_time = time()
-    runner_name = "minigrid"
+    runner_name = args.env_name
     results_dir = os.path.join("results", runner_name)
     os.makedirs(results_dir, exist_ok=True)
     tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
@@ -349,7 +411,11 @@ def train_dqn(vec_env, dqn, configurations, args, device, obs_dim):
             action = [a[0] for a in action]
 
         action = np.array(action)
-        next_obs, r, term, trunc, info = vec_env.step(action)
+        if args.env_name == "mujoco":
+            step_action = np.array([bins_to_continuous(a) for a in action])
+        else:
+            step_action = action
+        next_obs, r, term, trunc, info = vec_env.step(step_action)
 
         r_mult = r * 10.0
 
@@ -362,7 +428,10 @@ def train_dqn(vec_env, dqn, configurations, args, device, obs_dim):
         for env_i in range(args.num_envs):
             idx = buffer_ptr % blen
 
-            buff_actions[idx] = int(action[env_i])
+            if n_action_dims > 1:
+                buff_actions[idx] = torch.tensor(action[env_i], device=device)
+            else:
+                buff_actions[idx] = int(action[env_i])
             buff_obs[idx].copy_(torch.from_numpy(obs[env_i]).to(device).float())
             buff_next_obs[idx].copy_(
                 torch.from_numpy(next_obs[env_i]).to(device).float()
@@ -404,6 +473,7 @@ def train_dqn(vec_env, dqn, configurations, args, device, obs_dim):
                             device,
                             step=total_samples,
                             n_steps=n_steps * args.num_envs,
+                            env_name=args.env_name,
                         )
                     print(f"eval mean: {evalr/5}")
                     eval_hist.append(evalr / 5)
@@ -488,7 +558,7 @@ def train_dqn(vec_env, dqn, configurations, args, device, obs_dim):
 
 
 def plot_results(results, args):
-    runner_name = "minigrid"
+    runner_name = args.env_name
     results_dir = os.path.join("results", runner_name)
     os.makedirs(results_dir, exist_ok=True)
 
@@ -541,10 +611,22 @@ if __name__ == "__main__":
     print(f"Args: {args}")
 
     # Make a dummy ENV to get obs_dim
-    dummy_env = gym.make("MiniGrid-FourRooms-v0")
-    dummy_env = FastObsWrapper(dummy_env)
-    obs_raw, _ = dummy_env.reset()
-    obs_dim = len(obs_raw)
+    if args.env_name == "minigrid":
+        dummy_env = gym.make("MiniGrid-FourRooms-v0")
+        dummy_env = FastObsWrapper(dummy_env)
+        obs_raw, _ = dummy_env.reset()
+        obs_dim = len(obs_raw)
+        n_action_dims_arg = 1
+    elif args.env_name == "cartpole":
+        dummy_env = gym.make("CartPole-v1")
+        obs_raw, _ = dummy_env.reset()
+        obs_dim = len(obs_raw)
+        n_action_dims_arg = 1
+    elif args.env_name == "mujoco":
+        dummy_env = gym.make("HalfCheetah-v5")
+        obs_raw, _ = dummy_env.reset()
+        obs_dim = dummy_env.observation_space.shape[0]
+        n_action_dims_arg = 6
     dummy_env.close()
 
     # Setup config gets args inside
@@ -552,13 +634,17 @@ if __name__ == "__main__":
     dqn.to(device)
 
     # Make real ENV
-    env_fns = [make_env_thunk(args.fully_obs) for _ in range(args.num_envs)]
+    env_fns = [
+        make_env_thunk(args.fully_obs, args.env_name) for _ in range(args.num_envs)
+    ]
     vec_env = gym.vector.AsyncVectorEnv(env_fns)
     obs_raw, _ = vec_env.reset()
     obs_dim = obs_raw.shape[1] if len(obs_raw.shape) > 1 else len(obs_raw[0])
 
     # Train Model with intermittent eval
-    results = train_dqn(vec_env, dqn, configurations, args, device, obs_dim)
+    results = train_dqn(
+        vec_env, dqn, configurations, args, device, obs_dim, n_action_dims_arg
+    )
 
     # Save artifacts under results/{runner_name}/
     plot_results(results, args)

@@ -66,10 +66,15 @@ class FastObsWrapper(gym.ObservationWrapper):
         return super().reset(**kwargs)
 
 
-def make_env_thunk(fully_obs):
+def make_env_thunk(env_name, fully_obs=False):
     def thunk():
-        env = gym.make("MiniGrid-FourRooms-v0")
-        env = FastObsWrapper(env)
+        if env_name == "cartpole":
+            env = gym.make("CartPole-v1")
+        elif env_name == "mujoco":
+            env = gym.make("HalfCheetah-v5")
+        else:
+            env = gym.make("MiniGrid-FourRooms-v0")
+            env = FastObsWrapper(env)
         return env
 
     return thunk
@@ -102,6 +107,19 @@ def setup_config(args, obs_dim):
     elif args.ablation == 5:
         cfg["delayed"] = False
 
+    if args.env_name == "mujoco":
+        n_action_dims = 6
+        n_action_bins = 3
+        hidden_layer_sizes = [256, 256]
+    elif args.env_name == "cartpole":
+        n_action_dims = 1
+        n_action_bins = 2
+        hidden_layer_sizes = [64, 64]
+    else:
+        n_action_dims = 1
+        n_action_bins = 7
+        hidden_layer_sizes = [128, 128]
+
     AgentClass = RainbowDQN if cfg["distributional"] else EVRainbowDQN
     common_kwargs = dict(
         soft=cfg["soft"],
@@ -118,9 +136,9 @@ def setup_config(args, obs_dim):
     if AgentClass is RainbowDQN:
         dqn = AgentClass(
             obs_dim,
-            1,
-            7,
-            hidden_layer_sizes=[128, 128],
+            n_action_dims,
+            n_action_bins,
+            hidden_layer_sizes=hidden_layer_sizes,
             Beta_half_life_steps=50000,
             norm_obs=False,
             burn_in_updates=10,  # low for benchmark
@@ -129,9 +147,9 @@ def setup_config(args, obs_dim):
     else:
         dqn = AgentClass(
             obs_dim,
-            1,
-            7,
-            hidden_layer_sizes=[128, 128],
+            n_action_dims,
+            n_action_bins,
+            hidden_layer_sizes=hidden_layer_sizes,
             norm_obs=False,
             burn_in_updates=10,
             **common_kwargs,
@@ -140,16 +158,31 @@ def setup_config(args, obs_dim):
 
 
 def benchmark_updates(
-    dqn, obs_dim, device="cpu", batch_sizes=[64, 256, 1024], iters=50
+    dqn, obs_dim, args, device="cpu", batch_sizes=[64, 256, 1024], iters=50
 ):
     print(f"\n--- Benchmarking Updates on {device.upper()} ---")
     dqn.to(torch.device(device))
+
+    if args.env_name == "mujoco":
+        n_action_dims = 6
+        n_action_bins = 3
+    elif args.env_name == "cartpole":
+        n_action_dims = 1
+        n_action_bins = 2
+    else:
+        n_action_dims = 1
+        n_action_bins = 7
 
     for bs in batch_sizes:
         # Create dummy buffer
         obs = torch.randn((bs, obs_dim), device=device)
         next_obs = torch.randn((bs, obs_dim), device=device)
-        actions = torch.randint(0, 7, (bs,), device=device)
+        if n_action_dims == 1:
+            actions = torch.randint(0, n_action_bins, (bs,), device=device)
+        else:
+            actions = torch.randint(
+                0, n_action_bins, (bs, n_action_dims), device=device
+            )
         rewards = torch.randn((bs,), device=device)
         terms = torch.zeros((bs,), device=device)
 
@@ -204,6 +237,10 @@ def benchmark_action_sampling(
         )
 
 
+def bins_to_continuous(action_bins):
+    return np.array([b - 1.0 for b in action_bins], dtype=np.float32)
+
+
 def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
     print(f"\n--- Benchmarking Environment Rollouts ---")
     print(f"Num Parallel Envs: {args.num_envs}, Device: {args.device}")
@@ -212,10 +249,19 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
 
     # Init VecEnv
     print("Initializing Vector Environment...")
-    env_fns = [make_env_thunk(args.fully_obs) for _ in range(args.num_envs)]
+    env_fns = [
+        make_env_thunk(args.env_name, args.fully_obs) for _ in range(args.num_envs)
+    ]
     vec_env = gym.vector.AsyncVectorEnv(env_fns)
 
     obs, info = vec_env.reset()
+
+    if args.env_name == "mujoco":
+        n_action_dims = 6
+    elif args.env_name == "cartpole":
+        n_action_dims = 1
+    else:
+        n_action_dims = 1
 
     print(f"Starting {total_steps} parallel steps...")
     start_time = time.time()
@@ -223,7 +269,12 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
     buffer_size = 512
     obs_buffer = torch.zeros((buffer_size, obs_dim), device=device)
     next_obs_buffer = torch.zeros((buffer_size, obs_dim), device=device)
-    actions_buffer = torch.zeros((buffer_size,), dtype=torch.long, device=device)
+    if n_action_dims == 1:
+        actions_buffer = torch.zeros((buffer_size,), dtype=torch.long, device=device)
+    else:
+        actions_buffer = torch.zeros(
+            (buffer_size, n_action_dims), dtype=torch.long, device=device
+        )
     rewards_buffer = torch.zeros((buffer_size,), device=device)
     terms_buffer = torch.zeros((buffer_size,), device=device)
     buffer_ptr = 0
@@ -239,13 +290,19 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
         # 2. Network forward pass
         actions = dqn.sample_action(tobs, eps=0.1, step=steps_taken)
 
-        if isinstance(actions, list) and isinstance(actions[0], list):
-            actions = [a[0] for a in actions]  # Flatten if list of lists (for dim=1)
+        if args.env_name == "mujoco":
+            step_actions = np.array([bins_to_continuous(a) for a in actions])
+        else:
+            if isinstance(actions, list) and isinstance(actions[0], list):
+                actions = [
+                    a[0] for a in actions
+                ]  # Flatten if list of lists (for dim=1)
+            step_actions = np.array(actions)
 
         actions = np.array(actions)
 
         # 4. Env step (multiprocessing over CPU)
-        next_obs, r, term, trunc, info = vec_env.step(actions)
+        next_obs, r, term, trunc, info = vec_env.step(step_actions)
 
         tabs = torch.tensor(actions, device=device)
         tr = torch.tensor(r, dtype=torch.float32, device=device)
@@ -344,6 +401,7 @@ def run_grid_search(args, obs_dim, fully_obs=False, total_steps=2000):
                         best_config = current_config
                 except Exception as e:
                     import traceback
+
                     print(f"Error for device={dev}, num_envs={num_envs}: {e}")
                     traceback.print_exc()
 
@@ -357,10 +415,11 @@ def run_grid_search(args, obs_dim, fully_obs=False, total_steps=2000):
             file_prefix = os.getlogin()
         except Exception:
             import getpass
+
             file_prefix = getpass.getuser()
 
-    best_filename = f"{file_prefix}_best.json"
-    all_filename = f"{file_prefix}_all.json"
+    best_filename = f"{file_prefix}_{args.env_name}_best.json"
+    all_filename = f"{file_prefix}_{args.env_name}_all.json"
 
     with open(best_filename, "w") as f:
         json.dump(best_results, f, indent=4)
@@ -375,6 +434,13 @@ def run_grid_search(args, obs_dim, fully_obs=False, total_steps=2000):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parallel Environment Benchmarking")
+    parser.add_argument(
+        "--env_name",
+        type=str,
+        default="minigrid",
+        choices=["cartpole", "minigrid", "mujoco"],
+        help="Environment to use",
+    )
     parser.add_argument(
         "--grid_search",
         action="store_true",
@@ -400,12 +466,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Get obs dim from dummy env
-    env = make_env_thunk(args.fully_obs)()
+    env = make_env_thunk(args.env_name, args.fully_obs)()
     obs, _ = env.reset()
     obs_dim = int(np.prod(np.asarray(obs).shape))
     env.close()
 
     print("=== Configuration ===")
+    print(f"Environment: {args.env_name}")
     print(f"Ablation Level: {args.ablation}")
     print(f"Obs Dim: {obs_dim}")
     print("=====================")
@@ -416,9 +483,11 @@ if __name__ == "__main__":
         dqn = setup_config(args, obs_dim)
 
         # 1. Benchmark Updates
-        benchmark_updates(dqn, obs_dim, device="cpu", batch_sizes=[64, 256, 1024])
+        benchmark_updates(dqn, obs_dim, args, device="cpu", batch_sizes=[64, 256, 1024])
         if torch.cuda.is_available():
-            benchmark_updates(dqn, obs_dim, device="cuda", batch_sizes=[64, 256, 1024])
+            benchmark_updates(
+                dqn, obs_dim, args, device="cuda", batch_sizes=[64, 256, 1024]
+            )
 
         # 2. Benchmark Action Sampling
         benchmark_action_sampling(
