@@ -329,7 +329,9 @@ class RainbowDQN:
                 q_comb = ext_q
 
             if self.Thompson:
-                g = -torch.log(-torch.log(torch.rand_like(q_comb)))
+                eps_val = 1e-6
+                rand_vals = torch.clamp(torch.rand_like(q_comb), min=eps_val, max=1.0-eps_val)
+                g = -torch.log(-torch.log(rand_vals))
                 q_comb = q_comb + g
 
             if self.soft or self.munchausen:
@@ -418,9 +420,11 @@ class RainbowDQN:
             )  # [B,D,Bins]
             if self.soft or self.munchausen:
                 # Soft reward for future policy entropy
-                logpi_next = torch.log_softmax(online_next_q_norm / self.tau, dim=-1)
+                logpi_next = torch.clamp(torch.log_softmax(online_next_q_norm / self.tau, dim=-1), min=-1e8)
+                if torch.isnan(logpi_next).any():
+                    print("NaN detected in logpi_next!")
                 pi_next = torch.exp(logpi_next)  # [B,D,Bins]
-                ent_bonus_per_dim = -(pi_next * torch.clamp(logpi_next, min=-1e8)).sum(dim=-1)  # [B,D]
+                ent_bonus_per_dim = -(pi_next * logpi_next).sum(dim=-1)  # [B,D]
                 ent_bonus = ent_bonus_per_dim.sum(dim=-1).unsqueeze(1)  # [B,1]
 
                 # Quantile target expected values
@@ -470,9 +474,9 @@ class RainbowDQN:
             if self.ent_reg_coef > 0.0:
                 # Policy over actions from expected values (mean quantiles)
                 qm = quantiles_norm.mean(dim=1)
-                logpi = torch.log_softmax(qm / self.tau, dim=-1)
+                logpi = torch.clamp(torch.log_softmax(qm / self.tau, dim=-1), min=-1e8)
                 pi = torch.exp(logpi)  # [B,D,Bins]
-                entropy_per_dim = (pi * torch.clamp(logpi, min=-1e8)).sum(dim=-1)  # [B,D]
+                entropy_per_dim = (pi * logpi).sum(dim=-1)  # [B,D]
                 entropy = entropy_per_dim.mean()  # average over dims
                 e_loss = self.ent_reg_coef * entropy
 
@@ -480,7 +484,7 @@ class RainbowDQN:
             if self.munchausen or self.soft:
                 if logpi is None:
                     qm = quantiles_norm.mean(dim=1)
-                    logpi = torch.log_softmax(qm / self.tau, dim=-1)
+                    logpi = torch.clamp(torch.log_softmax(qm / self.tau, dim=-1), min=-1e8)
 
                 if self.munchausen:
                     with torch.no_grad():
@@ -771,9 +775,9 @@ class EVRainbowDQN:
 
     @torch.no_grad()
     def _soft_policy(self, q_values: torch.Tensor):
-        pi = torch.softmax(q_values / self.tau, dim=-1)
-        logpi = torch.log_softmax(q_values / self.tau, dim=-1)
-        ent = -(pi * torch.clamp(logpi, min=-1e8)).sum(dim=-1)  # [B]
+        logpi = torch.clamp(torch.log_softmax(q_values / self.tau, dim=-1), min=-1e8)
+        pi = torch.exp(logpi)
+        ent = -(pi * logpi).sum(dim=-1)  # [B]
         return pi, logpi, ent
 
     def update(
@@ -826,9 +830,11 @@ class EVRainbowDQN:
         # logpi and pi or calculate then later without grad if ent
         # reg is not being used
         if self.ent_reg_coef > 0.0:
-            logpi_now = torch.log_softmax(q_now / self.tau, dim=-1)
+            logpi_now = torch.clamp(torch.log_softmax(q_now / self.tau, dim=-1), min=-1e8)
+            if torch.isnan(logpi_now).any():
+                print("NaN detected in logpi_now!")
             pi_now = torch.exp(logpi_now)
-            entropy_loss = (pi_now * torch.clamp(logpi_now, min=-1e8)).sum(dim=-1).mean()
+            entropy_loss = (pi_now * logpi_now).sum(dim=-1).mean()
 
         with torch.no_grad():
             if b_actions.ndim == 1:
@@ -843,21 +849,21 @@ class EVRainbowDQN:
             if self.munchausen:
                 # only need this right now for ln(pi(a)) for munchausen loss
                 if logpi_now is None:
-                    logpi_now = torch.log_softmax(q_now / self.tau, dim=-1)
+                    logpi_now = torch.clamp(torch.log_softmax(q_now / self.tau, dim=-1), min=-1e8)
 
-                logpi_now = torch.gather(logpi_now, -1, action_idx_now).squeeze(
+                selected_logpi = torch.gather(logpi_now, -1, action_idx_now).squeeze(
                     -1
                 )  # [B,D]
-                r_kl = torch.clamp(logpi_now, min=self.l_clip)
+                r_kl = torch.clamp(selected_logpi, min=self.l_clip)
                 if r_kl.ndim > 1:
                     r_kl = r_kl.sum(-1)
                 b_r_total += self.alpha * self.tau * r_kl
 
             if self.munchausen or self.soft:
                 # Need next probs for next entropy if soft
-                logpi_next = torch.log_softmax(q_next / self.tau, dim=-1)
+                logpi_next = torch.clamp(torch.log_softmax(q_next / self.tau, dim=-1), min=-1e8)
                 pi_next = torch.exp(logpi_next)
-                next_head_vals = (pi_next * (self.alpha * torch.clamp(logpi_next, min=-1e8) + q_next)).sum(-1)
+                next_head_vals = (pi_next * (self.alpha * logpi_next + q_next)).sum(-1)
             else:
                 next_head_vals = torch.max(q_next, dim=-1).values
 
