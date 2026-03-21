@@ -97,7 +97,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 
-class Agent(nn.Module):
+class PPONetwork(nn.Module):
     def __init__(self, envs):
         super().__init__()
         self.critic = nn.Sequential(
@@ -128,6 +128,225 @@ class Agent(nn.Module):
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+
+
+class PPOAgent:
+    def __init__(
+        self,
+        envs,
+        learning_rate: float = 2.5e-4,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        clip_coef: float = 0.2,
+        clip_vloss: bool = True,
+        ent_coef: float = 0.01,
+        vf_coef: float = 0.5,
+        max_grad_norm: float = 0.5,
+        norm_adv: bool = True,
+        target_kl: float = None,
+        update_epochs: int = 4,
+        num_minibatches: int = 4,
+        num_envs: int = 4,
+        num_steps: int = 128,
+    ):
+        self.gamma = gamma
+        self.gae_lambda = gae_lambda
+        self.clip_coef = clip_coef
+        self.clip_vloss = clip_vloss
+        self.ent_coef = ent_coef
+        self.vf_coef = vf_coef
+        self.max_grad_norm = max_grad_norm
+        self.norm_adv = norm_adv
+        self.target_kl = target_kl
+        self.update_epochs = update_epochs
+        self.num_minibatches = num_minibatches
+
+        self.obs_shape = envs.single_observation_space.shape
+        self.action_shape = envs.single_action_space.shape
+        self.batch_size = int(num_envs * num_steps)
+        self.minibatch_size = int(self.batch_size // self.num_minibatches)
+        self.num_steps = num_steps
+
+        self.network = PPONetwork(envs)
+        self.optimizer = optim.Adam(
+            self.network.parameters(), lr=learning_rate, eps=1e-5
+        )
+
+        self.tb_writer = None
+        self.tb_prefix = "agent"
+        self.step = 0
+        self.last_losses = {}
+
+    def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
+        self.tb_writer = writer
+        self.tb_prefix = prefix
+
+    def to(self, device):
+        self.network.to(device)
+        return self
+
+    def sample_action(self, obs):
+        with torch.no_grad():
+            action, logprob, _, value = self.network.get_action_and_value(obs)
+        return action, logprob, value.flatten()
+
+    def get_value(self, obs):
+        with torch.no_grad():
+            return self.network.get_value(obs)
+
+    def update_running_stats(self, next_obs, r):
+        # Placeholder for consistency with other agents
+        pass
+
+    def update(
+        self, obs, actions, logprobs, rewards, dones, values, next_obs, next_done
+    ):
+        device = obs.device
+
+        # bootstrap value if not done
+        with torch.no_grad():
+            next_value = self.network.get_value(next_obs).reshape(1, -1)
+            advantages = torch.zeros_like(rewards).to(device)
+            lastgaelam = 0
+            for t in reversed(range(self.num_steps)):
+                if t == self.num_steps - 1:
+                    nextnonterminal = 1.0 - next_done
+                    nextvalues = next_value
+                else:
+                    nextnonterminal = 1.0 - dones[t + 1]
+                    nextvalues = values[t + 1]
+                delta = (
+                    rewards[t] + self.gamma * nextvalues * nextnonterminal - values[t]
+                )
+                advantages[t] = lastgaelam = (
+                    delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
+                )
+            returns = advantages + values
+
+        # flatten the batch
+        b_obs = obs.reshape((-1,) + self.obs_shape)
+        b_logprobs = logprobs.reshape(-1)
+        b_actions = actions.reshape((-1,) + self.action_shape)
+        b_advantages = advantages.reshape(-1)
+        b_returns = returns.reshape(-1)
+        b_values = values.reshape(-1)
+
+        b_inds = np.arange(self.batch_size)
+        clipfracs = []
+
+        pg_loss = torch.tensor(0.0)
+        v_loss = torch.tensor(0.0)
+        entropy_loss = torch.tensor(0.0)
+        old_approx_kl = torch.tensor(0.0)
+        approx_kl = torch.tensor(0.0)
+
+        for epoch in range(self.update_epochs):
+            np.random.shuffle(b_inds)
+            for start in range(0, self.batch_size, self.minibatch_size):
+                end = start + self.minibatch_size
+                mb_inds = b_inds[start:end]
+
+                _, newlogprob, entropy, newvalue = self.network.get_action_and_value(
+                    b_obs[mb_inds], b_actions.long()[mb_inds]
+                )
+                logratio = newlogprob - b_logprobs[mb_inds]
+                ratio = logratio.exp()
+
+                with torch.no_grad():
+                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
+                    old_approx_kl = (-logratio).mean()
+                    approx_kl = ((ratio - 1) - logratio).mean()
+                    clipfracs += [
+                        ((ratio - 1.0).abs() > self.clip_coef).float().mean().item()
+                    ]
+
+                mb_advantages = b_advantages[mb_inds]
+                if self.norm_adv:
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (
+                        mb_advantages.std() + 1e-8
+                    )
+
+                # Policy loss
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(
+                    ratio, 1 - self.clip_coef, 1 + self.clip_coef
+                )
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+                # Value loss
+                newvalue = newvalue.view(-1)
+                if self.clip_vloss:
+                    v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
+                    v_clipped = b_values[mb_inds] + torch.clamp(
+                        newvalue - b_values[mb_inds],
+                        -self.clip_coef,
+                        self.clip_coef,
+                    )
+                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+                    v_loss = 0.5 * v_loss_max.mean()
+                else:
+                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+
+                entropy_loss = entropy.mean()
+                loss = pg_loss - self.ent_coef * entropy_loss + v_loss * self.vf_coef
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.network.parameters(), self.max_grad_norm)
+                self.optimizer.step()
+
+            if self.target_kl is not None and approx_kl > self.target_kl:
+                break
+
+        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
+        var_y = np.var(y_true)
+        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+
+        PG_loss = pg_loss.item()
+        V_loss = v_loss.item()
+        Entropy = entropy_loss.item()
+
+        self.last_losses = {
+            "policy_loss": PG_loss,
+            "value_loss": V_loss,
+            "entropy": Entropy,
+            "old_approx_kl": old_approx_kl.item(),
+            "approx_kl": approx_kl.item(),
+            "clipfrac": np.mean(clipfracs) if clipfracs else 0.0,
+            "explained_variance": explained_var,
+        }
+
+        self.step += 1
+
+        if self.tb_writer is not None:
+            self.tb_writer.add_scalar(
+                f"{self.tb_prefix}/losses/value_loss", V_loss, self.step
+            )
+            self.tb_writer.add_scalar(
+                f"{self.tb_prefix}/losses/policy_loss", PG_loss, self.step
+            )
+            self.tb_writer.add_scalar(
+                f"{self.tb_prefix}/losses/entropy", Entropy, self.step
+            )
+            self.tb_writer.add_scalar(
+                f"{self.tb_prefix}/losses/old_approx_kl",
+                old_approx_kl.item(),
+                self.step,
+            )
+            self.tb_writer.add_scalar(
+                f"{self.tb_prefix}/losses/approx_kl", approx_kl.item(), self.step
+            )
+            self.tb_writer.add_scalar(
+                f"{self.tb_prefix}/losses/clipfrac",
+                np.mean(clipfracs) if clipfracs else 0.0,
+                self.step,
+            )
+            self.tb_writer.add_scalar(
+                f"{self.tb_prefix}/losses/explained_variance", explained_var, self.step
+            )
+
+        return loss.item()
 
 
 if __name__ == "__main__":
@@ -174,8 +393,25 @@ if __name__ == "__main__":
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
 
-    agent = Agent(envs).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    agent = PPOAgent(
+        envs,
+        learning_rate=args.learning_rate,
+        gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
+        clip_coef=args.clip_coef,
+        clip_vloss=args.clip_vloss,
+        ent_coef=args.ent_coef,
+        vf_coef=args.vf_coef,
+        max_grad_norm=args.max_grad_norm,
+        norm_adv=args.norm_adv,
+        target_kl=args.target_kl,
+        update_epochs=args.update_epochs,
+        num_minibatches=args.num_minibatches,
+        num_envs=args.num_envs,
+        num_steps=args.num_steps,
+    ).to(device)
+    # If keeping tensorboard inside agent (optional):
+    # agent.attach_tensorboard(writer)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros(
@@ -201,7 +437,7 @@ if __name__ == "__main__":
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
-            optimizer.param_groups[0]["lr"] = lrnow
+            agent.optimizer.param_groups[0]["lr"] = lrnow
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
@@ -209,9 +445,8 @@ if __name__ == "__main__":
             dones[step] = next_done
 
             # ALGO LOGIC: action logic
-            with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
-                values[step] = value.flatten()
+            action, logprob, value = agent.sample_action(next_obs)
+            values[step] = value
             actions[step] = action
             logprobs[step] = logprob
 
@@ -238,111 +473,40 @@ if __name__ == "__main__":
                             "charts/episodic_length", info["episode"]["l"], global_step
                         )
 
-        # bootstrap value if not done
-        with torch.no_grad():
-            next_value = agent.get_value(next_obs).reshape(1, -1)
-            advantages = torch.zeros_like(rewards).to(device)
-            lastgaelam = 0
-            for t in reversed(range(args.num_steps)):
-                if t == args.num_steps - 1:
-                    nextnonterminal = 1.0 - next_done
-                    nextvalues = next_value
-                else:
-                    nextnonterminal = 1.0 - dones[t + 1]
-                    nextvalues = values[t + 1]
-                delta = (
-                    rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                )
-                advantages[t] = lastgaelam = (
-                    delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
-                )
-            returns = advantages + values
-
-        # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
-        b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_values = values.reshape(-1)
-
-        # Optimizing the policy and value network
-        b_inds = np.arange(args.batch_size)
-        clipfracs = []
-        for epoch in range(args.update_epochs):
-            np.random.shuffle(b_inds)
-            for start in range(0, args.batch_size, args.minibatch_size):
-                end = start + args.minibatch_size
-                mb_inds = b_inds[start:end]
-
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    b_obs[mb_inds], b_actions.long()[mb_inds]
-                )
-                logratio = newlogprob - b_logprobs[mb_inds]
-                ratio = logratio.exp()
-
-                with torch.no_grad():
-                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
-                    old_approx_kl = (-logratio).mean()
-                    approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [
-                        ((ratio - 1.0).abs() > args.clip_coef).float().mean().item()
-                    ]
-
-                mb_advantages = b_advantages[mb_inds]
-                if args.norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (
-                        mb_advantages.std() + 1e-8
-                    )
-
-                # Policy loss
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(
-                    ratio, 1 - args.clip_coef, 1 + args.clip_coef
-                )
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-                # Value loss
-                newvalue = newvalue.view(-1)
-                if args.clip_vloss:
-                    v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
-                    v_clipped = b_values[mb_inds] + torch.clamp(
-                        newvalue - b_values[mb_inds],
-                        -args.clip_coef,
-                        args.clip_coef,
-                    )
-                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
-                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                    v_loss = 0.5 * v_loss_max.mean()
-                else:
-                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
-
-                entropy_loss = entropy.mean()
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
-
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-                optimizer.step()
-
-            if args.target_kl is not None and approx_kl > args.target_kl:
-                break
-
-        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
-        var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+        # Perform PPO update
+        agent.update(
+            obs, actions, logprobs, rewards, dones, values, next_obs, next_done
+        )
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar(
-            "charts/learning_rate", optimizer.param_groups[0]["lr"], global_step
+            "charts/learning_rate", agent.optimizer.param_groups[0]["lr"], global_step
         )
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
-        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
-        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        writer.add_scalar(
+            "losses/value_loss", agent.last_losses.get("value_loss", 0), global_step
+        )
+        writer.add_scalar(
+            "losses/policy_loss", agent.last_losses.get("policy_loss", 0), global_step
+        )
+        writer.add_scalar(
+            "losses/entropy", agent.last_losses.get("entropy", 0), global_step
+        )
+        writer.add_scalar(
+            "losses/old_approx_kl",
+            agent.last_losses.get("old_approx_kl", 0),
+            global_step,
+        )
+        writer.add_scalar(
+            "losses/approx_kl", agent.last_losses.get("approx_kl", 0), global_step
+        )
+        writer.add_scalar(
+            "losses/clipfrac", agent.last_losses.get("clipfrac", 0), global_step
+        )
+        writer.add_scalar(
+            "losses/explained_variance",
+            agent.last_losses.get("explained_variance", 0),
+            global_step,
+        )
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar(
             "charts/SPS", int(global_step / (time.time() - start_time)), global_step
