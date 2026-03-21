@@ -125,10 +125,12 @@ class PPOAgent:
         rnd_output_dim: int = 128,
         rnd_lr: float = 1e-3,
         intrinsic_lr: float = 2.5e-4,
+        use_gae: bool = True,
     ):
         self.anneal_lr = anneal_lr
         self.gamma = gamma
         self.gae_lambda = gae_lambda
+        self.use_gae = use_gae
         self.clip_coef = clip_coef
         self.clip_vloss = clip_vloss
         self.ent_coef = ent_coef
@@ -266,15 +268,17 @@ class PPOAgent:
         taus: torch.Tensor,
         kappa: float = 1.0,
     ) -> torch.Tensor:
-        # pred: [B, N], target: [B, 1]
-        td = target.unsqueeze(1) - pred.unsqueeze(2)  # [B, N, 1]
+        # pred: [B, N], target: [B] or [B, 1]
+        if target.dim() == 1:
+            target = target.unsqueeze(1)  # [B, 1]
+        
+        td = target - pred  # [B, 1] - [B, N] -> [B, N]
         abs_td = torch.abs(td)
         huber = torch.where(
             abs_td <= kappa, 0.5 * td.pow(2), kappa * (abs_td - 0.5 * kappa)
         )
         I = (td < 0).float()
-        taus_expanded = taus.unsqueeze(2)  # [B,N,1]
-        loss = (torch.abs(taus_expanded - I) * huber).mean()
+        loss = (torch.abs(taus - I) * huber).sum(dim=1).mean()
         return loss
 
     def update(
@@ -309,12 +313,16 @@ class PPOAgent:
 
         self.update_running_stats(flat_next_obs, rewards)
 
+        # Normalize observations for RND (without tracking gradients for the normalizer)
         with torch.no_grad():
             norm_next_obs = self.obs_rms.normalize(flat_next_obs.to(torch.float64)).to(
                 torch.float32
             )
-            rnd_errors = self.rnd(norm_next_obs)
 
+        # Get RND errors with gradients enabled for training the predictor
+        rnd_errors = self.rnd(norm_next_obs)
+
+        with torch.no_grad():
             int_rewards_flat = rnd_errors.detach()
             norm_int_rewards_flat = self.int_rms.normalize(
                 int_rewards_flat.to(torch.float64)
@@ -365,20 +373,31 @@ class PPOAgent:
                     + self.gamma * next_ext_values * nextnonterminal
                     - ext_values[t]
                 )
-                ext_advantages[t] = lastgaelam_ext = (
-                    delta_ext
-                    + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam_ext
-                )
-
+                
                 delta_int = (
                     int_rewards[t]
                     + self.gamma * next_int_values * nextnonterminal
                     - int_values[t]
                 )
-                int_advantages[t] = lastgaelam_int = (
-                    delta_int
-                    + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam_int
-                )
+                
+                if self.use_gae:
+                    ext_advantages[t] = lastgaelam_ext = (
+                        delta_ext
+                        + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam_ext
+                    )
+                    int_advantages[t] = lastgaelam_int = (
+                        delta_int
+                        + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam_int
+                    )
+                else:
+                    ext_advantages[t] = lastgaelam_ext = (
+                        delta_ext
+                        + self.gamma * nextnonterminal * lastgaelam_ext
+                    )
+                    int_advantages[t] = lastgaelam_int = (
+                        delta_int
+                        + self.gamma * nextnonterminal * lastgaelam_int
+                    )
 
             ext_returns = ext_advantages + ext_values
             int_returns = int_advantages + int_values
@@ -677,7 +696,7 @@ if __name__ == "__main__":
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-
+    env_episode_rewards = torch.zeros(args.num_envs).to(device)
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
 
@@ -699,9 +718,15 @@ if __name__ == "__main__":
             )
             next_done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
+            env_episode_rewards += rewards[step]
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(
                 next_done
             ).to(device)
+
+            for ne in range(args.num_envs):
+                if terminations[ne] or truncations[ne]:
+                    print(f"episode reward: {env_episode_rewards[ne]}")
+                    env_episode_rewards[ne] = 0
 
             if "final_info" in infos:
                 for info in infos["final_info"]:
