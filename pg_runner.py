@@ -1,0 +1,361 @@
+import os
+import argparse
+import random
+import time
+import json
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import gymnasium as gym
+import matplotlib.pyplot as plt
+from torch.utils.tensorboard import SummaryWriter
+
+from PG_Rainbow import PPOAgent
+from minigrid.wrappers import FlatObsWrapper
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description="PPO/PG Rainbow Runner")
+    parser.add_argument(
+        "--env_name",
+        type=str,
+        default="minigrid",
+        choices=["cartpole", "minigrid", "mujoco"],
+        help="Which environment to train",
+    )
+    parser.add_argument("--device", type=str, default="cpu", help="Torch device to use")
+    parser.add_argument(
+        "--ablation",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3, 4, 5],
+        help="0=None, 1=Disable KL clip, 2=0 entropy reg, 3=No RND, 4=Non-distributional, 5=Placeholder (replace GAE with MC)",
+    )
+    parser.add_argument(
+        "--fully_obs",
+        action="store_true",
+        help="Use FullyObsWrapper instead of Partial OneHot wrapper",
+    )
+    parser.add_argument("--run", dest="run", type=int, default=1, help="Run id index")
+    parser.add_argument(
+        "--best_params", type=str, default="", help="Prefix to the best.json params"
+    )
+    args = parser.parse_args()
+
+    args.num_envs = 4
+    args.num_steps = 128
+
+    if args.best_params:
+        best_json_path = f"{args.best_params}_best.json"
+        try:
+            with open(best_json_path, "r") as f:
+                params = json.load(f)
+            if "num_envs" in params:
+                args.num_envs = params["num_envs"]
+            if "num_steps" in params:
+                args.num_steps = params["num_steps"]
+        except Exception as e:
+            print(f"Failed to load params {best_json_path}: {e}")
+
+    return args
+
+
+def setup_config(args):
+    requested_device = args.device.strip()
+    if requested_device.startswith("cuda") and not torch.cuda.is_available():
+        device = torch.device("cpu")
+    else:
+        device = torch.device(requested_device)
+
+    # Defaults
+    cfg = {
+        "clip_coef": 0.2,  # Surrogate clip for PPO
+        "ent_coef": 0.01,
+        "Beta": 0.01,  # RND
+        "distributional": True,
+        "use_gae": True,  # Placeholder
+    }
+
+    if args.ablation == 1:
+        cfg["clip_coef"] = 100.0  # Effectively disables KL/surrogate clip
+    elif args.ablation == 2:
+        cfg["ent_coef"] = 0.0
+    elif args.ablation == 3:
+        cfg["Beta"] = 0.0
+    elif args.ablation == 4:
+        cfg["distributional"] = False
+    elif args.ablation == 5:
+        # Placeholder for replacing GAE with Monte Carlo
+        cfg["use_gae"] = False
+
+    return cfg, device
+
+
+class obs_transformer:
+    def __init__(self):
+        self.image_flat_size = 7 * 7 * 2
+        self.direction_size = 4
+        self.frame_size = self.image_flat_size + self.direction_size
+        self.last_obs = np.zeros(self.frame_size)
+
+    def transform(self, obs):
+        img = obs["image"][:, :, 0]
+        direction = obs["direction"]
+        one_hot_img = np.zeros((7, 7, 2), dtype=np.float32)
+        one_hot_img[:, :, 0] = img == 2
+        one_hot_img[:, :, 1] = img == 8
+        one_hot_dir = np.zeros(4, dtype=np.float32)
+        one_hot_dir[direction] = 1.0
+        current_obs = one_hot_img.flatten()
+        current_full = np.concatenate([current_obs, one_hot_dir])
+        transformed_obs = np.concatenate([current_full, self.last_obs])
+        self.last_obs = current_full
+        return transformed_obs
+
+    def reset(self):
+        self.last_obs = np.zeros(self.frame_size)
+        return np.concatenate([self.last_obs, self.last_obs])
+
+
+class FastObsWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.transformer = obs_transformer()
+        dummy_obs = self.transformer.reset()
+        self.observation_space = gym.spaces.Box(
+            low=0, high=1, shape=(len(dummy_obs),), dtype=np.float32
+        )
+
+    def observation(self, obs):
+        return self.transformer.transform(obs)
+
+    def reset(self, **kwargs):
+        self.transformer.reset()
+        return super().reset(**kwargs)
+
+
+def make_env_thunk(fully_obs, env_name):
+    def thunk():
+        if env_name == "minigrid":
+            env = gym.make("MiniGrid-FourRooms-v0")
+            env = FastObsWrapper(env)
+        elif env_name == "cartpole":
+            env = gym.make("CartPole-v1")
+        elif env_name == "mujoco":
+            # Note: PG_Rainbow asserts discrete action space. Standard HalfCheetah is continuous.
+            # Using it might fail if PPOAgent doesn't handle Box actions.
+            env = gym.make("HalfCheetah-v5")
+        return env
+
+    return thunk
+
+
+def eval(agent, device, step=0, n_steps=300000, env_eval=None, env_name="minigrid"):
+    if env_eval is None:
+        env_eval = make_env_thunk(False, env_name)()
+    obs, info = env_eval.reset()
+    done = False
+    reward = 0.0
+    while not done:
+        with torch.no_grad():
+            tobs = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+            # deterministic action (modes, max prob, etc.)
+            action, logprob, ext_v, int_v = agent.sample_action(tobs)
+
+        action = action.cpu().numpy()[0]
+        obs, r, term, trunc, info = env_eval.step(action)
+        reward += float(r)
+        done = term or trunc
+    return reward
+
+
+def train_pg(vec_env, agent, cfg, args, device):
+    obs_raw, info = vec_env.reset()
+    obs = obs_raw
+
+    n_steps_total = 300000 // args.num_envs
+    if args.env_name == "mujoco":
+        n_steps_total = 1000000 // args.num_envs
+
+    num_iterations = n_steps_total // args.num_steps
+
+    rhist = []
+    smooth_rhist = []
+    lhist = []
+    eval_hist = []
+
+    r_ep = np.zeros(args.num_envs)
+    smooth_r = 0.0
+
+    start_time = time.time()
+    runner_name = args.env_name
+    results_dir = os.path.join("results", runner_name)
+    os.makedirs(results_dir, exist_ok=True)
+    tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
+    writer = SummaryWriter(log_dir=tb_dir)
+    writer.add_scalar("run/started", 1, 0)
+
+    if hasattr(agent, "attach_tensorboard"):
+        agent.attach_tensorboard(writer, prefix="agent")
+
+    # Storage setup
+    agent_obs = torch.zeros(
+        (args.num_steps, args.num_envs) + vec_env.single_observation_space.shape
+    ).to(device)
+    agent_actions = torch.zeros(
+        (args.num_steps, args.num_envs) + vec_env.single_action_space.shape
+    ).to(device)
+    agent_logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    agent_rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    agent_dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    agent_ext_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    agent_int_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+
+    global_step = 0
+    next_obs = torch.Tensor(obs_raw).to(device)
+    next_done = torch.zeros(args.num_envs).to(device)
+    total_samples = 0
+
+    for iteration in range(1, num_iterations + 1):
+        for step in range(0, args.num_steps):
+            global_step += args.num_envs
+            agent_obs[step] = next_obs
+            agent_dones[step] = next_done
+
+            with torch.no_grad():
+                action, logprob, ext_v, int_v = agent.sample_action(next_obs)
+
+            agent_ext_values[step] = ext_v
+            agent_int_values[step] = int_v
+            agent_actions[step] = action
+            agent_logprobs[step] = logprob
+
+            np_action = action.cpu().numpy()
+
+            next_obs_np, reward, terminations, truncations, infos = vec_env.step(
+                np_action
+            )
+
+            next_done_np = np.logical_or(terminations, truncations)
+            agent_rewards[step] = torch.tensor(reward).to(device).view(-1)
+
+            next_obs = torch.Tensor(next_obs_np).to(device)
+            next_done = torch.Tensor(next_done_np).to(device)
+
+            for ne in range(args.num_envs):
+                r_ep[ne] += reward[ne]
+                if next_done_np[ne]:
+                    if smooth_r == 0.0:
+                        smooth_r = r_ep[ne]
+                    else:
+                        smooth_r = 0.99 * smooth_r + 0.01 * r_ep[ne]
+                    rhist.append(r_ep[ne])
+                    smooth_rhist.append(smooth_r)
+                    writer.add_scalar("charts/episodic_return", r_ep[ne], global_step)
+                    r_ep[ne] = 0
+
+        # Perform PPO update
+        loss = agent.update(
+            agent_obs,
+            agent_actions,
+            agent_logprobs,
+            agent_rewards,
+            agent_dones,
+            agent_ext_values,
+            agent_int_values,
+            next_obs,
+            next_done,
+        )
+        lhist.append(loss)
+
+        # Eval
+        if iteration % max(1, (num_iterations // 50)) == 0:
+            e_rew = eval(agent, device, env_name=args.env_name)
+            eval_hist.append(e_rew)
+            writer.add_scalar("charts/eval_return", e_rew, global_step)
+
+    writer.flush()
+    writer.close()
+    return {
+        "rhist": rhist,
+        "smooth_rhist": smooth_rhist,
+        "lhist": lhist,
+        "eval_hist": eval_hist,
+        "train_time": time.time() - start_time,
+    }
+
+
+def plot_results(results, args):
+    runner_name = args.env_name
+    results_dir = os.path.join("results", runner_name)
+    os.makedirs(results_dir, exist_ok=True)
+
+    np.save(
+        os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}.npy"),
+        results["rhist"],
+    )
+    np.save(
+        os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}.npy"),
+        results["eval_hist"],
+    )
+    np.save(
+        os.path.join(results_dir, f"loss_hist_{args.run}_{args.ablation}.npy"),
+        results["lhist"],
+    )
+    np.save(
+        os.path.join(
+            results_dir, f"smooth_train_scores_{args.run}_{args.ablation}.npy"
+        ),
+        results["smooth_rhist"],
+    )
+
+    plt.plot(results["rhist"])
+    plt.plot(results["smooth_rhist"])
+    plt.legend(["R hist", "Smooth R hist"])
+    plt.xlabel("Episode")
+    plt.ylabel("Training Episode Reward")
+    plt.grid()
+    plt.title(f"Training rewards, run {args.run} ablated: {args.ablation}")
+    plt.savefig(os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}"))
+    plt.close()
+
+    plt.plot(results["eval_hist"])
+    plt.grid()
+    plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
+    plt.savefig(os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}"))
+    plt.close()
+
+    train_time_seconds = results["train_time"]
+    np.save(
+        os.path.join(results_dir, f"train_time_{args.run}_{args.ablation}.npy"),
+        train_time_seconds,
+    )
+    print(f"Training wall clock time: {train_time_seconds:.2f} seconds")
+
+
+if __name__ == "__main__":
+    args = get_args()
+    print(f"Args: {args}")
+
+    cfg, device = setup_config(args)
+
+    env_fns = [
+        make_env_thunk(args.fully_obs, args.env_name) for _ in range(args.num_envs)
+    ]
+    vec_env = gym.vector.SyncVectorEnv(env_fns)
+
+    agent = PPOAgent(
+        vec_env,
+        clip_coef=cfg["clip_coef"],
+        ent_coef=cfg["ent_coef"],
+        distributional=cfg["distributional"],
+        Beta=cfg["Beta"],
+        num_envs=args.num_envs,
+        num_steps=args.num_steps,
+        use_gae=cfg["use_gae"],
+    ).to(device)
+
+    results = train_pg(vec_env, agent, cfg, args, device)
+    plot_results(results, args)
+    vec_env.close()
