@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 
 from PG_Rainbow import PPOAgent
+from runner_utilities import obs_transformer, FastObsWrapper, make_env_thunk, plot_results
 from minigrid.wrappers import FlatObsWrapper
 
 
@@ -92,65 +93,6 @@ def setup_config(args):
     return cfg, device
 
 
-class obs_transformer:
-    def __init__(self):
-        self.image_flat_size = 7 * 7 * 2
-        self.direction_size = 4
-        self.frame_size = self.image_flat_size + self.direction_size
-        self.last_obs = np.zeros(self.frame_size)
-
-    def transform(self, obs):
-        img = obs["image"][:, :, 0]
-        direction = obs["direction"]
-        one_hot_img = np.zeros((7, 7, 2), dtype=np.float32)
-        one_hot_img[:, :, 0] = img == 2
-        one_hot_img[:, :, 1] = img == 8
-        one_hot_dir = np.zeros(4, dtype=np.float32)
-        one_hot_dir[direction] = 1.0
-        current_obs = one_hot_img.flatten()
-        current_full = np.concatenate([current_obs, one_hot_dir])
-        transformed_obs = np.concatenate([current_full, self.last_obs])
-        self.last_obs = current_full
-        return transformed_obs
-
-    def reset(self):
-        self.last_obs = np.zeros(self.frame_size)
-        return np.concatenate([self.last_obs, self.last_obs])
-
-
-class FastObsWrapper(gym.ObservationWrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        self.transformer = obs_transformer()
-        dummy_obs = self.transformer.reset()
-        self.observation_space = gym.spaces.Box(
-            low=0, high=1, shape=(len(dummy_obs),), dtype=np.float32
-        )
-
-    def observation(self, obs):
-        return self.transformer.transform(obs)
-
-    def reset(self, **kwargs):
-        self.transformer.reset()
-        return super().reset(**kwargs)
-
-
-def make_env_thunk(fully_obs, env_name):
-    def thunk():
-        if env_name == "minigrid":
-            env = gym.make("MiniGrid-FourRooms-v0")
-            env = FastObsWrapper(env)
-        elif env_name == "cartpole":
-            env = gym.make("CartPole-v1")
-        elif env_name == "mujoco":
-            # Note: PG_Rainbow asserts discrete action space. Standard HalfCheetah is continuous.
-            # Using it might fail if PPOAgent doesn't handle Box actions.
-            env = gym.make("HalfCheetah-v5")
-        return env
-
-    return thunk
-
-
 def eval(agent, device, step=0, n_steps=300000, env_eval=None, env_name="minigrid"):
     if env_eval is None:
         env_eval = make_env_thunk(False, env_name)()
@@ -190,7 +132,7 @@ def train_pg(vec_env, agent, cfg, args, device):
 
     start_time = time.time()
     runner_name = args.env_name
-    results_dir = os.path.join("results", runner_name)
+    results_dir = os.path.join("results", "ppo", runner_name)
     os.makedirs(results_dir, exist_ok=True)
     tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
     writer = SummaryWriter(log_dir=tb_dir)
@@ -286,53 +228,6 @@ def train_pg(vec_env, agent, cfg, args, device):
     }
 
 
-def plot_results(results, args):
-    runner_name = args.env_name
-    results_dir = os.path.join("results", runner_name)
-    os.makedirs(results_dir, exist_ok=True)
-
-    np.save(
-        os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}.npy"),
-        results["rhist"],
-    )
-    np.save(
-        os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}.npy"),
-        results["eval_hist"],
-    )
-    np.save(
-        os.path.join(results_dir, f"loss_hist_{args.run}_{args.ablation}.npy"),
-        results["lhist"],
-    )
-    np.save(
-        os.path.join(
-            results_dir, f"smooth_train_scores_{args.run}_{args.ablation}.npy"
-        ),
-        results["smooth_rhist"],
-    )
-
-    plt.plot(results["rhist"])
-    plt.plot(results["smooth_rhist"])
-    plt.legend(["R hist", "Smooth R hist"])
-    plt.xlabel("Episode")
-    plt.ylabel("Training Episode Reward")
-    plt.grid()
-    plt.title(f"Training rewards, run {args.run} ablated: {args.ablation}")
-    plt.savefig(os.path.join(results_dir, f"train_scores_{args.run}_{args.ablation}"))
-    plt.close()
-
-    plt.plot(results["eval_hist"])
-    plt.grid()
-    plt.title(f"eval scores, run {args.run} ablated: {args.ablation}")
-    plt.savefig(os.path.join(results_dir, f"eval_scores_{args.run}_{args.ablation}"))
-    plt.close()
-
-    train_time_seconds = results["train_time"]
-    np.save(
-        os.path.join(results_dir, f"train_time_{args.run}_{args.ablation}.npy"),
-        train_time_seconds,
-    )
-    print(f"Training wall clock time: {train_time_seconds:.2f} seconds")
-
 
 if __name__ == "__main__":
     args = get_args()
@@ -357,5 +252,5 @@ if __name__ == "__main__":
     ).to(device)
 
     results = train_pg(vec_env, agent, cfg, args, device)
-    plot_results(results, args)
+    plot_results(results, args, "ppo")
     vec_env.close()
