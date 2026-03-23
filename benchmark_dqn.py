@@ -4,80 +4,10 @@ import argparse
 import torch
 import gymnasium as gym
 import numpy as np
+
 from minigrid.wrappers import FlatObsWrapper, OneHotPartialObsWrapper, FullyObsWrapper
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
-
-
-class obs_transformer:
-    def __init__(self):
-        # 7x7 image, 3 channels (one-hot for IDs 1, 2, 8)
-        self.image_flat_size = 7 * 7 * 2
-        # Direction is one-hot encoded (4 values)
-        self.direction_size = 4
-        self.frame_size = self.image_flat_size + self.direction_size
-
-        # Last obs includes image and direction
-        self.last_obs = np.zeros(self.frame_size)
-
-    def transform(self, obs):
-        # Extract object ID channel
-        img = obs["image"][:, :, 0]
-        direction = obs["direction"]
-
-        # One-hot encode IDs: 2=Wall, 8=Goal
-        one_hot_img = np.zeros((7, 7, 2), dtype=np.float32)
-        one_hot_img[:, :, 0] = img == 2
-        one_hot_img[:, :, 1] = img == 8
-
-        # One-hot encode direction
-        one_hot_dir = np.zeros(4, dtype=np.float32)
-        one_hot_dir[direction] = 1.0
-
-        current_obs = one_hot_img.flatten()
-
-        # Combine current image and direction
-        current_full = np.concatenate([current_obs, one_hot_dir])
-
-        # Stack current and last frame
-        transformed_obs = np.concatenate([current_full, self.last_obs])
-
-        self.last_obs = current_full
-        return transformed_obs
-
-    def reset(self):
-        self.last_obs = np.zeros(self.frame_size)
-        return np.concatenate([self.last_obs, self.last_obs])
-
-
-class FastObsWrapper(gym.ObservationWrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        self.transformer = obs_transformer()
-        dummy_obs = self.transformer.reset()
-        self.observation_space = gym.spaces.Box(
-            low=0, high=1, shape=(len(dummy_obs),), dtype=np.float32
-        )
-
-    def observation(self, obs):
-        return self.transformer.transform(obs)
-
-    def reset(self, **kwargs):
-        self.transformer.reset()
-        return super().reset(**kwargs)
-
-
-def make_env_thunk(env_name, fully_obs=False):
-    def thunk():
-        if env_name == "cartpole":
-            env = gym.make("CartPole-v1")
-        elif env_name == "mujoco":
-            env = gym.make("HalfCheetah-v5")
-        else:
-            env = gym.make("MiniGrid-FourRooms-v0")
-            env = FastObsWrapper(env)
-        return env
-
-    return thunk
+from runner_utilities import obs_transformer, FastObsWrapper, make_env_thunk, bins_to_continuous
 
 
 def setup_config(args, obs_dim):
@@ -237,10 +167,6 @@ def benchmark_action_sampling(
         )
 
 
-def bins_to_continuous(action_bins):
-    return np.array([b - 1.0 for b in action_bins], dtype=np.float32)
-
-
 def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
     print(f"\n--- Benchmarking Environment Rollouts ---")
     print(f"Num Parallel Envs: {args.num_envs}, Device: {args.device}")
@@ -249,9 +175,7 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
 
     # Init VecEnv
     print("Initializing Vector Environment...")
-    env_fns = [
-        make_env_thunk(args.env_name, args.fully_obs) for _ in range(args.num_envs)
-    ]
+    env_fns = [make_env_thunk(args.fully_obs, args.env_name) for _ in range(args.num_envs)]
     vec_env = gym.vector.AsyncVectorEnv(env_fns)
 
     obs, info = vec_env.reset()
@@ -418,8 +342,9 @@ def run_grid_search(args, obs_dim, fully_obs=False, total_steps=2000):
 
             file_prefix = getpass.getuser()
 
-    best_filename = f"{file_prefix}_{args.env_name}_best.json"
-    all_filename = f"{file_prefix}_{args.env_name}_all.json"
+    os.makedirs("time_files", exist_ok=True)
+    best_filename = f"time_files/{file_prefix}_{args.env_name}_dqn_best.json"
+    all_filename = f"time_files/{file_prefix}_{args.env_name}_dqn_all.json"
 
     with open(best_filename, "w") as f:
         json.dump(best_results, f, indent=4)
@@ -466,7 +391,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Get obs dim from dummy env
-    env = make_env_thunk(args.env_name, args.fully_obs)()
+    env = make_env_thunk(args.fully_obs, args.env_name)()
     obs, _ = env.reset()
     obs_dim = int(np.prod(np.asarray(obs).shape))
     env.close()

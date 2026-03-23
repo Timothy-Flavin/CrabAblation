@@ -8,12 +8,12 @@ if "%~1"=="" (
 set COMPUTER_NAME=%~1
 
 echo Running grid search for cartpole...
-python benchmark_parallel.py --grid_search --grid_name "%COMPUTER_NAME%" --env_name cartpole
+python benchmark_dqn.py --grid_search --grid_name "%COMPUTER_NAME%" --env_name cartpole
 
 echo Running grid search for minigrid...
-python benchmark_parallel.py --grid_search --grid_name "%COMPUTER_NAME%" --env_name minigrid
+python benchmark_dqn.py --grid_search --grid_name "%COMPUTER_NAME%" --env_name minigrid
 
 echo Running grid search for mujoco...
-python benchmark_parallel.py --grid_search --grid_name "%COMPUTER_NAME%" --env_name mujoco
+python benchmark_dqn.py --grid_search --grid_name "%COMPUTER_NAME%" --env_name mujoco
 
 echo All grid searches completed!

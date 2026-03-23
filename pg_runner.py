@@ -122,9 +122,9 @@ def train_pg(vec_env, agent, cfg, args, device):
     obs_raw, info = vec_env.reset()
     obs = obs_raw
 
-    n_steps_total = 300000 // args.num_envs
+    n_steps_total = getattr(args, "total_steps", 300000) // args.num_envs
     if args.env_name == "mujoco":
-        n_steps_total = 1000000 // args.num_envs
+        n_steps_total = getattr(args, "total_steps", 1000000) // args.num_envs
 
     num_iterations = n_steps_total // args.num_steps
 
