@@ -2,6 +2,9 @@ import os
 import numpy as np
 import gymnasium as gym
 import matplotlib.pyplot as plt
+# Map per-dimension discrete bin indices to continuous actions (-1, 0, 1)
+def bins_to_continuous(action_bins):
+    return np.array([b - 1.0 for b in action_bins], dtype=np.float32)
 
 class obs_transformer:
     def __init__(self):

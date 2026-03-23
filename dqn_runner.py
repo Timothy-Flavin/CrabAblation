@@ -15,14 +15,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 import argparse
-from runner_utilities import obs_transformer, FastObsWrapper, make_env_thunk, plot_results
+from runner_utilities import obs_transformer, FastObsWrapper, make_env_thunk, plot_results, bins_to_continuous
 from torch.utils.tensorboard import SummaryWriter
 import json
 
-
-# Map per-dimension discrete bin indices to continuous actions (-1, 0, 1)
-def bins_to_continuous(action_bins):
-    return np.array([b - 1.0 for b in action_bins], dtype=np.float32)
 
 
 def get_args():

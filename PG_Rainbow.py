@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
+from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
 
 from RainbowNetworks import IQN_Network
@@ -148,6 +149,13 @@ class PPOAgent:
 
         self.obs_shape = envs.single_observation_space.shape
         self.action_shape = envs.single_action_space.shape
+        if isinstance(envs.single_action_space, gym.spaces.Box):
+            self.n_action_dims = envs.single_action_space.shape[0]
+            self.n_action_bins = 3
+        else:
+            self.n_action_dims = 1
+            self.n_action_bins = envs.single_action_space.n
+
         self.batch_size = int(num_envs * num_steps)
         self.minibatch_size = int(self.batch_size // self.num_minibatches)
         self.num_steps = num_steps
@@ -158,7 +166,7 @@ class PPOAgent:
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
+            layer_init(nn.Linear(64, self.n_action_dims * self.n_action_bins), std=0.01),
         )
 
         if self.distributional:
@@ -229,9 +237,19 @@ class PPOAgent:
 
     def get_action_and_values(self, obs, action=None):
         logits = self.actor(obs)
-        probs = Categorical(logits=logits)
-        if action is None:
-            action = probs.sample()
+        if self.n_action_dims > 1:
+            logits = logits.view(-1, self.n_action_dims, self.n_action_bins)
+            probs = Categorical(logits=logits)
+            if action is None:
+                action = probs.sample()
+            log_prob = probs.log_prob(action).sum(dim=-1)
+            entropy = probs.entropy().sum(dim=-1)
+        else:
+            probs = Categorical(logits=logits)
+            if action is None:
+                action = probs.sample()
+            log_prob = probs.log_prob(action)
+            entropy = probs.entropy()
 
         if self.distributional:
             taus = torch.rand(obs.shape[0], self.n_quantiles, device=obs.device)
@@ -241,7 +259,7 @@ class PPOAgent:
             ext_v = self.ext_critic(obs).squeeze(-1)
             int_v = self.int_critic(obs).squeeze(-1)
 
-        return action, probs.log_prob(action), probs.entropy(), ext_v, int_v
+        return action, log_prob, entropy, ext_v, int_v
 
     def sample_action(self, obs):
         with torch.no_grad():

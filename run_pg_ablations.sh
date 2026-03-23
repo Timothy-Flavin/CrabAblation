@@ -13,7 +13,7 @@ RUNS=1 # Change this to run multiple seeds/trials per ablation
 
 echo "Starting PPO/PG Ablations on device: $DEVICE"
 
-ENVIRONMENTS=("cartpole" "minigrid" "mujoco")
+ENVIRONMENTS=("mujoco" "cartpole" "minigrid")
 ABLATIONS=(0 1 2 3 4 5)
 
 for env in "${ENVIRONMENTS[@]}"; do

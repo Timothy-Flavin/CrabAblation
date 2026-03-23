@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 
 from PG_Rainbow import PPOAgent
+from runner_utilities import bins_to_continuous
 from runner_utilities import obs_transformer, FastObsWrapper, make_env_thunk, plot_results
 from minigrid.wrappers import FlatObsWrapper
 
@@ -106,7 +107,12 @@ def eval(agent, device, step=0, n_steps=300000, env_eval=None, env_name="minigri
             action, logprob, ext_v, int_v = agent.sample_action(tobs)
 
         action = action.cpu().numpy()[0]
-        obs, r, term, trunc, info = env_eval.step(action)
+        if env_name == "mujoco":
+            step_action = bins_to_continuous(action)
+        else:
+            step_action = action
+            
+        obs, r, term, trunc, info = env_eval.step(step_action)
         reward += float(r)
         done = term or trunc
     return reward
@@ -174,9 +180,13 @@ def train_pg(vec_env, agent, cfg, args, device):
             agent_logprobs[step] = logprob
 
             np_action = action.cpu().numpy()
+            if args.env_name == "mujoco":
+                step_action = np.array([bins_to_continuous(a) for a in np_action])
+            else:
+                step_action = np_action
 
             next_obs_np, reward, terminations, truncations, infos = vec_env.step(
-                np_action
+                step_action
             )
 
             next_done_np = np.logical_or(terminations, truncations)
@@ -212,8 +222,9 @@ def train_pg(vec_env, agent, cfg, args, device):
         lhist.append(loss)
 
         # Eval
-        if iteration % max(1, (num_iterations // 50)) == 0:
+        if iteration % 5 == 0:
             e_rew = eval(agent, device, env_name=args.env_name)
+            print(f"Ran eval r = {e_rew}")
             eval_hist.append(e_rew)
             writer.add_scalar("charts/eval_return", e_rew, global_step)
 
