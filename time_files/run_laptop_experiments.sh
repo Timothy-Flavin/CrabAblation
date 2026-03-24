@@ -1,5 +1,3 @@
-#!/usr/bin/env bash
-# Auto-generated schedule for laptop
 set -euo pipefail
 
 echo "[laptop] Running ppo on minigrid | Ablation 0 | Run 1"
