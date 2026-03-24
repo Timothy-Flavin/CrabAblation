@@ -211,8 +211,8 @@ class RainbowDQN:
     def update(
         self, obs, a, r, next_obs, term, batch_size=None, step=0, extrinsic_only=False
     ):
-        self.update_running_stats(next_obs, r)
-        r = self.ext_rms.normalize(r, clip_range=self.ext_r_clamp).to(device=obs.device)
+        # NOTE: Do NOT call update_running_stats(next_obs, r) here, as it passes the ENTIRE replay buffer of size 10000+!
+        # It is already correctly called on the single batch of step transitions in dqn_runner.py.
         # Sample a random minibatch
         if batch_size is None:
             idx = torch.arange(0, len(r))
@@ -229,7 +229,9 @@ class RainbowDQN:
         else:
             rnd_errors, rnd_loss = self._update_RND(b_next_obs)
         b_obs = obs[idx]
-        b_r = r[idx]
+        
+        # Normalize only the sliced batch to prevent O(N) slowdown over entire buffer
+        b_r = self.ext_rms.normalize(r[idx], clip_range=self.ext_r_clamp).to(device=obs.device)
         b_term = term[idx]
         b_actions = a[idx]
 
@@ -783,18 +785,19 @@ class EVRainbowDQN:
     def update(
         self, obs, a, r, next_obs, term, batch_size, step=0, extrinsic_only=False
     ):
-        self.update_running_stats(next_obs, r)
-        r = self.ext_rms.normalize(r, self.ext_r_clip).to(
-            dtype=torch.float32, device=obs.device
-        )
+        # NOTE: update_running_stats is handled externally in dqn_runner per step batch to avoid O(N) buffer scaling
         # Get Batch items
         if batch_size is None:
             idx = torch.arange(0, len(r))
             batch_size = len(r)
         else:
             idx = torch.randint(low=0, high=step, size=(batch_size,))
+            
         b_obs = obs[idx]
-        b_r = r[idx]
+        # Normalize only the sliced batch
+        b_r = self.ext_rms.normalize(r[idx], self.ext_r_clip).to(
+            dtype=torch.float32, device=obs.device
+        )
         b_next_obs = next_obs[idx]
         b_term = term[idx]
         b_actions = a[idx]
