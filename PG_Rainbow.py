@@ -15,6 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from RainbowNetworks import IQN_Network
 from RandomDistilation import RNDModel, RunningMeanStd
+from agent import Agent
 import tyro
 
 
@@ -101,7 +102,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 
-class PPOAgent:
+class PPOAgent(Agent):
     def __init__(
         self,
         envs,
@@ -128,6 +129,7 @@ class PPOAgent:
         intrinsic_lr: float = 2.5e-4,
         use_gae: bool = True,
     ):
+        super().__init__()
         self.anneal_lr = anneal_lr
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -216,14 +218,7 @@ class PPOAgent:
         )
         self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
 
-        self.tb_writer = None
-        self.tb_prefix = "agent"
         self.step = 0
-        self.last_losses = {}
-
-    def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
-        self.tb_writer = writer
-        self.tb_prefix = prefix
 
     def to(self, device):
         self.actor.to(device)

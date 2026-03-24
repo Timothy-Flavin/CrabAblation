@@ -4,9 +4,10 @@ from typing import Optional
 from torch.utils.tensorboard import SummaryWriter
 from RandomDistilation import RNDModel, RunningMeanStd
 from RainbowNetworks import EV_Q_Network, IQN_Network
+from agent import Agent
 
 
-class RainbowDQN:
+class RainbowDQN(Agent):
     """Maintains online (current) and target Q_Networks and training logic."""
 
     def __init__(
@@ -41,6 +42,7 @@ class RainbowDQN:
         norm_obs: bool = True,
         burn_in_updates: int = 0,
     ):
+        super().__init__()
         self.popart = popart
         self.ext_online = IQN_Network(
             input_dim,
@@ -115,17 +117,8 @@ class RainbowDQN:
         # Scalar running stats for intrinsic reward
         self.int_rms = RunningMeanStd(shape=())
         self.ext_rms = RunningMeanStd(shape=())
-        # Optional TensorBoard writer
-        self.tb_writer = None
-        self.tb_prefix = "agent"
         self.step = 0
         self.last_eps = 1.0
-        self.last_losses = {}
-
-    def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
-        """Attach a TensorBoard SummaryWriter to enable internal logging during updates."""
-        self.tb_writer = writer
-        self.tb_prefix = prefix
 
     def to(self, device):
         """Move the agent to a specific device."""
@@ -618,7 +611,7 @@ class RainbowDQN:
         return int_loss
 
 
-class EVRainbowDQN:
+class EVRainbowDQN(Agent):
     """Non-distributional counterpart to RainbowDQN with optional dueling and all five pillars."""
 
     def __init__(
@@ -650,7 +643,7 @@ class EVRainbowDQN:
         int_r_clip=5,
         ext_r_clip=5,
     ):
-        self.last_losses = {}
+        super().__init__()
         self.popart = popart
         self.int_r_clip = int_r_clip
         self.ext_r_clip = ext_r_clip
@@ -718,12 +711,6 @@ class EVRainbowDQN:
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
         self.int_rms = RunningMeanStd(shape=())
         self.ext_rms = RunningMeanStd(shape=())
-        self.tb_writer = None
-        self.tb_prefix = "agent"
-
-    def attach_tensorboard(self, writer: SummaryWriter, prefix: str = "agent"):
-        self.tb_writer = writer
-        self.tb_prefix = prefix
 
     def to(self, device):
         """Move the agent to a specific device."""
