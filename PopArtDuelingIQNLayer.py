@@ -154,7 +154,7 @@ if __name__ == "__main__":
     n_action_dims = 2
     n_action_bins = 3
 
-    layer = PopArtDuelingIQNLayer(in_dim, n_action_dims, n_action_bins)
+    layer = PopArtDuelingIQNLayer(in_dim, n_action_dims, n_action_bins, epsilon=0.001)
 
     # Input: [B, N, H]
     x = torch.randn(batch_size, n_quantiles, in_dim)
