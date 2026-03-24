@@ -2,37 +2,37 @@
     "ablation_0": {
         "device": "cuda",
         "num_envs": 16,
-        "steps_per_sec": 2014.689526653706,
-        "updates_per_sec": 249.42242542438055
+        "steps_per_sec": 2288.831590972588,
+        "updates_per_sec": 283.3617384990025
     },
     "ablation_1": {
         "device": "cuda",
         "num_envs": 16,
-        "steps_per_sec": 2092.7690112271853,
-        "updates_per_sec": 259.08881528771064
+        "steps_per_sec": 2367.6210268799837,
+        "updates_per_sec": 293.1160216984005
     },
     "ablation_2": {
         "device": "cuda",
         "num_envs": 16,
-        "steps_per_sec": 2036.0404965614252,
-        "updates_per_sec": 252.065716427333
+        "steps_per_sec": 2300.1196465329253,
+        "updates_per_sec": 284.7592214158175
     },
     "ablation_3": {
         "device": "cuda",
         "num_envs": 16,
-        "steps_per_sec": 2631.734994684553,
-        "updates_per_sec": 325.8138372013624
+        "steps_per_sec": 3134.2979513805785,
+        "updates_per_sec": 388.03209461980003
     },
     "ablation_4": {
         "device": "cpu",
         "num_envs": 16,
-        "steps_per_sec": 3545.5779317124616,
-        "updates_per_sec": 438.9493445810156
+        "steps_per_sec": 4577.09959824953,
+        "updates_per_sec": 566.6537042561318
     },
     "ablation_5": {
         "device": "cuda",
         "num_envs": 16,
-        "steps_per_sec": 1968.6697633546426,
-        "updates_per_sec": 243.72509051115784
+        "steps_per_sec": 2292.5740218285455,
+        "updates_per_sec": 283.8250586129589
     }
 }
