@@ -1,28 +1,14 @@
 #!/usr/bin/env bash
 
-# Run all ablation studies sequentially with CUDA device
-# Usage: bash run_all_ablations.sh
-
 set -euo pipefail
+# Ensure results directory exists for plots
+mkdir -p results
 
-# Export DEVICE_ARG for scripts that respect the environment variable (e.g., cartpole)
-export DEVICE_ARG="--device cuda"
+for ablation in 0 1 2 3 4 5; do
+	for run in 1 2 3; do
+		echo "Running trial: ablation=${ablation}, run=${run}"
+		python dqn_runner.py --ablation ${ablation} --run ${run} --env_name cartpole --best_params ${DEVICE_NAME}
+	done
+done
 
-echo "=================================================="
-echo "Starting CartPole Ablations"
-echo "=================================================="
-bash run_cartpole_ablation.sh
-
-echo "=================================================="
-echo "Starting MiniGrid Ablations"
-echo "=================================================="
-bash run_minigrid_ablation.sh
-
-echo "=================================================="
-echo "Starting MuJoCo Ablations"
-echo "=================================================="
-bash run_mujoco_ablation.sh
-
-echo "=================================================="
-echo "All ablation studies completed successfully."
-echo "=================================================="
+echo "All 18 trials completed."
