@@ -2,31 +2,31 @@
     "ablation_0": {
         "device": "cpu",
         "num_envs": 16,
-        "steps_per_sec": 2909.9778758693583
+        "steps_per_sec": 2888.9072488918487
     },
     "ablation_1": {
         "device": "cpu",
         "num_envs": 16,
-        "steps_per_sec": 2902.3133005179097
+        "steps_per_sec": 2862.4718722508064
     },
     "ablation_2": {
         "device": "cpu",
         "num_envs": 16,
-        "steps_per_sec": 2902.3790032397756
+        "steps_per_sec": 2882.491146339217
     },
     "ablation_3": {
         "device": "cpu",
         "num_envs": 16,
-        "steps_per_sec": 2881.856759221718
+        "steps_per_sec": 2876.1622234811807
     },
     "ablation_4": {
         "device": "cpu",
         "num_envs": 16,
-        "steps_per_sec": 5941.750064156172
+        "steps_per_sec": 5859.13521643326
     },
     "ablation_5": {
         "device": "cpu",
         "num_envs": 16,
-        "steps_per_sec": 2903.8895147830735
+        "steps_per_sec": 2876.2513059167686
     }
 }
