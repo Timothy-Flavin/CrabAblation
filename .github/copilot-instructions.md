@@ -1,0 +1,1 @@
+You have permission to read all files in this directory using standard CLI tools like grep, cat, and ls. When cleaning up tasks, you are authorized to delete temporary files you created without further confirmation but not with -rf.

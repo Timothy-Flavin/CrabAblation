@@ -78,7 +78,9 @@ class PopArtIQNLayer(nn.Module):
                      Standard PopArt tracks the return moments.
         """
         # Flatten all dimensions to compute scalar stats
+        # Clamp to prevent inf-inf NaNs on divergent scaling
         targets_flat = targets.reshape(-1)
+        targets_flat = torch.clamp(targets_flat, min=-1e5, max=1e5)
 
         # Calculate batch statistics
         batch_mean = targets_flat.mean()

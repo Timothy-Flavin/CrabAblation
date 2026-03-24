@@ -8,3 +8,8 @@ results
 *.json
 runs
 device_name.txt
+experiment_consolidation.sh
+all_results
+
+# Consolidated results
+all_results/

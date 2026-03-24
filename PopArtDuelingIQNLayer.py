@@ -97,7 +97,9 @@ class PopArtDuelingIQNLayer(nn.Module):
             targets: Target values (returns). Can be [B, N] or [B, N, D, Bins].
                      We flatten everything to compute scalar stats.
         """
+        # Clamp to prevent inf-inf NaNs on divergent scaling
         targets_flat = targets.reshape(-1)
+        targets_flat = torch.clamp(targets_flat, min=-1e5, max=1e5)
 
         batch_mean = targets_flat.mean()
         batch_sq_mean = (targets_flat**2).mean()
