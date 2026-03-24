@@ -68,16 +68,18 @@ def get_args():
         default=1,
         help="Run id index for distinguishing multiple trials",
     )
+    import json
+    from runner_utilities import get_device_name
     parser.add_argument(
-        "--best_params",
+        "--device_name",
         type=str,
-        default="timpc",
-        help="Prefix to the <prefix>_best.json file storing parallel hyper-parameters.",
+        default=get_device_name(),
+        help="Device name for loading best.json params",
     )
     args = parser.parse_args()
 
-    if args.best_params:
-        best_json_path = f"{args.best_params}_best.json"
+    if args.device_name:
+        best_json_path = f"time_files/{args.device_name}/{args.env_name}_dqn_best.json"
 
         try:
             with open(best_json_path, "r") as f:

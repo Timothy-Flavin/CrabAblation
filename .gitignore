@@ -7,3 +7,4 @@ results
 .vscode
 *.json
 runs
+device_name.txt

@@ -2,6 +2,18 @@ import os
 import numpy as np
 import gymnasium as gym
 import matplotlib.pyplot as plt
+
+def get_device_name():
+    try:
+        with open("device_name.txt", "r") as f:
+            return f.read().strip()
+    except Exception:
+        try:
+            return os.getlogin()
+        except Exception:
+            import getpass
+            return getpass.getuser()
+
 # Map per-dimension discrete bin indices to continuous actions (-1, 0, 1)
 def bins_to_continuous(action_bins):
     return np.array([b - 1.0 for b in action_bins], dtype=np.float32)

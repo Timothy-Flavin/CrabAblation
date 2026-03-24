@@ -40,23 +40,31 @@ def get_args():
         help="Use FullyObsWrapper instead of Partial OneHot wrapper",
     )
     parser.add_argument("--run", dest="run", type=int, default=1, help="Run id index")
+    from runner_utilities import get_device_name
     parser.add_argument(
-        "--best_params", type=str, default="", help="Prefix to the best.json params"
+        "--device_name", type=str, default=get_device_name(), help="Device name for loading best.json params"
     )
     args = parser.parse_args()
 
     args.num_envs = 4
     args.num_steps = 128
 
-    if args.best_params:
-        best_json_path = f"{args.best_params}_best.json"
+    if args.device_name:
+        best_json_path = f"time_files/{args.device_name}/{args.env_name}_ppo_best.json"
         try:
             with open(best_json_path, "r") as f:
                 params = json.load(f)
-            if "num_envs" in params:
-                args.num_envs = params["num_envs"]
-            if "num_steps" in params:
-                args.num_steps = params["num_steps"]
+            
+            abl_key = f"ablation_{args.ablation}"
+            if abl_key in params:
+                abl_params = params[abl_key]
+                if "device" in abl_params:
+                    args.device = abl_params["device"]
+                if "num_envs" in abl_params:
+                    args.num_envs = abl_params["num_envs"]
+            else:
+                print(f"Could not find {abl_key} in {best_json_path}")
+                
         except Exception as e:
             print(f"Failed to load params {best_json_path}: {e}")
 

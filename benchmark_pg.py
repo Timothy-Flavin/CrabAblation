@@ -125,15 +125,11 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
         best_results[f"ablation_{ablation}"] = best_config
         print(f"Best for Ablation {ablation}: {best_config}")
 
-    if hasattr(args, "grid_name") and args.grid_name is not None:
-        file_prefix = args.grid_name
+    if hasattr(args, "device_name") and args.device_name is not None:
+        file_prefix = args.device_name
     else:
-        try:
-            file_prefix = os.getlogin()
-        except Exception:
-            import getpass
-
-            file_prefix = getpass.getuser()
+        from runner_utilities import get_device_name
+        file_prefix = get_device_name()
 
     os.makedirs(f"time_files/{file_prefix}", exist_ok=True)
     best_filename = f"time_files/{file_prefix}/{args.env_name}_ppo_best.json"
@@ -166,11 +162,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Run parameter grid search and save json",
     )
+    from runner_utilities import get_device_name
     parser.add_argument(
-        "--grid_name",
+        "--device_name",
         type=str,
-        default=None,
-        help="Custom prefix for the grid search json output file (default: system username)",
+        default=get_device_name(),
+        help="Device name for storing time_files",
     )
     parser.add_argument(
         "--device",
