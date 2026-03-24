@@ -9,7 +9,12 @@ import numpy as np
 import gymnasium as gym
 
 from PG_Rainbow import PPOAgent
-from runner_utilities import obs_transformer, FastObsWrapper, make_env_thunk, bins_to_continuous
+from runner_utilities import (
+    obs_transformer,
+    FastObsWrapper,
+    make_env_thunk,
+    bins_to_continuous,
+)
 from pg_runner import train_pg
 
 
@@ -24,7 +29,7 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
     best_results = {}
     all_results = {}
     args.fully_obs = fully_obs
-    
+
     # Defaults
     cfg = {
         "clip_coef": 0.2,
@@ -37,7 +42,7 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
     for ablation in range(6):
         print(f"\n--- Grid Search: Ablation {ablation} ---")
         args.ablation = ablation
-        
+
         cfg_abl = cfg.copy()
         if args.ablation == 1:
             cfg_abl["clip_coef"] = 100.0  # Effectively disables KL/surrogate clip
@@ -60,14 +65,15 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
                 args.device = dev
                 args.num_envs = num_envs
                 args.num_steps = 128
-                
+
                 # Assign explicitly here for the modified train_pg to know how long to run
                 args.total_steps = total_steps
 
                 device = torch.device(dev)
-                
+
                 env_fns = [
-                    make_env_thunk(args.fully_obs, args.env_name) for _ in range(args.num_envs)
+                    make_env_thunk(args.fully_obs, args.env_name)
+                    for _ in range(args.num_envs)
                 ]
                 vec_env = gym.vector.SyncVectorEnv(env_fns)
                 try:
@@ -87,7 +93,11 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
                     # Total steps inside train_pg uses:
                     # num_iterations = (total_steps // args.num_envs) // args.num_steps
                     # So precise steps:
-                    actual_steps_run = max(1, (total_steps // args.num_envs) // args.num_steps) * args.num_steps * args.num_envs
+                    actual_steps_run = (
+                        max(1, (total_steps // args.num_envs) // args.num_steps)
+                        * args.num_steps
+                        * args.num_envs
+                    )
                     sps = actual_steps_run / train_time
 
                     current_config = {
@@ -100,10 +110,13 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
                     if sps > best_sps:
                         best_sps = sps
                         best_config = current_config
-                    print(f"Env: {args.env_name} | Ablation: {ablation} | Device: {dev} | Num Envs: {num_envs} | SPS: {sps:.2f}")
+                    print(
+                        f"Env: {args.env_name} | Ablation: {ablation} | Device: {dev} | Num Envs: {num_envs} | SPS: {sps:.2f}"
+                    )
 
                 except Exception as e:
                     import traceback
+
                     print(f"Error for device={dev}, num_envs={num_envs}: {e}")
                     traceback.print_exc()
                 finally:
@@ -121,10 +134,10 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
             import getpass
 
             file_prefix = getpass.getuser()
-            
-    os.makedirs("time_files", exist_ok=True)
-    best_filename = f"time_files/{file_prefix}_{args.env_name}_ppo_best.json"
-    all_filename = f"time_files/{file_prefix}_{args.env_name}_ppo_all.json"
+
+    os.makedirs(f"time_files/{file_prefix}", exist_ok=True)
+    best_filename = f"time_files/{file_prefix}/{args.env_name}_ppo_best.json"
+    all_filename = f"time_files/{file_prefix}/{args.env_name}_ppo_all.json"
 
     with open(best_filename, "w") as f:
         json.dump(best_results, f, indent=4)
@@ -138,7 +151,9 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Parallel Environment Benchmarking PPO")
+    parser = argparse.ArgumentParser(
+        description="Parallel Environment Benchmarking PPO"
+    )
     parser.add_argument(
         "--env_name",
         type=str,

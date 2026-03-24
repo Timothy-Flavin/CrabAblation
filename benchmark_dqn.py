@@ -7,7 +7,12 @@ import numpy as np
 
 from minigrid.wrappers import FlatObsWrapper, OneHotPartialObsWrapper, FullyObsWrapper
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
-from runner_utilities import obs_transformer, FastObsWrapper, make_env_thunk, bins_to_continuous
+from runner_utilities import (
+    obs_transformer,
+    FastObsWrapper,
+    make_env_thunk,
+    bins_to_continuous,
+)
 
 
 def setup_config(args, obs_dim):
@@ -175,7 +180,9 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
 
     # Init VecEnv
     print("Initializing Vector Environment...")
-    env_fns = [make_env_thunk(args.fully_obs, args.env_name) for _ in range(args.num_envs)]
+    env_fns = [
+        make_env_thunk(args.fully_obs, args.env_name) for _ in range(args.num_envs)
+    ]
     vec_env = gym.vector.AsyncVectorEnv(env_fns)
 
     obs, info = vec_env.reset()
@@ -342,9 +349,9 @@ def run_grid_search(args, obs_dim, fully_obs=False, total_steps=2000):
 
             file_prefix = getpass.getuser()
 
-    os.makedirs("time_files", exist_ok=True)
-    best_filename = f"time_files/{file_prefix}_{args.env_name}_dqn_best.json"
-    all_filename = f"time_files/{file_prefix}_{args.env_name}_dqn_all.json"
+    os.makedirs(f"time_files/{file_prefix}", exist_ok=True)
+    best_filename = f"time_files/{file_prefix}/{args.env_name}_dqn_best.json"
+    all_filename = f"time_files/{file_prefix}/{args.env_name}_dqn_all.json"
 
     with open(best_filename, "w") as f:
         json.dump(best_results, f, indent=4)

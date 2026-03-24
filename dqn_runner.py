@@ -15,10 +15,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 import argparse
-from runner_utilities import obs_transformer, FastObsWrapper, make_env_thunk, plot_results, bins_to_continuous
+from runner_utilities import (
+    obs_transformer,
+    FastObsWrapper,
+    make_env_thunk,
+    plot_results,
+    bins_to_continuous,
+)
 from torch.utils.tensorboard import SummaryWriter
 import json
-
 
 
 def get_args():
@@ -199,8 +204,6 @@ def setup_config(obs_dim):
         )
 
     return dqn, device, configurations, args
-
-
 
 
 def eval(agent, device, step=0, n_steps=300000, env_eval=None, env_name="minigrid"):
@@ -481,7 +484,6 @@ def train_dqn(vec_env, dqn, configurations, args, device, obs_dim, n_action_dims
         "eval_hist": eval_hist,
         "train_time": time() - start_time,
     }
-
 
 
 if __name__ == "__main__":
