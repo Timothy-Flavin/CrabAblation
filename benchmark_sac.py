@@ -172,7 +172,7 @@ def benchmark_action_sampling(
 def benchmark_env_rollouts(
     args,
     agent,
-    total_steps=1000,
+    total_steps=5000,
     batch_size=128,
     max_wall_time_seconds: float | None = None,
 ):
