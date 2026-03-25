@@ -5,7 +5,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from cleanrl_utils.buffers import ReplayBuffer
+from cleanrl_buffers import ReplayBuffer
 from SAC_Rainbow import SACAgent
 from runner_utilities import (
     make_env_thunk,
@@ -14,6 +14,59 @@ from runner_utilities import (
     get_benchmark_devices,
     save_grid_search_results,
 )
+
+
+def _proxy_action_space(action_space):
+    if isinstance(action_space, gym.spaces.Box):
+        return action_space
+    if isinstance(action_space, gym.spaces.Discrete):
+        return gym.spaces.Box(
+            low=np.zeros((1,), dtype=np.float32),
+            high=np.ones((1,), dtype=np.float32),
+            dtype=np.float32,
+        )
+    if isinstance(action_space, gym.spaces.MultiDiscrete):
+        n_dims = int(len(action_space.nvec))
+        return gym.spaces.Box(
+            low=np.zeros((n_dims,), dtype=np.float32),
+            high=np.ones((n_dims,), dtype=np.float32),
+            dtype=np.float32,
+        )
+    raise NotImplementedError(f"Unsupported action space for SAC benchmark: {action_space}")
+
+
+def _agent_spec_from_vec_env(vec_env):
+    class _Spec:
+        pass
+
+    spec = _Spec()
+    spec.single_observation_space = vec_env.single_observation_space
+    spec.single_action_space = _proxy_action_space(vec_env.single_action_space)
+    return spec
+
+
+def _continuous_to_env_action(actions_cont, env_action_space):
+    actions_cont = np.asarray(actions_cont, dtype=np.float32)
+
+    if isinstance(env_action_space, gym.spaces.Box):
+        return np.clip(actions_cont, env_action_space.low, env_action_space.high)
+
+    if actions_cont.ndim == 1:
+        actions_cont = actions_cont.reshape(-1, 1)
+
+    if isinstance(env_action_space, gym.spaces.Discrete):
+        x = np.clip(actions_cont[:, 0], 0.0, 1.0 - 1e-8)
+        bins = (x * env_action_space.n).astype(np.int64)
+        return np.clip(bins, 0, env_action_space.n - 1)
+
+    if isinstance(env_action_space, gym.spaces.MultiDiscrete):
+        out = np.zeros((actions_cont.shape[0], len(env_action_space.nvec)), dtype=np.int64)
+        for dim, n in enumerate(env_action_space.nvec):
+            x = np.clip(actions_cont[:, dim], 0.0, 1.0 - 1e-8)
+            out[:, dim] = np.clip((x * int(n)).astype(np.int64), 0, int(n) - 1)
+        return out
+
+    raise NotImplementedError(f"Unsupported env action space: {env_action_space}")
 
 
 def setup_config(args, envs):
@@ -40,7 +93,7 @@ def setup_config(args, envs):
         cfg["delayed_critics"] = False
 
     agent = SACAgent(
-        envs,
+        _agent_spec_from_vec_env(envs),
         gamma=args.gamma,
         tau=args.tau,
         policy_lr=args.policy_lr,
@@ -121,10 +174,12 @@ def benchmark_env_rollouts(args, agent, total_steps=1000, batch_size=256):
     vec_env = gym.vector.AsyncVectorEnv(env_fns)
 
     vec_env.single_observation_space.dtype = np.float32
+    proxy_action_space = _proxy_action_space(vec_env.single_action_space)
+    proxy_action_dim = int(np.prod(proxy_action_space.shape))
     rb = ReplayBuffer(
         args.buffer_size,
         vec_env.single_observation_space,
-        vec_env.single_action_space,
+        proxy_action_space,
         device,
         n_envs=args.num_envs,
         handle_timeout_termination=False,
@@ -136,34 +191,49 @@ def benchmark_env_rollouts(args, agent, total_steps=1000, batch_size=256):
     start_time = time.time()
 
     steps_taken = 0
+    steps_since_update = 0
     updates_performed = 0
     while steps_taken < total_steps:
         if steps_taken < int(args.learning_starts):
-            actions = np.array(
-                [vec_env.single_action_space.sample() for _ in range(vec_env.num_envs)]
-            )
+            if isinstance(vec_env.single_action_space, gym.spaces.Box):
+                actions_agent = np.array(
+                    [vec_env.single_action_space.sample() for _ in range(vec_env.num_envs)],
+                    dtype=np.float32,
+                )
+            else:
+                actions_agent = np.random.uniform(
+                    low=0.0,
+                    high=1.0,
+                    size=(vec_env.num_envs, proxy_action_dim),
+                ).astype(np.float32)
         else:
-            actions = agent.sample_action(obs, deterministic=False)
+            actions_agent = agent.sample_action(obs, deterministic=False)
 
-        next_obs, rewards, terminations, truncations, infos = vec_env.step(actions)
+        actions_env = _continuous_to_env_action(actions_agent, vec_env.single_action_space)
+
+        next_obs, rewards, terminations, truncations, infos = vec_env.step(actions_env)
 
         real_next_obs = next_obs.copy()
         for idx, trunc in enumerate(truncations):
             if trunc and "final_observation" in infos:
                 real_next_obs[idx] = infos["final_observation"][idx]
 
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+        rb.add(obs, real_next_obs, actions_agent, rewards, terminations, infos)
         obs = next_obs
         steps_taken += args.num_envs
+        steps_since_update += args.num_envs
 
-        if steps_taken > int(args.learning_starts):
-            try:
-                data = rb.sample(batch_size)
-                agent.update(data, global_step=steps_taken)
-                updates_performed += 1
-            except Exception:
-                # Replay buffer may not yet have enough samples; skip until it does.
-                pass
+        while steps_since_update >= 8:
+            # Match DQN benchmark cadence: one update per 8 env steps.
+            # Keep warmup tied to replay readiness, not learning_starts wall-clock gate.
+            if rb.size() > 0:
+                try:
+                    data = rb.sample(batch_size)
+                    agent.update(data, global_step=steps_taken)
+                    updates_performed += 1
+                except Exception:
+                    pass
+            steps_since_update -= 8
 
     end_time = time.time()
     duration = end_time - start_time
@@ -244,7 +314,7 @@ if __name__ == "__main__":
         "--env_name",
         type=str,
         default="mujoco",
-        choices=["mujoco"],
+        choices=["mujoco", "cartpole", "minigrid"],
         help="Environment to use",
     )
     parser.add_argument(
@@ -276,7 +346,7 @@ if __name__ == "__main__":
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--learning_starts", type=int, default=5000)
+    parser.add_argument("--learning_starts", type=int, default=512)
     parser.add_argument("--policy_lr", type=float, default=3e-4)
     parser.add_argument("--q_lr", type=float, default=1e-3)
     parser.add_argument("--policy_frequency", type=int, default=2)

@@ -3,8 +3,12 @@ import json
 import time
 import numpy as np
 import gymnasium as gym
-import matplotlib.pyplot as plt
 import torch
+
+try:
+    import minigrid  # noqa: F401
+except Exception:
+    minigrid = None
 
 def get_device_name():
     try:
@@ -83,6 +87,9 @@ class FastObsWrapper(gym.ObservationWrapper):
 def make_env_thunk(fully_obs, env_name):
     def thunk():
         if env_name == "minigrid":
+            # Ensure MiniGrid environments are registered with Gymnasium.
+            if minigrid is None:
+                import minigrid as _minigrid  # noqa: F401
             env = gym.make("MiniGrid-FourRooms-v0")
             env = FastObsWrapper(env)
         elif env_name == "cartpole":
@@ -195,6 +202,8 @@ def save_grid_search_results(args, algo_name, best_results, all_results):
 
 
 def plot_results(results, args, model_name):
+    import matplotlib.pyplot as plt
+
     runner_name = args.env_name
     results_dir = os.path.join("results", model_name, runner_name)
     os.makedirs(results_dir, exist_ok=True)

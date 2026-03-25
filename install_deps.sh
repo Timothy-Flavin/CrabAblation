@@ -53,7 +53,10 @@ python -m pip install --upgrade \
   minigrid \
   cleanrl \
   wandb \
-  ortools
+  ortools \
+  minigrid
 
 echo "==> Dependency installation complete"
 echo "If using a venv, activate first: source .venv/bin/activate"
+
+

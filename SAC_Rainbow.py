@@ -13,7 +13,7 @@ import torch.optim as optim
 import tyro
 from torch.utils.tensorboard import SummaryWriter
 
-from cleanrl_utils.buffers import ReplayBuffer
+from cleanrl_buffers import ReplayBuffer
 from agent import Agent
 from RainbowNetworks import EV_Q_Network, IQN_Network
 
@@ -100,8 +100,10 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 class SoftQNetwork(nn.Module):
     def __init__(self, env):
         super().__init__()
+        obs_dim = int(np.array(env.single_observation_space.shape).prod())
+        act_dim = int(np.prod(env.single_action_space.shape))
         self.fc1 = nn.Linear(
-            np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape),
+            obs_dim + act_dim,
             256,
         )
         self.fc2 = nn.Linear(256, 256)
@@ -122,10 +124,12 @@ LOG_STD_MIN = -5
 class Actor(nn.Module):
     def __init__(self, env):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
+        obs_dim = int(np.array(env.single_observation_space.shape).prod())
+        act_dim = int(np.prod(env.single_action_space.shape))
+        self.fc1 = nn.Linear(obs_dim, 256)
         self.fc2 = nn.Linear(256, 256)
-        self.fc_mean = nn.Linear(256, np.prod(env.single_action_space.shape))
-        self.fc_logstd = nn.Linear(256, np.prod(env.single_action_space.shape))
+        self.fc_mean = nn.Linear(256, act_dim)
+        self.fc_logstd = nn.Linear(256, act_dim)
         # action rescaling
         self.register_buffer(
             "action_scale",
@@ -312,7 +316,7 @@ class SACAgent(Agent):
         return (torch.abs(taus_expanded - I) * huber).mean()
 
     def _critic_input(self, obs: torch.Tensor, act: torch.Tensor):
-        return torch.cat([obs, act], dim=1)
+        return torch.cat([obs, act.to(dtype=obs.dtype)], dim=1)
 
     def _critic_scalar_value(self, critic, critic_input: torch.Tensor, normalized: bool = False):
         q = critic(critic_input, normalized=normalized)
