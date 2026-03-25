@@ -9,6 +9,7 @@ from cleanrl_buffers import ReplayBuffer
 from SAC_Rainbow import SACAgent
 from runner_utilities import (
     make_env_thunk,
+    get_env_benchmark_spec,
     benchmark_updates_generic,
     benchmark_action_sampling_generic,
     get_benchmark_devices,
@@ -71,14 +72,6 @@ def _continuous_to_env_action(actions_cont, env_action_space):
     raise NotImplementedError(f"Unsupported env action space: {env_action_space}")
 
 
-def _hidden_layer_sizes_for_env(env_name: str):
-    if env_name == "mujoco":
-        return (128, 128)
-    if env_name == "cartpole":
-        return (32, 32)
-    return (128, 128)
-
-
 def setup_config(args, envs):
     cfg = {
         "entropy_coef_zero": False,
@@ -102,7 +95,7 @@ def setup_config(args, envs):
     elif args.ablation == 5:
         cfg["delayed_critics"] = False
 
-    hidden_layer_sizes = _hidden_layer_sizes_for_env(args.env_name)
+    hidden_layer_sizes = tuple(get_env_benchmark_spec(args.env_name)["hidden_layer_sizes"])
     agent = SACAgent(
         _agent_spec_from_vec_env(envs),
         gamma=args.gamma,
@@ -176,7 +169,13 @@ def benchmark_action_sampling(
     )
 
 
-def benchmark_env_rollouts(args, agent, total_steps=1000, batch_size=256):
+def benchmark_env_rollouts(
+    args,
+    agent,
+    total_steps=5000,
+    batch_size=128,
+    max_wall_time_seconds: float | None = None,
+):
     print(f"\n--- Benchmarking Environment Rollouts ---")
     print(f"Num Parallel Envs: {args.num_envs}, Device: {args.device}")
     device = resolve_torch_device(args.device)
@@ -205,6 +204,16 @@ def benchmark_env_rollouts(args, agent, total_steps=1000, batch_size=256):
     steps_taken = 0
     updates_performed = 0
     while steps_taken < total_steps:
+        if (
+            max_wall_time_seconds is not None
+            and max_wall_time_seconds > 0
+            and (time.time() - start_time) >= max_wall_time_seconds
+        ):
+            print(
+                f"Max wall time {max_wall_time_seconds:.1f}s reached; stopping early at {steps_taken} steps."
+            )
+            break
+
         if steps_taken < args.learning_starts:
             if isinstance(vec_env.single_action_space, gym.spaces.Box):
                 actions_agent = np.array(
@@ -303,6 +312,7 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
                         agent,
                         total_steps=total_steps,
                         batch_size=args.batch_size,
+                        max_wall_time_seconds=args.max_wall_time,
                     )
                     current_config = {
                         "device": dev,
@@ -405,6 +415,12 @@ if __name__ == "__main__":
     parser.add_argument("--autotune", action="store_true", default=True)
     parser.add_argument("--n_quantiles", type=int, default=32)
     parser.add_argument("--n_target_quantiles", type=int, default=32)
+    parser.add_argument(
+        "--max_wall_time",
+        type=float,
+        default=120.0,
+        help="Maximum wall-clock seconds per rollout benchmark trial before early stop",
+    )
 
     args = parser.parse_args()
 
@@ -450,9 +466,21 @@ if __name__ == "__main__":
         args.device = "cpu"
         for i in [1, 4, 8]:
             args.num_envs = i
-            benchmark_env_rollouts(args, agent, total_steps=5000, batch_size=args.batch_size)
+            benchmark_env_rollouts(
+                args,
+                agent,
+                total_steps=5000,
+                batch_size=args.batch_size,
+                max_wall_time_seconds=args.max_wall_time,
+            )
         if torch.cuda.is_available():
             args.device = "cuda"
             for i in [1, 4, 8, 12, 16]:
                 args.num_envs = i
-                benchmark_env_rollouts(args, agent, total_steps=5000, batch_size=args.batch_size)
+                benchmark_env_rollouts(
+                    args,
+                    agent,
+                    total_steps=5000,
+                    batch_size=args.batch_size,
+                    max_wall_time_seconds=args.max_wall_time,
+                )

@@ -49,7 +49,7 @@ class Args:
     """two hidden layer sizes for actor/critic MLPs"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 256
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
