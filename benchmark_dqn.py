@@ -208,8 +208,9 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
         # 1. CPU -> GPU for obs
         tobs = torch.from_numpy(obs).to(device).float()
 
-        # 2. Network forward pass
-        actions = dqn.sample_action(tobs, eps=0.1, step=steps_taken)
+        # 2. Network forward pass (simulate epsilon decay like the runner)
+        eps_current = max(1.0 - 2 * (steps_taken / total_steps), 0.05)
+        actions = dqn.sample_action(tobs, eps=eps_current, step=steps_taken)
 
         if args.env_name == "mujoco":
             step_actions = np.array([bins_to_continuous(a) for a in actions])
@@ -245,10 +246,11 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
         steps_taken += args.num_envs
         steps_since_update += args.num_envs
 
-        while steps_since_update >= 8:
+        while steps_since_update >= 4:
             if buffer_full or buffer_ptr >= batch_size:
                 updates_performed += 1
                 max_idx = buffer_size if buffer_full else buffer_ptr
+                # Normal update
                 dqn.update(
                     obs_buffer[:max_idx],
                     actions_buffer[:max_idx],
@@ -258,7 +260,20 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
                     batch_size=batch_size,
                     step=max_idx,
                 )
-            steps_since_update -= 8
+                
+                # Simulate priority buffer update (which happens when priority is full in runner)
+                updates_performed += 1
+                dqn.update(
+                    obs_buffer[:max_idx],
+                    actions_buffer[:max_idx],
+                    rewards_buffer[:max_idx],
+                    next_obs_buffer[:max_idx],
+                    terms_buffer[:max_idx],
+                    batch_size=batch_size,
+                    step=max_idx,
+                    extrinsic_only=True,
+                )
+            steps_since_update -= 4
 
         obs = next_obs
 

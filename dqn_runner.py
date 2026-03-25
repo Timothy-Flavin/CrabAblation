@@ -338,14 +338,14 @@ def train_dqn(vec_env, dqn, configurations, args, device, obs_dim, n_action_dims
             n_steps=n_steps * args.num_envs,
         )
 
-        if isinstance(action, list) and isinstance(action[0], list):
-            action = [a[0] for a in action]
-
-        action = np.array(action)
         if args.env_name == "mujoco":
             step_action = np.array([bins_to_continuous(a) for a in action])
         else:
+            if isinstance(action, list) and isinstance(action[0], list):
+                action = [a[0] for a in action]
+            action = np.array(action)
             step_action = action
+            
         next_obs, r, term, trunc, info = vec_env.step(step_action)
 
         r_mult = r * 10.0
