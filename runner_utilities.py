@@ -25,6 +25,27 @@ def get_device_name():
 def bins_to_continuous(action_bins):
     return np.array([b - 1.0 for b in action_bins], dtype=np.float32)
 
+
+def get_env_benchmark_spec(env_name: str):
+    """Return shared benchmark model/action configuration by environment family."""
+    if env_name == "mujoco":
+        return {
+            "n_action_dims": 6,
+            "n_action_bins": 3,
+            "hidden_layer_sizes": [128, 128],
+        }
+    if env_name == "cartpole":
+        return {
+            "n_action_dims": 1,
+            "n_action_bins": 2,
+            "hidden_layer_sizes": [32, 32],
+        }
+    return {
+        "n_action_dims": 1,
+        "n_action_bins": 3,
+        "hidden_layer_sizes": [128, 128],
+    }
+
 class obs_transformer:
     def __init__(self):
         # 7x7 image, 3 channels (one-hot for IDs 1, 2, 8)
