@@ -101,9 +101,7 @@ def benchmark_updates(
         if n_action_dims == 1:
             actions = torch.randint(0, n_action_bins, (bs,), device=dev)
         else:
-            actions = torch.randint(
-                0, n_action_bins, (bs, n_action_dims), device=dev
-            )
+            actions = torch.randint(0, n_action_bins, (bs, n_action_dims), device=dev)
         rewards = torch.randn((bs,), device=dev)
         terms = torch.zeros((bs,), device=dev)
         return {
@@ -246,7 +244,7 @@ def benchmark_env_rollouts(
         steps_taken += args.num_envs
         steps_since_update += args.num_envs
 
-        while steps_since_update >= 4:
+        while steps_since_update >= 8:
             if buffer_full or buffer_ptr >= batch_size:
                 updates_performed += 1
                 max_idx = buffer_size if buffer_full else buffer_ptr
@@ -260,20 +258,20 @@ def benchmark_env_rollouts(
                     batch_size=batch_size,
                     step=max_idx,
                 )
-                
+
                 # Simulate priority buffer update (which happens when priority is full in runner)
-                updates_performed += 1
-                dqn.update(
-                    obs_buffer[:max_idx],
-                    actions_buffer[:max_idx],
-                    rewards_buffer[:max_idx],
-                    next_obs_buffer[:max_idx],
-                    terms_buffer[:max_idx],
-                    batch_size=batch_size,
-                    step=max_idx,
-                    extrinsic_only=True,
-                )
-            steps_since_update -= 4
+                # updates_performed += 1
+                # dqn.update(
+                #     obs_buffer[:max_idx],
+                #     actions_buffer[:max_idx],
+                #     rewards_buffer[:max_idx],
+                #     next_obs_buffer[:max_idx],
+                #     terms_buffer[:max_idx],
+                #     batch_size=batch_size,
+                #     step=max_idx,
+                #     extrinsic_only=True,
+                # )
+            steps_since_update -= 8
 
         obs = next_obs
 
@@ -344,13 +342,17 @@ def run_grid_search(args, obs_dim, fully_obs=False, total_steps=2000):
                         "updates_per_sec": ups,
                     }
                     if args.replace_existing and ((dev, num_envs) in existing_trials):
-                        for idx, entry in enumerate(all_results[f"ablation_{ablation}"]):
+                        for idx, entry in enumerate(
+                            all_results[f"ablation_{ablation}"]
+                        ):
                             if (
                                 isinstance(entry, dict)
                                 and entry.get("device") == dev
                                 and entry.get("num_envs") == num_envs
                             ):
-                                all_results[f"ablation_{ablation}"][idx] = current_config
+                                all_results[f"ablation_{ablation}"][
+                                    idx
+                                ] = current_config
                                 break
                     else:
                         all_results[f"ablation_{ablation}"].append(current_config)
@@ -398,6 +400,7 @@ if __name__ == "__main__":
         help="Run parameter grid search and save json",
     )
     from runner_utilities import get_device_name
+
     parser.add_argument(
         "--device_name",
         type=str,

@@ -9,7 +9,7 @@ def solve_scheduling_problem():
     # ---------------------------------------------------
     devices = ["timpc", "mac", "laptop"]
     envs = ["minigrid", "cartpole", "mujoco"]
-    models = ["dqn", "ppo"]
+    models = ["dqn", "ppo", "sac"]
     ablations = [0, 1, 2, 3, 4, 5]
     runs = [1, 2, 3]
 
@@ -112,11 +112,11 @@ def solve_scheduling_problem():
             print(f"--- Device: {device} ---")
             device_time = 0
             dev_experiments = []
-            
+
             sh_lines = [
-                "#!/usr/bin/env bash\n", 
-                f"# Auto-generated schedule for {device}\n", 
-                "set -euo pipefail\n\n"
+                "#!/usr/bin/env bash\n",
+                f"# Auto-generated schedule for {device}\n",
+                "set -euo pipefail\n\n",
             ]
 
             for i, exp in enumerate(experiments):
@@ -126,10 +126,16 @@ def solve_scheduling_problem():
                     dev_experiments.append(
                         f"  Env: {exp['env']:<8} | Model: {exp['model']:<3} | Ablation: {exp['ablation']} | Run: {exp['run']} (takes {time_taken:.2f} mins)"
                     )
-                    
-                    runner = "dqn_runner.py" if exp['model'] == "dqn" else "pg_runner.py"
-                    sh_lines.append(f"echo \"[{device}] Running {exp['model']} on {exp['env']} | Ablation {exp['ablation']} | Run {exp['run']}\"\n")
-                    sh_lines.append(f"python {runner} --env_name {exp['env']} --ablation {exp['ablation']} --run {exp['run']}\n\n")
+
+                    runner = (
+                        "dqn_runner.py" if exp["model"] == "dqn" else "pg_runner.py"
+                    )
+                    sh_lines.append(
+                        f"echo \"[{device}] Running {exp['model']} on {exp['env']} | Ablation {exp['ablation']} | Run {exp['run']}\"\n"
+                    )
+                    sh_lines.append(
+                        f"python {runner} --env_name {exp['env']} --ablation {exp['ablation']} --run {exp['run']}\n\n"
+                    )
 
             # Write the .sh file for this device
             sh_filename = os.path.join("time_files", f"run_{device}_experiments.sh")
