@@ -13,6 +13,8 @@ from runner_utilities import (
     benchmark_action_sampling_generic,
     get_benchmark_devices,
     save_grid_search_results,
+    load_grid_search_results,
+    resolve_torch_device,
 )
 
 
@@ -167,7 +169,7 @@ def benchmark_action_sampling(
 def benchmark_env_rollouts(args, agent, total_steps=1000, batch_size=256):
     print(f"\n--- Benchmarking Environment Rollouts ---")
     print(f"Num Parallel Envs: {args.num_envs}, Device: {args.device}")
-    device = torch.device(args.device)
+    device = resolve_torch_device(args.device)
     agent.to(device)
 
     env_fns = [make_env_thunk(args.fully_obs, args.env_name) for _ in range(args.num_envs)]
@@ -253,8 +255,11 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
 
     devices = get_benchmark_devices()
     num_envs_list = [1, 4, 8, 12, 16]
-    best_results = {}
-    all_results = {}
+    if args.replace_existing:
+        best_results = {}
+        all_results = {}
+    else:
+        best_results, all_results = load_grid_search_results(args, "sac")
     args.fully_obs = fully_obs
 
     for ablation in range(6):
@@ -263,12 +268,23 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
 
         best_sps = 0.0
         best_config = None
-        all_results[f"ablation_{ablation}"] = []
+        all_results.setdefault(f"ablation_{ablation}", [])
+        existing_trials = {
+            (entry.get("device"), entry.get("num_envs"))
+            for entry in all_results[f"ablation_{ablation}"]
+            if isinstance(entry, dict)
+        }
 
         for dev in devices:
             for num_envs in num_envs_list:
                 args.device = dev
                 args.num_envs = num_envs
+
+                if (not args.replace_existing) and ((dev, num_envs) in existing_trials):
+                    print(
+                        f"Skipping existing trial: ablation={ablation}, device={dev}, num_envs={num_envs}"
+                    )
+                    continue
 
                 env_fns = [
                     make_env_thunk(args.fully_obs, args.env_name)
@@ -289,7 +305,30 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
                         "steps_per_sec": sps,
                         "updates_per_sec": ups,
                     }
-                    all_results[f"ablation_{ablation}"].append(current_config)
+                    if args.replace_existing and ((dev, num_envs) in existing_trials):
+                        for idx, entry in enumerate(all_results[f"ablation_{ablation}"]):
+                            if (
+                                isinstance(entry, dict)
+                                and entry.get("device") == dev
+                                and entry.get("num_envs") == num_envs
+                            ):
+                                all_results[f"ablation_{ablation}"][idx] = current_config
+                                break
+                    else:
+                        all_results[f"ablation_{ablation}"].append(current_config)
+                        existing_trials.add((dev, num_envs))
+
+                    ablation_entries = [
+                        e
+                        for e in all_results[f"ablation_{ablation}"]
+                        if isinstance(e, dict) and "steps_per_sec" in e
+                    ]
+                    if ablation_entries:
+                        best_results[f"ablation_{ablation}"] = max(
+                            ablation_entries, key=lambda e: e["steps_per_sec"]
+                        )
+
+                    save_grid_search_results(args, "sac", best_results, all_results)
 
                     if sps > best_sps:
                         best_sps = sps
@@ -340,6 +379,12 @@ if __name__ == "__main__":
     parser.add_argument("--fully_obs", action="store_true")
     parser.add_argument(
         "--num_envs", type=int, default=8, help="Number of parallel environments to run"
+    )
+    parser.add_argument(
+        "--replace_existing",
+        action="store_true",
+        default=False,
+        help="Re-run and overwrite existing trials in json files",
     )
 
     parser.add_argument("--buffer_size", type=int, default=int(1e6))
