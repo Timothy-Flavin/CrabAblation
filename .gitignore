@@ -5,7 +5,6 @@ __pycache__/
 tensorboard*/
 results
 .vscode
-*.json
 runs
 device_name.txt
 experiment_consolidation.sh

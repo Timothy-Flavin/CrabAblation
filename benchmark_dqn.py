@@ -9,6 +9,7 @@ from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 from runner_utilities import (
     make_env_thunk,
     bins_to_continuous,
+    get_env_benchmark_spec,
     benchmark_updates_generic,
     benchmark_action_sampling_generic,
     get_benchmark_devices,
@@ -45,18 +46,10 @@ def setup_config(args, obs_dim):
     elif args.ablation == 5:
         cfg["delayed"] = False
 
-    if args.env_name == "mujoco":
-        n_action_dims = 6
-        n_action_bins = 3
-        hidden_layer_sizes = [128, 128]
-    elif args.env_name == "cartpole":
-        n_action_dims = 1
-        n_action_bins = 2
-        hidden_layer_sizes = [32, 32]
-    else:
-        n_action_dims = 1
-        n_action_bins = 7
-        hidden_layer_sizes = [128, 128]
+    env_spec = get_env_benchmark_spec(args.env_name)
+    n_action_dims = env_spec["n_action_dims"]
+    n_action_bins = env_spec["n_action_bins"]
+    hidden_layer_sizes = env_spec["hidden_layer_sizes"]
 
     AgentClass = RainbowDQN if cfg["distributional"] else EVRainbowDQN
     common_kwargs = dict(
@@ -98,15 +91,9 @@ def setup_config(args, obs_dim):
 def benchmark_updates(
     dqn, obs_dim, args, device="cpu", batch_sizes=[64, 256, 1024], iters=50
 ):
-    if args.env_name == "mujoco":
-        n_action_dims = 6
-        n_action_bins = 3
-    elif args.env_name == "cartpole":
-        n_action_dims = 1
-        n_action_bins = 2
-    else:
-        n_action_dims = 1
-        n_action_bins = 7
+    env_spec = get_env_benchmark_spec(args.env_name)
+    n_action_dims = env_spec["n_action_dims"]
+    n_action_bins = env_spec["n_action_bins"]
 
     def make_batch(bs, dev):
         obs = torch.randn((bs, obs_dim), device=dev)
@@ -162,7 +149,14 @@ def benchmark_action_sampling(
     )
 
 
-def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
+def benchmark_env_rollouts(
+    args,
+    dqn,
+    obs_dim,
+    total_steps=1000,
+    batch_size=64,
+    max_wall_time_seconds: float | None = None,
+):
     print(f"\n--- Benchmarking Environment Rollouts ---")
     print(f"Num Parallel Envs: {args.num_envs}, Device: {args.device}")
     device = resolve_torch_device(args.device)
@@ -177,12 +171,8 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
 
     obs, info = vec_env.reset()
 
-    if args.env_name == "mujoco":
-        n_action_dims = 6
-    elif args.env_name == "cartpole":
-        n_action_dims = 1
-    else:
-        n_action_dims = 1
+    env_spec = get_env_benchmark_spec(args.env_name)
+    n_action_dims = env_spec["n_action_dims"]
 
     print(f"Starting {total_steps} parallel steps...")
     start_time = time.time()
@@ -205,6 +195,16 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
     steps_since_update = 0
     updates_performed = 0
     while steps_taken < total_steps:
+        if (
+            max_wall_time_seconds is not None
+            and max_wall_time_seconds > 0
+            and (time.time() - start_time) >= max_wall_time_seconds
+        ):
+            print(
+                f"Max wall time {max_wall_time_seconds:.1f}s reached; stopping early at {steps_taken} steps."
+            )
+            break
+
         # 1. CPU -> GPU for obs
         tobs = torch.from_numpy(obs).to(device).float()
 
@@ -329,7 +329,12 @@ def run_grid_search(args, obs_dim, fully_obs=False, total_steps=2000):
 
                 try:
                     sps, ups = benchmark_env_rollouts(
-                        args, dqn, obs_dim, total_steps=total_steps, batch_size=64
+                        args,
+                        dqn,
+                        obs_dim,
+                        total_steps=total_steps,
+                        batch_size=64,
+                        max_wall_time_seconds=args.max_wall_time,
                     )
 
                     current_config = {
@@ -416,6 +421,12 @@ if __name__ == "__main__":
         default=False,
         help="Re-run and overwrite existing trials in json files",
     )
+    parser.add_argument(
+        "--max_wall_time",
+        type=float,
+        default=120.0,
+        help="Maximum wall-clock seconds per rollout benchmark trial before early stop",
+    )
     args = parser.parse_args()
 
     # Get obs dim from dummy env
@@ -455,9 +466,21 @@ if __name__ == "__main__":
         args.device = "cpu"
         for i in [1, 4, 8]:
             args.num_envs = i
-            benchmark_env_rollouts(args, dqn, obs_dim, total_steps=5000)
+            benchmark_env_rollouts(
+                args,
+                dqn,
+                obs_dim,
+                total_steps=5000,
+                max_wall_time_seconds=args.max_wall_time,
+            )
         if torch.cuda.is_available():
             args.device = "cuda"
             for i in [1, 4, 8, 12, 16]:
                 args.num_envs = i
-                benchmark_env_rollouts(args, dqn, obs_dim, total_steps=5000)
+                benchmark_env_rollouts(
+                    args,
+                    dqn,
+                    obs_dim,
+                    total_steps=5000,
+                    max_wall_time_seconds=args.max_wall_time,
+                )

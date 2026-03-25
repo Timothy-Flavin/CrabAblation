@@ -13,7 +13,13 @@ from torch.utils.tensorboard import SummaryWriter
 
 from PG_Rainbow import PPOAgent
 from runner_utilities import bins_to_continuous
-from runner_utilities import obs_transformer, FastObsWrapper, make_env_thunk, plot_results
+from runner_utilities import (
+    obs_transformer,
+    FastObsWrapper,
+    make_env_thunk,
+    plot_results,
+    get_env_benchmark_spec,
+)
 from minigrid.wrappers import FlatObsWrapper
 
 
@@ -103,11 +109,7 @@ def setup_config(args):
 
 
 def _hidden_layer_sizes_for_env(env_name: str):
-    if env_name == "mujoco":
-        return (128, 128)
-    if env_name == "cartpole":
-        return (32, 32)
-    return (128, 128)
+    return tuple(get_env_benchmark_spec(env_name)["hidden_layer_sizes"])
 
 
 def eval(agent, device, step=0, n_steps=300000, env_eval=None, env_name="minigrid"):
@@ -134,7 +136,7 @@ def eval(agent, device, step=0, n_steps=300000, env_eval=None, env_name="minigri
     return reward
 
 
-def train_pg(vec_env, agent, cfg, args, device):
+def train_pg(vec_env, agent, cfg, args, device, max_wall_time_seconds=None):
     obs_raw, info = vec_env.reset()
     obs = obs_raw
 
@@ -180,9 +182,22 @@ def train_pg(vec_env, agent, cfg, args, device):
     next_obs = torch.Tensor(obs_raw).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     total_samples = 0
+    updates_performed = 0
+    timed_out = False
+
+    if max_wall_time_seconds is None:
+        max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
 
     for iteration in range(1, num_iterations + 1):
         for step in range(0, args.num_steps):
+            if (
+                max_wall_time_seconds is not None
+                and max_wall_time_seconds > 0
+                and (time.time() - start_time) >= max_wall_time_seconds
+            ):
+                timed_out = True
+                break
+
             global_step += args.num_envs
             agent_obs[step] = next_obs
             agent_dones[step] = next_done
@@ -223,6 +238,12 @@ def train_pg(vec_env, agent, cfg, args, device):
                     writer.add_scalar("charts/episodic_return", r_ep[ne], global_step)
                     r_ep[ne] = 0
 
+        if timed_out:
+            print(
+                f"Max wall time {max_wall_time_seconds:.1f}s reached; stopping early at {global_step} steps."
+            )
+            break
+
         # Perform PPO update
         loss = agent.update(
             agent_obs,
@@ -235,6 +256,7 @@ def train_pg(vec_env, agent, cfg, args, device):
             next_obs,
             next_done,
         )
+        updates_performed += int(agent.update_epochs * agent.num_minibatches)
         lhist.append(loss)
 
         # Eval
@@ -251,6 +273,9 @@ def train_pg(vec_env, agent, cfg, args, device):
         "smooth_rhist": smooth_rhist,
         "lhist": lhist,
         "eval_hist": eval_hist,
+        "steps_run": int(global_step),
+        "updates_performed": int(updates_performed),
+        "timed_out": bool(timed_out),
         "train_time": time.time() - start_time,
     }
 

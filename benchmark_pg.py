@@ -14,19 +14,12 @@ from runner_utilities import (
     FastObsWrapper,
     make_env_thunk,
     bins_to_continuous,
+    get_env_benchmark_spec,
     get_benchmark_devices,
     save_grid_search_results,
     load_grid_search_results,
 )
 from pg_runner import train_pg
-
-
-def _hidden_layer_sizes_for_env(env_name: str):
-    if env_name == "mujoco":
-        return (128, 128)
-    if env_name == "cartpole":
-        return (32, 32)
-    return (128, 128)
 
 
 def run_grid_search(args, fully_obs=False, total_steps=2000):
@@ -100,7 +93,9 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
                 ]
                 vec_env = gym.vector.SyncVectorEnv(env_fns)
                 try:
-                    hidden_layer_sizes = _hidden_layer_sizes_for_env(args.env_name)
+                    hidden_layer_sizes = tuple(
+                        get_env_benchmark_spec(args.env_name)["hidden_layer_sizes"]
+                    )
                     agent = PPOAgent(
                         vec_env,
                         clip_coef=cfg_abl["clip_coef"],
@@ -113,22 +108,25 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
                         use_gae=cfg_abl["use_gae"],
                     ).to(device)
 
-                    results = train_pg(vec_env, agent, cfg_abl, args, device)
-                    train_time = results["train_time"]
-                    # Total steps inside train_pg uses:
-                    # num_iterations = (total_steps // args.num_envs) // args.num_steps
-                    # So precise steps:
-                    actual_steps_run = (
-                        max(1, (total_steps // args.num_envs) // args.num_steps)
-                        * args.num_steps
-                        * args.num_envs
+                    results = train_pg(
+                        vec_env,
+                        agent,
+                        cfg_abl,
+                        args,
+                        device,
+                        max_wall_time_seconds=args.max_wall_time,
                     )
-                    sps = actual_steps_run / train_time
+                    train_time = results["train_time"]
+                    steps_run = int(results.get("steps_run", 0))
+                    updates_performed = int(results.get("updates_performed", 0))
+                    sps = (steps_run / train_time) if train_time > 0 else 0.0
+                    ups = (updates_performed / train_time) if train_time > 0 else 0.0
 
                     current_config = {
                         "device": dev,
                         "num_envs": num_envs,
                         "steps_per_sec": sps,
+                        "updates_per_sec": ups,
                     }
                     if args.replace_existing and ((dev, num_envs) in existing_trials):
                         for idx, entry in enumerate(all_results[f"ablation_{ablation}"]):
@@ -212,6 +210,12 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Re-run and overwrite existing trials in json files",
+    )
+    parser.add_argument(
+        "--max_wall_time",
+        type=float,
+        default=120.0,
+        help="Maximum wall-clock seconds per benchmark trial before early stop",
     )
     # run as a single test if left without grid_search flag
     parser.add_argument("--run", type=int, default=1)
