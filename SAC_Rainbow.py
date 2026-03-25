@@ -236,7 +236,7 @@ class SACAgent(Agent):
             self.target_entropy = -torch.prod(
                 torch.Tensor(envs.single_action_space.shape)
             ).item()
-            self.log_alpha = torch.zeros(1, requires_grad=True)
+            self.log_alpha = nn.Parameter(torch.zeros(1))
             self.alpha = self.log_alpha.exp().item()
             self.a_optimizer = optim.Adam([self.log_alpha], lr=q_lr)
         else:
@@ -254,7 +254,6 @@ class SACAgent(Agent):
         self.qf1_target.to(device)
         self.qf2_target.to(device)
         if self.autotune and self.log_alpha is not None:
-            self.log_alpha = self.log_alpha.to(device)
             self.alpha = self.log_alpha.exp().item()
             q_lr = self.q_optimizer.param_groups[0]["lr"]
             self.a_optimizer = optim.Adam([self.log_alpha], lr=q_lr)

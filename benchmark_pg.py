@@ -14,6 +14,9 @@ from runner_utilities import (
     FastObsWrapper,
     make_env_thunk,
     bins_to_continuous,
+    get_benchmark_devices,
+    save_grid_search_results,
+    load_grid_search_results,
 )
 from pg_runner import train_pg
 
@@ -21,13 +24,14 @@ from pg_runner import train_pg
 def run_grid_search(args, fully_obs=False, total_steps=2000):
     print("\n=== Starting Policy Gradient Grid Search for Best Parameters ===")
 
-    devices = ["cpu"]
-    if torch.cuda.is_available():
-        devices.append("cuda")
+    devices = get_benchmark_devices()
 
     num_envs_list = [1, 4, 8, 12, 16]
-    best_results = {}
-    all_results = {}
+    if args.replace_existing:
+        best_results = {}
+        all_results = {}
+    else:
+        best_results, all_results = load_grid_search_results(args, "ppo")
     args.fully_obs = fully_obs
 
     # Defaults
@@ -58,13 +62,24 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
 
         best_sps = 0.0
         best_config = None
-        all_results[f"ablation_{ablation}"] = []
+        all_results.setdefault(f"ablation_{ablation}", [])
+        existing_trials = {
+            (entry.get("device"), entry.get("num_envs"))
+            for entry in all_results[f"ablation_{ablation}"]
+            if isinstance(entry, dict)
+        }
 
         for dev in devices:
             for num_envs in num_envs_list:
                 args.device = dev
                 args.num_envs = num_envs
                 args.num_steps = 128
+
+                if (not args.replace_existing) and ((dev, num_envs) in existing_trials):
+                    print(
+                        f"Skipping existing trial: ablation={ablation}, device={dev}, num_envs={num_envs}"
+                    )
+                    continue
 
                 # Assign explicitly here for the modified train_pg to know how long to run
                 args.total_steps = total_steps
@@ -105,7 +120,30 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
                         "num_envs": num_envs,
                         "steps_per_sec": sps,
                     }
-                    all_results[f"ablation_{ablation}"].append(current_config)
+                    if args.replace_existing and ((dev, num_envs) in existing_trials):
+                        for idx, entry in enumerate(all_results[f"ablation_{ablation}"]):
+                            if (
+                                isinstance(entry, dict)
+                                and entry.get("device") == dev
+                                and entry.get("num_envs") == num_envs
+                            ):
+                                all_results[f"ablation_{ablation}"][idx] = current_config
+                                break
+                    else:
+                        all_results[f"ablation_{ablation}"].append(current_config)
+                        existing_trials.add((dev, num_envs))
+
+                    ablation_entries = [
+                        e
+                        for e in all_results[f"ablation_{ablation}"]
+                        if isinstance(e, dict) and "steps_per_sec" in e
+                    ]
+                    if ablation_entries:
+                        best_results[f"ablation_{ablation}"] = max(
+                            ablation_entries, key=lambda e: e["steps_per_sec"]
+                        )
+
+                    save_grid_search_results(args, "ppo", best_results, all_results)
 
                     if sps > best_sps:
                         best_sps = sps
@@ -125,25 +163,7 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
         best_results[f"ablation_{ablation}"] = best_config
         print(f"Best for Ablation {ablation}: {best_config}")
 
-    if hasattr(args, "device_name") and args.device_name is not None:
-        file_prefix = args.device_name
-    else:
-        from runner_utilities import get_device_name
-        file_prefix = get_device_name()
-
-    os.makedirs(f"time_files/{file_prefix}", exist_ok=True)
-    best_filename = f"time_files/{file_prefix}/{args.env_name}_ppo_best.json"
-    all_filename = f"time_files/{file_prefix}/{args.env_name}_ppo_all.json"
-
-    with open(best_filename, "w") as f:
-        json.dump(best_results, f, indent=4)
-
-    with open(all_filename, "w") as f:
-        json.dump(all_results, f, indent=4)
-
-    print(
-        f"\nGrid search complete. Saved best configs to {best_filename} and all configs to {all_filename}"
-    )
+    save_grid_search_results(args, "ppo", best_results, all_results)
 
 
 if __name__ == "__main__":
@@ -177,6 +197,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5])
     parser.add_argument("--fully_obs", action="store_true")
+    parser.add_argument(
+        "--replace_existing",
+        action="store_true",
+        default=False,
+        help="Re-run and overwrite existing trials in json files",
+    )
     # run as a single test if left without grid_search flag
     parser.add_argument("--run", type=int, default=1)
     args = parser.parse_args()

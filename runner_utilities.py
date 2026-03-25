@@ -108,6 +108,16 @@ def get_benchmark_devices():
     return devices
 
 
+def resolve_torch_device(requested_device: str | None = None):
+    if requested_device is None:
+        requested_device = "cpu"
+    dev = str(requested_device).strip()
+    if dev.startswith("cuda") and not torch.cuda.is_available():
+        print("CUDA requested but not available; falling back to CPU.")
+        return torch.device("cpu")
+    return torch.device(dev)
+
+
 def benchmark_updates_generic(
     agent,
     device,
@@ -181,14 +191,7 @@ def benchmark_action_sampling_generic(
 
 
 def save_grid_search_results(args, algo_name, best_results, all_results):
-    if hasattr(args, "device_name") and args.device_name is not None:
-        file_prefix = args.device_name
-    else:
-        file_prefix = get_device_name()
-
-    os.makedirs(f"time_files/{file_prefix}", exist_ok=True)
-    best_filename = f"time_files/{file_prefix}/{args.env_name}_{algo_name}_best.json"
-    all_filename = f"time_files/{file_prefix}/{args.env_name}_{algo_name}_all.json"
+    best_filename, all_filename = get_grid_search_paths(args, algo_name)
 
     with open(best_filename, "w") as f:
         json.dump(best_results, f, indent=4)
@@ -199,6 +202,44 @@ def save_grid_search_results(args, algo_name, best_results, all_results):
     print(
         f"\nGrid search complete. Saved best configs to {best_filename} and all configs to {all_filename}"
     )
+
+
+def get_grid_search_paths(args, algo_name):
+    if hasattr(args, "device_name") and args.device_name is not None:
+        file_prefix = args.device_name
+    else:
+        file_prefix = get_device_name()
+
+    os.makedirs(f"time_files/{file_prefix}", exist_ok=True)
+    best_filename = f"time_files/{file_prefix}/{args.env_name}_{algo_name}_best.json"
+    all_filename = f"time_files/{file_prefix}/{args.env_name}_{algo_name}_all.json"
+    return best_filename, all_filename
+
+
+def load_grid_search_results(args, algo_name):
+    best_filename, all_filename = get_grid_search_paths(args, algo_name)
+    best_results = {}
+    all_results = {}
+
+    if os.path.exists(best_filename):
+        try:
+            with open(best_filename, "r") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    best_results = loaded
+        except Exception:
+            pass
+
+    if os.path.exists(all_filename):
+        try:
+            with open(all_filename, "r") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    all_results = loaded
+        except Exception:
+            pass
+
+    return best_results, all_results
 
 
 def plot_results(results, args, model_name):
