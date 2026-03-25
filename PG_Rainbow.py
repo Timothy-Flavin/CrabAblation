@@ -45,6 +45,8 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
+    hidden_layer_sizes: tuple[int, int] = (64, 64)
+    """two hidden layer sizes for actor/critic MLPs"""
     num_envs: int = 4
     """the number of parallel game environments"""
     num_steps: int = 128
@@ -120,6 +122,7 @@ class PPOAgent(Agent):
         num_minibatches: int = 4,
         num_envs: int = 4,
         num_steps: int = 128,
+        hidden_layer_sizes: tuple[int, int] = (64, 64),
         anneal_lr=False,
         distributional: bool = False,
         Beta: float = 0.0,
@@ -161,14 +164,15 @@ class PPOAgent(Agent):
         self.batch_size = int(num_envs * num_steps)
         self.minibatch_size = int(self.batch_size // self.num_minibatches)
         self.num_steps = num_steps
+        hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
 
         input_dim = np.array(self.obs_shape).prod()
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(input_dim, 64)),
+            layer_init(nn.Linear(input_dim, hidden1)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
+            layer_init(nn.Linear(hidden1, hidden2)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, self.n_action_dims * self.n_action_bins), std=0.01),
+            layer_init(nn.Linear(hidden2, self.n_action_dims * self.n_action_bins), std=0.01),
         )
 
         if self.distributional:
@@ -176,31 +180,31 @@ class PPOAgent(Agent):
                 input_dim=input_dim,
                 n_action_dims=1,
                 n_action_bins=1,
-                hidden_layer_sizes=[64, 64],
+                hidden_layer_sizes=[hidden1, hidden2],
                 dueling=False,
             )
             self.int_critic = IQN_Network(
                 input_dim=input_dim,
                 n_action_dims=1,
                 n_action_bins=1,
-                hidden_layer_sizes=[64, 64],
+                hidden_layer_sizes=[hidden1, hidden2],
                 dueling=False,
             )
             self.n_quantiles = 32
         else:
             self.ext_critic = nn.Sequential(
-                layer_init(nn.Linear(input_dim, 64)),
+                layer_init(nn.Linear(input_dim, hidden1)),
                 nn.Tanh(),
-                layer_init(nn.Linear(64, 64)),
+                layer_init(nn.Linear(hidden1, hidden2)),
                 nn.Tanh(),
-                layer_init(nn.Linear(64, 1), std=1.0),
+                layer_init(nn.Linear(hidden2, 1), std=1.0),
             )
             self.int_critic = nn.Sequential(
-                layer_init(nn.Linear(input_dim, 64)),
+                layer_init(nn.Linear(input_dim, hidden1)),
                 nn.Tanh(),
-                layer_init(nn.Linear(64, 64)),
+                layer_init(nn.Linear(hidden1, hidden2)),
                 nn.Tanh(),
-                layer_init(nn.Linear(64, 1), std=1.0),
+                layer_init(nn.Linear(hidden2, 1), std=1.0),
             )
 
         self.rnd = RNDModel(input_dim, rnd_output_dim)
@@ -683,6 +687,7 @@ if __name__ == "__main__":
         num_minibatches=args.num_minibatches,
         num_envs=args.num_envs,
         num_steps=args.num_steps,
+        hidden_layer_sizes=args.hidden_layer_sizes,
         distributional=False,  # Set to True to use IQN
         Beta=0.01,  # Set > 0 to use RND intrinsic reward
         beta_half_life_steps=10000,

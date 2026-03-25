@@ -16,6 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 from cleanrl_buffers import ReplayBuffer
 from agent import Agent
 from RainbowNetworks import EV_Q_Network, IQN_Network
+from runner_utilities import make_env_thunk
 
 
 @dataclass
@@ -56,6 +57,8 @@ class Args:
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
+    hidden_layer_sizes: tuple[int, int] = (256, 256)
+    """two hidden layer sizes for actor/critic MLPs"""
     q_lr: float = 1e-3
     """the learning rate of the Q network network optimizer"""
     policy_frequency: int = 2
@@ -80,56 +83,32 @@ class Args:
     """number of quantiles for IQN critics"""
     n_target_quantiles: int = 32
     """number of target quantiles for IQN critics"""
-
-
-def make_env(env_id, seed, idx, capture_video, run_name):
-    def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        else:
-            env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.action_space.seed(seed)
-        return env
-
-    return thunk
-
-
-# ALGO LOGIC: initialize agent here:
-class SoftQNetwork(nn.Module):
-    def __init__(self, env):
-        super().__init__()
-        obs_dim = int(np.array(env.single_observation_space.shape).prod())
-        act_dim = int(np.prod(env.single_action_space.shape))
-        self.fc1 = nn.Linear(
-            obs_dim + act_dim,
-            256,
-        )
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 1)
-
-    def forward(self, x, a):
-        x = torch.cat([x, a], 1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
+    random_start_steps: int = 0
+    """max random steps sampled in [0, n] after each reset to desynchronize parallel envs"""
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
 
 
+def hidden_layer_sizes_for_env_id(env_id: str) -> tuple[int, int]:
+    env = env_id.lower()
+    if "mujoco" in env or "cheetah" in env or "hopper" in env or "walker" in env or "ant" in env or "humanoid" in env:
+        return (128, 128)
+    if "cartpole" in env:
+        return (32, 32)
+    return (128, 128)
+
+
 class Actor(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env, hidden_layer_sizes: tuple[int, int] = (256, 256)):
         super().__init__()
         obs_dim = int(np.array(env.single_observation_space.shape).prod())
         act_dim = int(np.prod(env.single_action_space.shape))
-        self.fc1 = nn.Linear(obs_dim, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc_mean = nn.Linear(256, act_dim)
-        self.fc_logstd = nn.Linear(256, act_dim)
+        hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
+        self.fc1 = nn.Linear(obs_dim, hidden1)
+        self.fc2 = nn.Linear(hidden1, hidden2)
+        self.fc_mean = nn.Linear(hidden2, act_dim)
+        self.fc_logstd = nn.Linear(hidden2, act_dim)
         # action rescaling
         self.register_buffer(
             "action_scale",
@@ -188,6 +167,7 @@ class SACAgent(Agent):
         dueling: bool = False,
         popart: bool = False,
         delayed_critics: bool = True,
+        hidden_layer_sizes: tuple[int, int] = (128, 128),
         n_quantiles: int = 32,
         n_target_quantiles: int = 32,
     ):
@@ -202,6 +182,7 @@ class SACAgent(Agent):
         self.dueling = dueling
         self.popart = popart
         self.delayed_critics = delayed_critics
+        hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
         self.n_quantiles = n_quantiles
         self.n_target_quantiles = n_target_quantiles
 
@@ -209,14 +190,14 @@ class SACAgent(Agent):
         act_dim = int(np.prod(envs.single_action_space.shape))
         critic_input_dim = obs_dim + act_dim
 
-        self.actor = Actor(envs)
+        self.actor = Actor(envs, hidden_layer_sizes=(hidden1, hidden2))
 
         CriticClass = IQN_Network if self.distributional else EV_Q_Network
         critic_kwargs = dict(
             input_dim=critic_input_dim,
             n_action_dims=1,
             n_action_bins=1,
-            hidden_layer_sizes=[256, 256],
+            hidden_layer_sizes=[hidden1, hidden2],
             dueling=self.dueling,
             popart=self.popart,
         )
@@ -248,12 +229,17 @@ class SACAgent(Agent):
         self.step = 0
 
     def to(self, device):
+        device = torch.device(device)
         self.actor.to(device)
         self.qf1.to(device)
         self.qf2.to(device)
         self.qf1_target.to(device)
         self.qf2_target.to(device)
         if self.autotune and self.log_alpha is not None:
+            self.log_alpha = nn.Parameter(self.log_alpha.detach().to(device))
+            self.target_entropy = torch.tensor(
+                float(self.target_entropy), dtype=torch.float32, device=device
+            )
             self.alpha = self.log_alpha.exp().item()
             q_lr = self.q_optimizer.param_groups[0]["lr"]
             self.a_optimizer = optim.Adam([self.log_alpha], lr=q_lr)
@@ -531,10 +517,23 @@ if __name__ == "__main__":
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
+        [
+            make_env_thunk(
+                fully_obs=False,
+                env_name="mujoco",
+                env_id=args.env_id,
+                seed=args.seed + i,
+                idx=i,
+                capture_video=args.capture_video,
+                run_name=run_name,
+                random_start_steps=args.random_start_steps,
+            )
+            for i in range(args.num_envs)
+        ]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
+    hidden_layer_sizes = hidden_layer_sizes_for_env_id(args.env_id)
     agent = SACAgent(
         envs,
         gamma=args.gamma,
@@ -550,6 +549,7 @@ if __name__ == "__main__":
         dueling=args.dueling,
         popart=args.popart,
         delayed_critics=args.delayed_critics,
+        hidden_layer_sizes=hidden_layer_sizes,
         n_quantiles=args.n_quantiles,
         n_target_quantiles=args.n_target_quantiles,
     ).to(device)
@@ -568,9 +568,11 @@ if __name__ == "__main__":
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
-    for global_step in range(args.total_timesteps):
+    env_steps = 0
+    updates_performed = 0
+    while env_steps < args.total_timesteps:
         # ALGO LOGIC: put action logic here
-        if global_step < args.learning_starts:
+        if env_steps < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
         else:
             actions = agent.sample_action(obs)
@@ -582,9 +584,9 @@ if __name__ == "__main__":
         if "final_info" in infos:
             for info in infos["final_info"]:
                 if info is not None:
-                    print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                    print(f"global_step={env_steps}, episodic_return={info['episode']['r']}")
+                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], env_steps)
+                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], env_steps)
                     break
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
@@ -596,41 +598,47 @@ if __name__ == "__main__":
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
+        env_steps += args.num_envs
 
         # ALGO LOGIC: training.
-        if global_step > args.learning_starts:
-            data = rb.sample(args.batch_size)
-            agent.update(data, global_step)
+        if env_steps > args.learning_starts:
+            target_updates = env_steps // 8
+            while updates_performed < target_updates:
+                if rb.size() < args.batch_size:
+                    break
+                data = rb.sample(args.batch_size)
+                agent.update(data, env_steps)
+                updates_performed += 1
 
-            if global_step % 100 == 0:
+            if env_steps % 100 == 0:
                 writer.add_scalar(
-                    "losses/qf1_values", agent.last_losses.get("qf1_values", 0.0), global_step
+                    "losses/qf1_values", agent.last_losses.get("qf1_values", 0.0), env_steps
                 )
                 writer.add_scalar(
-                    "losses/qf2_values", agent.last_losses.get("qf2_values", 0.0), global_step
+                    "losses/qf2_values", agent.last_losses.get("qf2_values", 0.0), env_steps
                 )
                 writer.add_scalar(
-                    "losses/qf1_loss", agent.last_losses.get("qf1_loss", 0.0), global_step
+                    "losses/qf1_loss", agent.last_losses.get("qf1_loss", 0.0), env_steps
                 )
                 writer.add_scalar(
-                    "losses/qf2_loss", agent.last_losses.get("qf2_loss", 0.0), global_step
+                    "losses/qf2_loss", agent.last_losses.get("qf2_loss", 0.0), env_steps
                 )
                 writer.add_scalar(
-                    "losses/qf_loss", agent.last_losses.get("qf_loss", 0.0), global_step
+                    "losses/qf_loss", agent.last_losses.get("qf_loss", 0.0), env_steps
                 )
                 writer.add_scalar(
-                    "losses/actor_loss", agent.last_losses.get("actor_loss", 0.0), global_step
+                    "losses/actor_loss", agent.last_losses.get("actor_loss", 0.0), env_steps
                 )
-                writer.add_scalar("losses/alpha", agent.last_losses.get("alpha", 0.0), global_step)
-                print("SPS:", int(global_step / (time.time() - start_time)))
+                writer.add_scalar("losses/alpha", agent.last_losses.get("alpha", 0.0), env_steps)
+                print("SPS:", int(env_steps / (time.time() - start_time)))
                 writer.add_scalar(
                     "charts/SPS",
-                    int(global_step / (time.time() - start_time)),
-                    global_step,
+                    int(env_steps / (time.time() - start_time)),
+                    env_steps,
                 )
                 if args.autotune:
                     writer.add_scalar(
-                        "losses/alpha_loss", agent.last_losses.get("alpha_loss", 0.0), global_step
+                        "losses/alpha_loss", agent.last_losses.get("alpha_loss", 0.0), env_steps
                     )
 
     envs.close()

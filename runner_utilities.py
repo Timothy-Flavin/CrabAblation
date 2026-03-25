@@ -84,18 +84,73 @@ class FastObsWrapper(gym.ObservationWrapper):
         return super().reset(**kwargs)
 
 
-def make_env_thunk(fully_obs, env_name):
+class RandomStartWrapper(gym.Wrapper):
+    def __init__(self, env, max_random_start_steps=0, rng_seed=None):
+        super().__init__(env)
+        self.max_random_start_steps = int(max(0, max_random_start_steps))
+        self._rng = np.random.default_rng(rng_seed)
+        self._random_start_applied = False
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        if self.max_random_start_steps <= 0 or self._random_start_applied:
+            return obs, info
+
+        n_steps = int(self._rng.integers(0, self.max_random_start_steps + 1))
+        for _ in range(n_steps):
+            a = self.env.action_space.sample()
+            obs, _, term, trunc, info = self.env.step(a)
+            if term or trunc:
+                obs, info = self.env.reset()
+
+        self._random_start_applied = True
+        info = dict(info) if isinstance(info, dict) else {}
+        info["random_start_steps"] = n_steps
+        return obs, info
+
+
+def make_env_thunk(
+    fully_obs,
+    env_name,
+    env_id=None,
+    seed=None,
+    idx=0,
+    capture_video=False,
+    run_name=None,
+    random_start_steps=0,
+):
     def thunk():
         if env_name == "minigrid":
             # Ensure MiniGrid environments are registered with Gymnasium.
             if minigrid is None:
                 import minigrid as _minigrid  # noqa: F401
-            env = gym.make("MiniGrid-FourRooms-v0")
+            resolved_env_id = env_id if env_id is not None else "MiniGrid-FourRooms-v0"
+            env = gym.make(resolved_env_id)
             env = FastObsWrapper(env)
         elif env_name == "cartpole":
-            env = gym.make("CartPole-v1")
+            resolved_env_id = env_id if env_id is not None else "CartPole-v1"
+            env = gym.make(resolved_env_id)
         elif env_name == "mujoco":
-            env = gym.make("HalfCheetah-v5")
+            resolved_env_id = env_id if env_id is not None else "HalfCheetah-v5"
+            if capture_video and idx == 0 and run_name is not None:
+                env = gym.make(resolved_env_id, render_mode="rgb_array")
+                env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+            else:
+                env = gym.make(resolved_env_id)
+        else:
+            raise ValueError(f"Unsupported env_name: {env_name}")
+
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        if seed is not None:
+            env.action_space.seed(int(seed))
+
+        if random_start_steps and random_start_steps > 0:
+            rng_seed = None if seed is None else int(seed) + int(idx)
+            env = RandomStartWrapper(
+                env,
+                max_random_start_steps=random_start_steps,
+                rng_seed=rng_seed,
+            )
         return env
 
     return thunk

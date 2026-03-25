@@ -102,6 +102,14 @@ def setup_config(args):
     return cfg, device
 
 
+def _hidden_layer_sizes_for_env(env_name: str):
+    if env_name == "mujoco":
+        return (128, 128)
+    if env_name == "cartpole":
+        return (32, 32)
+    return (128, 128)
+
+
 def eval(agent, device, step=0, n_steps=300000, env_eval=None, env_name="minigrid"):
     if env_eval is None:
         env_eval = make_env_thunk(False, env_name)()
@@ -267,6 +275,7 @@ if __name__ == "__main__":
         Beta=cfg["Beta"],
         num_envs=args.num_envs,
         num_steps=args.num_steps,
+        hidden_layer_sizes=_hidden_layer_sizes_for_env(args.env_name),
         use_gae=cfg["use_gae"],
     ).to(device)
 

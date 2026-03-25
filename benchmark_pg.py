@@ -21,6 +21,14 @@ from runner_utilities import (
 from pg_runner import train_pg
 
 
+def _hidden_layer_sizes_for_env(env_name: str):
+    if env_name == "mujoco":
+        return (128, 128)
+    if env_name == "cartpole":
+        return (32, 32)
+    return (128, 128)
+
+
 def run_grid_search(args, fully_obs=False, total_steps=2000):
     print("\n=== Starting Policy Gradient Grid Search for Best Parameters ===")
 
@@ -92,6 +100,7 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
                 ]
                 vec_env = gym.vector.SyncVectorEnv(env_fns)
                 try:
+                    hidden_layer_sizes = _hidden_layer_sizes_for_env(args.env_name)
                     agent = PPOAgent(
                         vec_env,
                         clip_coef=cfg_abl["clip_coef"],
@@ -100,6 +109,7 @@ def run_grid_search(args, fully_obs=False, total_steps=2000):
                         Beta=cfg_abl["Beta"],
                         num_envs=args.num_envs,
                         num_steps=args.num_steps,
+                        hidden_layer_sizes=hidden_layer_sizes,
                         use_gae=cfg_abl["use_gae"],
                     ).to(device)
 

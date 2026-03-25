@@ -154,20 +154,20 @@ def setup_config(obs_dim):
 
     AgentClass = RainbowDQN if cfg.get("distributional", True) else EVRainbowDQN
     # Common args
-    if args.env_name == "minigrid":
-        n_action_dims = 1
+    if args.env_name == "mujoco":
+        n_action_dims = 6
         n_action_bins = 3
         hidden_layer_sizes = [128, 128]
         norm_obs = False
     elif args.env_name == "cartpole":
         n_action_dims = 1
         n_action_bins = 2
-        hidden_layer_sizes = [64, 64]
+        hidden_layer_sizes = [32, 32]
         norm_obs = False
-    elif args.env_name == "mujoco":
-        n_action_dims = 6
-        n_action_bins = 3
-        hidden_layer_sizes = [256, 256]
+    else:
+        n_action_dims = 1
+        n_action_bins = 7
+        hidden_layer_sizes = [128, 128]
         norm_obs = False
 
     common_kwargs = dict(

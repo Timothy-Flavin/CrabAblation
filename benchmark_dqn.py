@@ -48,11 +48,11 @@ def setup_config(args, obs_dim):
     if args.env_name == "mujoco":
         n_action_dims = 6
         n_action_bins = 3
-        hidden_layer_sizes = [256, 256]
+        hidden_layer_sizes = [128, 128]
     elif args.env_name == "cartpole":
         n_action_dims = 1
         n_action_bins = 2
-        hidden_layer_sizes = [64, 64]
+        hidden_layer_sizes = [32, 32]
     else:
         n_action_dims = 1
         n_action_bins = 7

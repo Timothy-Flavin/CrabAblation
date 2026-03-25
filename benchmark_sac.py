@@ -71,6 +71,14 @@ def _continuous_to_env_action(actions_cont, env_action_space):
     raise NotImplementedError(f"Unsupported env action space: {env_action_space}")
 
 
+def _hidden_layer_sizes_for_env(env_name: str):
+    if env_name == "mujoco":
+        return (128, 128)
+    if env_name == "cartpole":
+        return (32, 32)
+    return (128, 128)
+
+
 def setup_config(args, envs):
     cfg = {
         "entropy_coef_zero": False,
@@ -94,6 +102,7 @@ def setup_config(args, envs):
     elif args.ablation == 5:
         cfg["delayed_critics"] = False
 
+    hidden_layer_sizes = _hidden_layer_sizes_for_env(args.env_name)
     agent = SACAgent(
         _agent_spec_from_vec_env(envs),
         gamma=args.gamma,
@@ -109,6 +118,7 @@ def setup_config(args, envs):
         dueling=cfg["dueling"],
         popart=cfg["popart"],
         delayed_critics=cfg["delayed_critics"],
+        hidden_layer_sizes=hidden_layer_sizes,
         n_quantiles=args.n_quantiles,
         n_target_quantiles=args.n_target_quantiles,
     )
@@ -193,11 +203,9 @@ def benchmark_env_rollouts(args, agent, total_steps=1000, batch_size=256):
     start_time = time.time()
 
     steps_taken = 0
-    steps_since_update = 0
     updates_performed = 0
-    burn_in_steps = 0
     while steps_taken < total_steps:
-        if steps_taken < burn_in_steps:
+        if steps_taken < args.learning_starts:
             if isinstance(vec_env.single_action_space, gym.spaces.Box):
                 actions_agent = np.array(
                     [vec_env.single_action_space.sample() for _ in range(vec_env.num_envs)],
@@ -224,16 +232,15 @@ def benchmark_env_rollouts(args, agent, total_steps=1000, batch_size=256):
         rb.add(obs, real_next_obs, actions_agent, rewards, terminations, infos)
         obs = next_obs
         steps_taken += args.num_envs
-        steps_since_update += args.num_envs
 
-        while steps_since_update >= 8:
-            # Match DQN benchmark cadence: one update per 8 env steps.
-            # Treat SAC as already burned-in for benchmarking throughput.
-            if rb.size() >= batch_size:
+        if steps_taken > args.learning_starts:
+            target_updates = steps_taken // 8
+            while updates_performed < target_updates:
+                if rb.size() < batch_size:
+                    break
                 data = rb.sample(batch_size)
                 agent.update(data, global_step=steps_taken)
                 updates_performed += 1
-            steps_since_update -= 8
 
     end_time = time.time()
     duration = end_time - start_time
