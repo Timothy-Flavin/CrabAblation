@@ -195,8 +195,9 @@ def benchmark_env_rollouts(args, agent, total_steps=1000, batch_size=256):
     steps_taken = 0
     steps_since_update = 0
     updates_performed = 0
+    burn_in_steps = 0
     while steps_taken < total_steps:
-        if steps_taken < int(args.learning_starts):
+        if steps_taken < burn_in_steps:
             if isinstance(vec_env.single_action_space, gym.spaces.Box):
                 actions_agent = np.array(
                     [vec_env.single_action_space.sample() for _ in range(vec_env.num_envs)],
@@ -227,14 +228,11 @@ def benchmark_env_rollouts(args, agent, total_steps=1000, batch_size=256):
 
         while steps_since_update >= 8:
             # Match DQN benchmark cadence: one update per 8 env steps.
-            # Keep warmup tied to replay readiness, not learning_starts wall-clock gate.
-            if rb.size() > 0:
-                try:
-                    data = rb.sample(batch_size)
-                    agent.update(data, global_step=steps_taken)
-                    updates_performed += 1
-                except Exception:
-                    pass
+            # Treat SAC as already burned-in for benchmarking throughput.
+            if rb.size() >= batch_size:
+                data = rb.sample(batch_size)
+                agent.update(data, global_step=steps_taken)
+                updates_performed += 1
             steps_since_update -= 8
 
     end_time = time.time()
@@ -391,7 +389,7 @@ if __name__ == "__main__":
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--learning_starts", type=int, default=512)
+    parser.add_argument("--learning_starts", type=int, default=0)
     parser.add_argument("--policy_lr", type=float, default=3e-4)
     parser.add_argument("--q_lr", type=float, default=1e-3)
     parser.add_argument("--policy_frequency", type=int, default=2)
