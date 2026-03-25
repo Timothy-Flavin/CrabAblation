@@ -5,13 +5,14 @@ import torch
 import gymnasium as gym
 import numpy as np
 
-from minigrid.wrappers import FlatObsWrapper, OneHotPartialObsWrapper, FullyObsWrapper
 from DQN_Rainbow import RainbowDQN, EVRainbowDQN
 from runner_utilities import (
-    obs_transformer,
-    FastObsWrapper,
     make_env_thunk,
     bins_to_continuous,
+    benchmark_updates_generic,
+    benchmark_action_sampling_generic,
+    get_benchmark_devices,
+    save_grid_search_results,
 )
 
 
@@ -95,9 +96,6 @@ def setup_config(args, obs_dim):
 def benchmark_updates(
     dqn, obs_dim, args, device="cpu", batch_sizes=[64, 256, 1024], iters=50
 ):
-    print(f"\n--- Benchmarking Updates on {device.upper()} ---")
-    dqn.to(torch.device(device))
-
     if args.env_name == "mujoco":
         n_action_dims = 6
         n_action_bins = 3
@@ -108,68 +106,58 @@ def benchmark_updates(
         n_action_dims = 1
         n_action_bins = 7
 
-    for bs in batch_sizes:
-        # Create dummy buffer
-        obs = torch.randn((bs, obs_dim), device=device)
-        next_obs = torch.randn((bs, obs_dim), device=device)
+    def make_batch(bs, dev):
+        obs = torch.randn((bs, obs_dim), device=dev)
+        next_obs = torch.randn((bs, obs_dim), device=dev)
         if n_action_dims == 1:
-            actions = torch.randint(0, n_action_bins, (bs,), device=device)
+            actions = torch.randint(0, n_action_bins, (bs,), device=dev)
         else:
             actions = torch.randint(
-                0, n_action_bins, (bs, n_action_dims), device=device
+                0, n_action_bins, (bs, n_action_dims), device=dev
             )
-        rewards = torch.randn((bs,), device=device)
-        terms = torch.zeros((bs,), device=device)
+        rewards = torch.randn((bs,), device=dev)
+        terms = torch.zeros((bs,), device=dev)
+        return {
+            "obs": obs,
+            "actions": actions,
+            "rewards": rewards,
+            "next_obs": next_obs,
+            "terms": terms,
+            "bs": bs,
+        }
 
-        # Warmup
-        for _ in range(3):
-            dqn.update(obs, actions, rewards, next_obs, terms, batch_size=bs, step=bs)
-
-        if device == "cuda":
-            torch.cuda.synchronize()
-
-        start_time = time.time()
-        for i in range(iters):
-            dqn.update(obs, actions, rewards, next_obs, terms, batch_size=bs, step=bs)
-
-        if device == "cuda":
-            torch.cuda.synchronize()
-
-        end_time = time.time()
-        avg_time = (end_time - start_time) / iters
-        print(
-            f"Batch Size {bs:4d}: {avg_time*1000:.2f} ms / update | Updates/sec: {1.0/avg_time:.2f}"
+    def run_update(batch, _):
+        dqn.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["next_obs"],
+            batch["terms"],
+            batch_size=batch["bs"],
+            step=batch["bs"],
         )
+
+    benchmark_updates_generic(
+        dqn,
+        device=device,
+        batch_sizes=batch_sizes,
+        iters=iters,
+        make_batch_fn=make_batch,
+        update_fn=run_update,
+    )
 
 
 def benchmark_action_sampling(
     dqn, obs_dim, device="cpu", batch_sizes=[1, 4, 16, 64], iters=200
 ):
-    print(f"\n--- Benchmarking Action Sampling on {device.upper()} ---")
-    dqn.to(torch.device(device))
-
-    for bs in batch_sizes:
-        obs = torch.randn((bs, obs_dim), device=device)
-
-        # Warmup
-        for _ in range(5):
-            dqn.sample_action(obs, eps=0.1, step=0)
-
-        if device == "cuda":
-            torch.cuda.synchronize()
-
-        start_time = time.time()
-        for _ in range(iters):
-            dqn.sample_action(obs, eps=0.1, step=0)
-
-        if device == "cuda":
-            torch.cuda.synchronize()
-
-        end_time = time.time()
-        avg_time = (end_time - start_time) / iters
-        print(
-            f"Batch Size (Num Envs) {bs:4d}: {avg_time*1000:.2f} ms / sample | Batched Samples/sec: {1.0/avg_time:.2f}"
-        )
+    benchmark_action_sampling_generic(
+        dqn,
+        obs_dim=obs_dim,
+        device=device,
+        batch_sizes=batch_sizes,
+        iters=iters,
+        sample_fn=lambda obs: dqn.sample_action(obs, eps=0.1, step=0),
+    )
 
 
 def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
@@ -284,14 +272,8 @@ def benchmark_env_rollouts(args, dqn, obs_dim, total_steps=1000, batch_size=64):
 
 
 def run_grid_search(args, obs_dim, fully_obs=False, total_steps=2000):
-    import json
-    import os
-
     print("\n=== Starting Grid Search for Best Parameters ===")
-
-    devices = ["cpu"]
-    if torch.cuda.is_available():
-        devices.append("cuda")
+    devices = get_benchmark_devices()
 
     num_envs_list = [1, 4, 8, 12, 16]
     best_results = {}
@@ -339,25 +321,7 @@ def run_grid_search(args, obs_dim, fully_obs=False, total_steps=2000):
         best_results[f"ablation_{ablation}"] = best_config
         print(f"Best for Ablation {ablation}: {best_config}")
 
-    if hasattr(args, "device_name") and args.device_name is not None:
-        file_prefix = args.device_name
-    else:
-        from runner_utilities import get_device_name
-        file_prefix = get_device_name()
-
-    os.makedirs(f"time_files/{file_prefix}", exist_ok=True)
-    best_filename = f"time_files/{file_prefix}/{args.env_name}_dqn_best.json"
-    all_filename = f"time_files/{file_prefix}/{args.env_name}_dqn_all.json"
-
-    with open(best_filename, "w") as f:
-        json.dump(best_results, f, indent=4)
-
-    with open(all_filename, "w") as f:
-        json.dump(all_results, f, indent=4)
-
-    print(
-        f"\nGrid search complete. Saved best configs to {best_filename} and all configs to {all_filename}"
-    )
+    save_grid_search_results(args, "dqn", best_results, all_results)
 
 
 if __name__ == "__main__":

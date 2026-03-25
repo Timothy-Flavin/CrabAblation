@@ -1,7 +1,10 @@
 import os
+import json
+import time
 import numpy as np
 import gymnasium as gym
 import matplotlib.pyplot as plt
+import torch
 
 def get_device_name():
     try:
@@ -89,6 +92,106 @@ def make_env_thunk(fully_obs, env_name):
         return env
 
     return thunk
+
+
+def get_benchmark_devices():
+    devices = ["cpu"]
+    if torch.cuda.is_available():
+        devices.append("cuda")
+    return devices
+
+
+def benchmark_updates_generic(
+    agent,
+    device,
+    batch_sizes,
+    iters,
+    make_batch_fn,
+    update_fn,
+    warmup_iters=3,
+    header="Benchmarking Updates",
+):
+    print(f"\n--- {header} on {device.upper()} ---")
+    agent.to(torch.device(device))
+
+    for bs in batch_sizes:
+        batch = make_batch_fn(bs, device)
+
+        for _ in range(warmup_iters):
+            update_fn(batch, 0)
+
+        if device == "cuda":
+            torch.cuda.synchronize()
+
+        start_time = time.time()
+        for i in range(iters):
+            update_fn(batch, i)
+
+        if device == "cuda":
+            torch.cuda.synchronize()
+
+        end_time = time.time()
+        avg_time = (end_time - start_time) / iters
+        print(
+            f"Batch Size {bs:4d}: {avg_time*1000:.2f} ms / update | Updates/sec: {1.0/avg_time:.2f}"
+        )
+
+
+def benchmark_action_sampling_generic(
+    agent,
+    obs_dim,
+    device,
+    batch_sizes,
+    iters,
+    sample_fn,
+    warmup_iters=5,
+    header="Benchmarking Action Sampling",
+):
+    print(f"\n--- {header} on {device.upper()} ---")
+    agent.to(torch.device(device))
+
+    for bs in batch_sizes:
+        obs = torch.randn((bs, obs_dim), device=device)
+
+        for _ in range(warmup_iters):
+            sample_fn(obs)
+
+        if device == "cuda":
+            torch.cuda.synchronize()
+
+        start_time = time.time()
+        for _ in range(iters):
+            sample_fn(obs)
+
+        if device == "cuda":
+            torch.cuda.synchronize()
+
+        end_time = time.time()
+        avg_time = (end_time - start_time) / iters
+        print(
+            f"Batch Size (Num Envs) {bs:4d}: {avg_time*1000:.2f} ms / sample | Batched Samples/sec: {1.0/avg_time:.2f}"
+        )
+
+
+def save_grid_search_results(args, algo_name, best_results, all_results):
+    if hasattr(args, "device_name") and args.device_name is not None:
+        file_prefix = args.device_name
+    else:
+        file_prefix = get_device_name()
+
+    os.makedirs(f"time_files/{file_prefix}", exist_ok=True)
+    best_filename = f"time_files/{file_prefix}/{args.env_name}_{algo_name}_best.json"
+    all_filename = f"time_files/{file_prefix}/{args.env_name}_{algo_name}_all.json"
+
+    with open(best_filename, "w") as f:
+        json.dump(best_results, f, indent=4)
+
+    with open(all_filename, "w") as f:
+        json.dump(all_results, f, indent=4)
+
+    print(
+        f"\nGrid search complete. Saved best configs to {best_filename} and all configs to {all_filename}"
+    )
 
 
 def plot_results(results, args, model_name):
