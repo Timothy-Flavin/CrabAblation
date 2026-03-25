@@ -2,31 +2,31 @@
     "ablation_0": {
         "device": "cuda",
         "num_envs": 16,
-        "steps_per_sec": 11276.254039266341
+        "steps_per_sec": 11072.00024747849
     },
     "ablation_1": {
         "device": "cuda",
         "num_envs": 16,
-        "steps_per_sec": 11133.203629011354
+        "steps_per_sec": 11363.888082709627
     },
     "ablation_2": {
         "device": "cuda",
         "num_envs": 16,
-        "steps_per_sec": 11318.353979933816
+        "steps_per_sec": 11105.869337611948
     },
     "ablation_3": {
         "device": "cuda",
         "num_envs": 16,
-        "steps_per_sec": 11356.39124718319
+        "steps_per_sec": 11199.079285261234
     },
     "ablation_4": {
         "device": "cpu",
         "num_envs": 16,
-        "steps_per_sec": 16219.634388907876
+        "steps_per_sec": 15122.31225612005
     },
     "ablation_5": {
         "device": "cuda",
         "num_envs": 16,
-        "steps_per_sec": 11313.054748226643
+        "steps_per_sec": 11361.701109592972
     }
 }
