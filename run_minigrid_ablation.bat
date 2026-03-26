@@ -19,7 +19,7 @@ IF NOT EXIST results (
 FOR %%A IN (0 1 2 3 4 5) DO (
   FOR %%R IN (1 2 3) DO (
     ECHO Running trial: ablation=%%A, run=%%R
-    python minigrid_dqn_runner.py --ablation %%A --run %%R !DEVICE_ARG!
+    python runner.py --algo dqn --env_name minigrid --ablation %%A --run %%R !DEVICE_ARG!
   )
 )
 

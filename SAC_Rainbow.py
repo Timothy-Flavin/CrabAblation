@@ -16,7 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 from cleanrl_buffers import ReplayBuffer
 from agent import Agent
 from RainbowNetworks import EV_Q_Network, IQN_Network
-from runner_utilities import make_env_thunk
+from environment_utils import make_env_thunk
 
 
 @dataclass

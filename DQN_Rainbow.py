@@ -205,7 +205,7 @@ class RainbowDQN(Agent):
         self, obs, a, r, next_obs, term, batch_size=None, step=0, extrinsic_only=False
     ):
         # NOTE: Do NOT call update_running_stats(next_obs, r) here, as it passes the ENTIRE replay buffer of size 10000+!
-        # It is already correctly called on the single batch of step transitions in dqn_runner.py.
+        # It is already correctly called on the single batch of step transitions in runner.py.
         # Sample a random minibatch
         if batch_size is None:
             idx = torch.arange(0, len(r))
@@ -772,7 +772,7 @@ class EVRainbowDQN(Agent):
     def update(
         self, obs, a, r, next_obs, term, batch_size, step=0, extrinsic_only=False
     ):
-        # NOTE: update_running_stats is handled externally in dqn_runner per step batch to avoid O(N) buffer scaling
+        # NOTE: update_running_stats is handled externally in runner.py per step batch to avoid O(N) buffer scaling
         # Get Batch items
         if batch_size is None:
             idx = torch.arange(0, len(r))

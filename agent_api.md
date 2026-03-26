@@ -12,7 +12,7 @@ Future agent implementations should subclass `Agent` and implement:
 
 - `sample_action(...)`
   - Produce action(s) from observation(s).
-  - Must support the calling pattern used by the corresponding runner (`dqn_runner.py` or `pg_runner.py`).
+  - Must support the calling pattern used by the unified runner (`runner.py`).
 
 - `update(...)`
   - Run one optimization/update step.

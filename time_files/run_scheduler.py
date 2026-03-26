@@ -127,14 +127,12 @@ def solve_scheduling_problem():
                         f"  Env: {exp['env']:<8} | Model: {exp['model']:<3} | Ablation: {exp['ablation']} | Run: {exp['run']} (takes {time_taken:.2f} mins)"
                     )
 
-                    runner = (
-                        "dqn_runner.py" if exp["model"] == "dqn" else "pg_runner.py"
-                    )
+                    runner = "runner.py"
                     sh_lines.append(
                         f"echo \"[{device}] Running {exp['model']} on {exp['env']} | Ablation {exp['ablation']} | Run {exp['run']}\"\n"
                     )
                     sh_lines.append(
-                        f"python {runner} --env_name {exp['env']} --ablation {exp['ablation']} --run {exp['run']}\n\n"
+                        f"python {runner} --algo {exp['model']} --env_name {exp['env']} --ablation {exp['ablation']} --run {exp['run']}\n\n"
                     )
 
             # Write the .sh file for this device

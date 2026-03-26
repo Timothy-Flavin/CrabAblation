@@ -1,0 +1,459 @@
+from __future__ import annotations
+
+import argparse
+from types import SimpleNamespace
+
+import gymnasium as gym
+import numpy as np
+import torch
+
+from environment_utils import get_env_benchmark_spec, make_env_thunk
+from runner import (
+    build_agent,
+    build_buffer,
+    create_vec_env,
+    rollout_offline_rl,
+    rollout_online_rl,
+)
+from runner_utils import (
+    benchmark_action_sampling_generic,
+    benchmark_updates_generic,
+    get_benchmark_devices,
+    get_device_name,
+    load_grid_search_results,
+    resolve_torch_device,
+    save_grid_search_results,
+)
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description="Unified benchmark runner")
+    parser.add_argument("--algo", type=str, default="dqn", choices=["dqn", "ppo", "sac"])
+    parser.add_argument(
+        "--env_name",
+        type=str,
+        default="minigrid",
+        choices=["cartpole", "minigrid", "mujoco"],
+        help="Environment to use",
+    )
+    parser.add_argument("--grid_search", action="store_true", help="Run grid search")
+    parser.add_argument("--device_name", type=str, default=get_device_name())
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Default device",
+    )
+    parser.add_argument("--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5])
+    parser.add_argument("--fully_obs", action="store_true")
+    parser.add_argument("--num_envs", type=int, default=8)
+    parser.add_argument("--num_steps", type=int, default=128)
+    parser.add_argument("--replace_existing", action="store_true", default=False)
+    parser.add_argument(
+        "--max_wall_time",
+        type=float,
+        default=120.0,
+        help="Maximum wall-clock seconds per trial before early stop",
+    )
+    parser.add_argument(
+        "--benchmark_steps",
+        type=int,
+        default=5000,
+        help="Step budget for each benchmark rollout trial",
+    )
+
+    # DQN knobs
+    parser.add_argument("--dqn_buffer_size", type=int, default=10000)
+    parser.add_argument("--dqn_batch_size", type=int, default=64)
+    parser.add_argument("--update_every", type=int, default=4)
+    parser.add_argument("--rnd_burn_in", type=int, default=10)
+
+    # SAC knobs
+    parser.add_argument("--buffer_size", type=int, default=int(1e6))
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--learning_starts", type=int, default=0)
+    parser.add_argument("--policy_lr", type=float, default=3e-4)
+    parser.add_argument("--q_lr", type=float, default=1e-3)
+    parser.add_argument("--policy_frequency", type=int, default=2)
+    parser.add_argument("--target_network_frequency", type=int, default=1)
+    parser.add_argument("--alpha", type=float, default=0.2)
+    parser.add_argument("--autotune", action="store_true", default=True)
+    parser.add_argument("--n_quantiles", type=int, default=32)
+    parser.add_argument("--n_target_quantiles", type=int, default=32)
+
+    args = parser.parse_args()
+
+    if args.algo == "sac" and args.update_every == 4:
+        args.update_every = 8
+    if args.env_name == "mujoco" and args.algo == "dqn" and args.dqn_buffer_size == 10000:
+        args.dqn_buffer_size = 20000
+
+    return args
+
+
+def run_grid_search(args, total_steps=2000):
+    print(f"\n=== Starting {args.algo.upper()} Grid Search ===")
+
+    devices = get_benchmark_devices()
+    num_envs_list = [1, 4, 8, 12, 16]
+
+    if args.replace_existing:
+        best_results = {}
+        all_results = {}
+    else:
+        best_results, all_results = load_grid_search_results(args, args.algo)
+
+    for ablation in range(6):
+        print(f"\n--- Grid Search: Ablation {ablation} ---")
+        args.ablation = ablation
+
+        best_sps = 0.0
+        best_config = None
+        all_results.setdefault(f"ablation_{ablation}", [])
+        existing_trials = {
+            (entry.get("device"), entry.get("num_envs"))
+            for entry in all_results[f"ablation_{ablation}"]
+            if isinstance(entry, dict)
+        }
+
+        for dev in devices:
+            for num_envs in num_envs_list:
+                args.device = dev
+                args.num_envs = num_envs
+
+                if (not args.replace_existing) and ((dev, num_envs) in existing_trials):
+                    print(
+                        f"Skipping existing trial: ablation={ablation}, device={dev}, num_envs={num_envs}"
+                    )
+                    continue
+
+                vec_env = create_vec_env(args, num_envs=num_envs)
+                try:
+                    device = resolve_torch_device(dev)
+                    agent, _ = build_agent(args, vec_env, device)
+                    buffer = build_buffer(args, vec_env, device)
+
+                    if args.algo == "ppo":
+                        results = rollout_online_rl(
+                            vec_env,
+                            agent,
+                            args,
+                            device,
+                            max_wall_time_seconds=args.max_wall_time,
+                            total_steps_override=total_steps,
+                        )
+                    else:
+                        results = rollout_offline_rl(
+                            vec_env,
+                            agent,
+                            args,
+                            device,
+                            buffer,
+                            max_wall_time_seconds=args.max_wall_time,
+                            total_steps_override=total_steps,
+                        )
+
+                    current_config = {
+                        "device": dev,
+                        "num_envs": num_envs,
+                        "steps_per_sec": float(results.get("steps_per_sec", 0.0)),
+                        "updates_per_sec": float(results.get("updates_per_sec", 0.0)),
+                    }
+
+                    if args.replace_existing and ((dev, num_envs) in existing_trials):
+                        for idx, entry in enumerate(all_results[f"ablation_{ablation}"]):
+                            if (
+                                isinstance(entry, dict)
+                                and entry.get("device") == dev
+                                and entry.get("num_envs") == num_envs
+                            ):
+                                all_results[f"ablation_{ablation}"][idx] = current_config
+                                break
+                    else:
+                        all_results[f"ablation_{ablation}"].append(current_config)
+                        existing_trials.add((dev, num_envs))
+
+                    ablation_entries = [
+                        e
+                        for e in all_results[f"ablation_{ablation}"]
+                        if isinstance(e, dict) and "steps_per_sec" in e
+                    ]
+                    if ablation_entries:
+                        best_results[f"ablation_{ablation}"] = max(
+                            ablation_entries,
+                            key=lambda e: e["steps_per_sec"],
+                        )
+
+                    save_grid_search_results(args, args.algo, best_results, all_results)
+
+                    if current_config["steps_per_sec"] > best_sps:
+                        best_sps = current_config["steps_per_sec"]
+                        best_config = current_config
+
+                except Exception as e:
+                    import traceback
+
+                    print(f"Error for device={dev}, num_envs={num_envs}: {e}")
+                    traceback.print_exc()
+                finally:
+                    vec_env.close()
+
+        best_results[f"ablation_{ablation}"] = best_config
+        print(f"Best for Ablation {ablation}: {best_config}")
+
+    save_grid_search_results(args, args.algo, best_results, all_results)
+
+
+def benchmark_updates(agent, args, obs_dim, action_dim, device="cpu", batch_sizes=None, iters=50):
+    if batch_sizes is None:
+        batch_sizes = [64, 256]
+
+    if args.algo == "dqn":
+        env_spec = get_env_benchmark_spec(args.env_name)
+        n_action_dims = int(env_spec["n_action_dims"])
+        n_action_bins = int(env_spec["n_action_bins"])
+
+        def make_batch_dqn(bs, dev):
+            obs = torch.randn((bs, obs_dim), device=dev)
+            next_obs = torch.randn((bs, obs_dim), device=dev)
+            if n_action_dims == 1:
+                actions = torch.randint(0, n_action_bins, (bs,), device=dev)
+            else:
+                actions = torch.randint(0, n_action_bins, (bs, n_action_dims), device=dev)
+            rewards = torch.randn((bs,), device=dev)
+            terms = torch.zeros((bs,), device=dev)
+            return {
+                "obs": obs,
+                "actions": actions,
+                "rewards": rewards,
+                "next_obs": next_obs,
+                "terms": terms,
+                "bs": bs,
+            }
+
+        def run_update_dqn(batch, _):
+            agent.update(
+                batch["obs"],
+                batch["actions"],
+                batch["rewards"],
+                batch["next_obs"],
+                batch["terms"],
+                batch_size=batch["bs"],
+                step=batch["bs"],
+            )
+
+        make_batch_fn = make_batch_dqn
+        run_update_fn = run_update_dqn
+
+    elif args.algo == "ppo":
+        act_shape = tuple(args._vec_env.single_action_space.shape)
+        n_action_bins = int(get_env_benchmark_spec(args.env_name)["n_action_bins"])
+
+        def make_batch_ppo(bs, dev):
+            obs = torch.randn((args.num_steps, args.num_envs, obs_dim), device=dev)
+            if len(act_shape) == 0:
+                actions = torch.randint(
+                    0,
+                    n_action_bins,
+                    (args.num_steps, args.num_envs),
+                    device=dev,
+                )
+            else:
+                actions = torch.randint(
+                    0,
+                    n_action_bins,
+                    (args.num_steps, args.num_envs) + act_shape,
+                    device=dev,
+                )
+            logprobs = torch.randn((args.num_steps, args.num_envs), device=dev)
+            rewards = torch.randn((args.num_steps, args.num_envs), device=dev)
+            dones = torch.zeros((args.num_steps, args.num_envs), device=dev)
+            ext_values = torch.randn((args.num_steps, args.num_envs), device=dev)
+            int_values = torch.randn((args.num_steps, args.num_envs), device=dev)
+            next_obs = torch.randn((args.num_envs, obs_dim), device=dev)
+            next_done = torch.zeros((args.num_envs,), device=dev)
+            return {
+                "obs": obs,
+                "actions": actions,
+                "logprobs": logprobs,
+                "rewards": rewards,
+                "dones": dones,
+                "ext_values": ext_values,
+                "int_values": int_values,
+                "next_obs": next_obs,
+                "next_done": next_done,
+            }
+
+        def run_update_ppo(batch, _):
+            agent.update(
+                batch["obs"],
+                batch["actions"],
+                batch["logprobs"],
+                batch["rewards"],
+                batch["dones"],
+                batch["ext_values"],
+                batch["int_values"],
+                batch["next_obs"],
+                batch["next_done"],
+            )
+
+        make_batch_fn = make_batch_ppo
+        run_update_fn = run_update_ppo
+
+    else:
+        def make_batch_sac(bs, dev):
+            observations = torch.randn((bs, obs_dim), dtype=torch.float32, device=dev)
+            next_observations = torch.randn((bs, obs_dim), dtype=torch.float32, device=dev)
+            actions = torch.randn((bs, action_dim), dtype=torch.float32, device=dev)
+            rewards = torch.randn((bs, 1), dtype=torch.float32, device=dev)
+            dones = torch.zeros((bs, 1), dtype=torch.float32, device=dev)
+            return {
+                "observations": observations,
+                "next_observations": next_observations,
+                "actions": actions,
+                "rewards": rewards,
+                "dones": dones,
+                "bs": bs,
+            }
+
+        def run_update_sac(batch, step_idx):
+            data = SimpleNamespace(
+                observations=batch["observations"],
+                next_observations=batch["next_observations"],
+                actions=batch["actions"],
+                rewards=batch["rewards"],
+                dones=batch["dones"],
+            )
+            agent.update(data, global_step=step_idx + batch["bs"])
+
+        make_batch_fn = make_batch_sac
+        run_update_fn = run_update_sac
+
+    benchmark_updates_generic(
+        agent,
+        device=device,
+        batch_sizes=batch_sizes,
+        iters=iters,
+        make_batch_fn=make_batch_fn,
+        update_fn=run_update_fn,
+    )
+
+
+def benchmark_action_sampling(agent, args, obs_dim, device="cpu", batch_sizes=None, iters=200):
+    if batch_sizes is None:
+        batch_sizes = [1, 4, 16, 64, 256]
+
+    if args.algo == "dqn":
+        def sample_fn(obs):
+            return agent.sample_action(obs, eps=0.1, step=0)
+    elif args.algo == "ppo":
+        def sample_fn(obs):
+            return agent.sample_action(obs)[0]
+    else:
+        def sample_fn(obs):
+            return agent.sample_action(obs, deterministic=False)
+
+    benchmark_action_sampling_generic(
+        agent,
+        obs_dim=obs_dim,
+        device=device,
+        batch_sizes=batch_sizes,
+        iters=iters,
+        sample_fn=sample_fn,
+    )
+
+
+def _action_dim_for_space(space):
+    if isinstance(space, gym.spaces.Box):
+        return int(np.prod(space.shape))
+    if isinstance(space, gym.spaces.Discrete):
+        return 1
+    if isinstance(space, gym.spaces.MultiDiscrete):
+        return int(len(space.nvec))
+    return 1
+
+
+def main():
+    args = get_args()
+
+    env = make_env_thunk(args.fully_obs, args.env_name)()
+    obs, _ = env.reset()
+    obs_dim = int(np.prod(np.asarray(obs).shape))
+    action_dim = _action_dim_for_space(env.action_space)
+    env.close()
+
+    print("=== Configuration ===")
+    print(f"Algorithm: {args.algo}")
+    print(f"Environment: {args.env_name}")
+    print(f"Ablation Level: {args.ablation}")
+    print(f"Obs Dim: {obs_dim}")
+    print(f"Action Dim: {action_dim}")
+    print("=====================")
+
+    if args.grid_search:
+        run_grid_search(args, total_steps=args.benchmark_steps)
+        return
+
+    vec_env = create_vec_env(args, num_envs=max(1, args.num_envs))
+    args._vec_env = vec_env
+    try:
+        device = resolve_torch_device(args.device)
+        agent, _ = build_agent(args, vec_env, device)
+
+        benchmark_updates(agent, args, obs_dim, action_dim, device="cpu", batch_sizes=[64, 256])
+        if torch.cuda.is_available():
+            benchmark_updates(agent, args, obs_dim, action_dim, device="cuda", batch_sizes=[64, 256])
+
+        benchmark_action_sampling(agent, args, obs_dim, device="cpu", batch_sizes=[1, 4, 16, 64, 256])
+        if torch.cuda.is_available():
+            benchmark_action_sampling(
+                agent,
+                args,
+                obs_dim,
+                device="cuda",
+                batch_sizes=[1, 4, 16, 64, 256],
+            )
+
+        for dev in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+            args.device = dev
+            for n_envs in [1, 4, 8]:
+                args.num_envs = n_envs
+                rollout_env = create_vec_env(args, num_envs=n_envs)
+                try:
+                    rollout_device = resolve_torch_device(dev)
+                    rollout_agent, _ = build_agent(args, rollout_env, rollout_device)
+                    rollout_buffer = build_buffer(args, rollout_env, rollout_device)
+                    if args.algo == "ppo":
+                        results = rollout_online_rl(
+                            rollout_env,
+                            rollout_agent,
+                            args,
+                            rollout_device,
+                            max_wall_time_seconds=args.max_wall_time,
+                            total_steps_override=args.benchmark_steps,
+                        )
+                    else:
+                        results = rollout_offline_rl(
+                            rollout_env,
+                            rollout_agent,
+                            args,
+                            rollout_device,
+                            rollout_buffer,
+                            max_wall_time_seconds=args.max_wall_time,
+                            total_steps_override=args.benchmark_steps,
+                        )
+                    print(
+                        f"Env Rollout | algo={args.algo} | device={dev} | num_envs={n_envs} | "
+                        f"SPS={results['steps_per_sec']:.2f} | UPS={results['updates_per_sec']:.2f}"
+                    )
+                finally:
+                    rollout_env.close()
+    finally:
+        delattr(args, "_vec_env")
+        vec_env.close()
+
+
+if __name__ == "__main__":
+    main()

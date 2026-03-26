@@ -24,7 +24,7 @@ for env in "${ENVIRONMENTS[@]}"; do
     for abl in "${ABLATIONS[@]}"; do
         for run in $(seq 1 $RUNS); do
             echo "[$(date +'%Y-%m-%d %H:%M:%S')] Running $env | Ablation: $abl | Run: $run"
-            python pg_runner.py --env_name "$env" --ablation "$abl" --run "$run" --device "$DEVICE"
+            python runner.py --algo ppo --env_name "$env" --ablation "$abl" --run "$run" --device "$DEVICE"
         done
     done
 done
