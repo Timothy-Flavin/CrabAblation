@@ -27,7 +27,9 @@ from SAC_Rainbow import SACAgent
 
 def get_args():
     parser = argparse.ArgumentParser(description="Unified RL runner")
-    parser.add_argument("--algo", type=str, default="dqn", choices=["dqn", "ppo", "sac"])
+    parser.add_argument(
+        "--algo", type=str, default="dqn", choices=["dqn", "ppo", "sac"]
+    )
     parser.add_argument(
         "--env_name",
         type=str,
@@ -88,7 +90,11 @@ def get_args():
 
     if args.env_name == "mujoco" and args.total_steps == 300000:
         args.total_steps = 1000000
-    if args.algo == "dqn" and args.env_name == "mujoco" and args.dqn_buffer_size == 10000:
+    if (
+        args.algo == "dqn"
+        and args.env_name == "mujoco"
+        and args.dqn_buffer_size == 10000
+    ):
         args.dqn_buffer_size = 20000
 
     if not args.skip_best_params:
@@ -98,7 +104,9 @@ def get_args():
 
 
 def _maybe_load_best_params(args):
-    best_json_path = f"time_files/{args.device_name}/{args.env_name}_{args.algo}_best.json"
+    best_json_path = (
+        f"time_files/{args.device_name}/{args.env_name}_{args.algo}_best.json"
+    )
     try:
         with open(best_json_path, "r") as f:
             best_results = json.load(f)
@@ -232,7 +240,9 @@ def _ppo_agent_from_args(args, vec_env):
     elif args.ablation == 5:
         cfg["use_gae"] = False
 
-    hidden_layer_sizes = tuple(get_env_benchmark_spec(args.env_name)["hidden_layer_sizes"])
+    hidden_layer_sizes = tuple(
+        get_env_benchmark_spec(args.env_name)["hidden_layer_sizes"]
+    )
     agent = PPOAgent(
         vec_env,
         clip_coef=cfg["clip_coef"],
@@ -264,7 +274,9 @@ def _sac_agent_from_args(args, vec_env):
     elif args.ablation == 5:
         cfg["delayed_critics"] = False
 
-    hidden_layer_sizes = tuple(get_env_benchmark_spec(args.env_name)["hidden_layer_sizes"])
+    hidden_layer_sizes = tuple(
+        get_env_benchmark_spec(args.env_name)["hidden_layer_sizes"]
+    )
     agent = SACAgent(
         _agent_spec_from_vec_env(vec_env),
         gamma=args.gamma,
@@ -319,7 +331,11 @@ def _dqn_action_to_env(action_bins_batch, env_name):
     if env_name == "mujoco":
         return np.array([bins_to_continuous(a) for a in action_bins_batch])
 
-    if isinstance(action_bins_batch, list) and action_bins_batch and isinstance(action_bins_batch[0], list):
+    if (
+        isinstance(action_bins_batch, list)
+        and action_bins_batch
+        and isinstance(action_bins_batch[0], list)
+    ):
         action_bins_batch = [a[0] for a in action_bins_batch]
     action_bins_batch = np.asarray(action_bins_batch)
     if action_bins_batch.ndim > 1:
@@ -328,7 +344,9 @@ def _dqn_action_to_env(action_bins_batch, env_name):
 
 
 def _single_eval_action_from_proxy(proxy_action, action_space):
-    converted = _continuous_to_env_action(np.asarray(proxy_action, dtype=np.float32), action_space)
+    converted = _continuous_to_env_action(
+        np.asarray(proxy_action, dtype=np.float32), action_space
+    )
     converted = np.asarray(converted)
     if isinstance(action_space, gym.spaces.Discrete):
         return int(converted.reshape(-1)[0])
@@ -366,7 +384,9 @@ def evaluate_agent(agent, args, device, step=0, n_steps=300000):
                     env_action = int(np.asarray(action_bins).reshape(-1)[0])
             else:
                 proxy_action = agent.sample_action(np.asarray(obs), deterministic=True)
-                env_action = _single_eval_action_from_proxy(proxy_action, env.action_space)
+                env_action = _single_eval_action_from_proxy(
+                    proxy_action, env.action_space
+                )
 
         obs, r, term, trunc, _ = env.step(env_action)
         reward += float(r)
@@ -465,20 +485,30 @@ def rollout_online_rl(
             else:
                 step_action = np_action
 
-            next_obs_np, reward, terminations, truncations, _ = vec_env.step(step_action)
+            next_obs_np, reward, terminations, truncations, _ = vec_env.step(
+                step_action
+            )
             next_done_np = np.logical_or(terminations, truncations)
             agent_rewards[step] = torch.as_tensor(reward, device=device).view(-1)
 
             next_obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=device)
-            next_done = torch.as_tensor(next_done_np, dtype=torch.float32, device=device)
+            next_done = torch.as_tensor(
+                next_done_np, dtype=torch.float32, device=device
+            )
 
             for env_i in range(args.num_envs):
                 r_ep[env_i] += float(reward[env_i])
                 if next_done_np[env_i]:
-                    smooth_r = r_ep[env_i] if smooth_r == 0.0 else 0.99 * smooth_r + 0.01 * r_ep[env_i]
+                    smooth_r = (
+                        r_ep[env_i]
+                        if smooth_r == 0.0
+                        else 0.99 * smooth_r + 0.01 * r_ep[env_i]
+                    )
                     rhist.append(float(r_ep[env_i]))
                     smooth_rhist.append(float(smooth_r))
-                    writer.add_scalar("charts/episodic_return", float(r_ep[env_i]), global_step)
+                    writer.add_scalar(
+                        "charts/episodic_return", float(r_ep[env_i]), global_step
+                    )
                     r_ep[env_i] = 0.0
 
         if timed_out:
@@ -580,7 +610,9 @@ def rollout_offline_rl(
         rnd_burn_in = int(args.rnd_burn_in)
 
         if n_action_dims > 1:
-            buff_actions = torch.zeros((blen, n_action_dims), dtype=torch.long, device=device)
+            buff_actions = torch.zeros(
+                (blen, n_action_dims), dtype=torch.long, device=device
+            )
         else:
             buff_actions = torch.zeros((blen,), dtype=torch.long, device=device)
         buff_obs = torch.zeros((blen, obs_dim), dtype=torch.float32, device=device)
@@ -588,17 +620,6 @@ def rollout_offline_rl(
         buff_term = torch.zeros((blen,), dtype=torch.float32, device=device)
         buff_r = torch.zeros((blen,), dtype=torch.float32, device=device)
 
-        if n_action_dims > 1:
-            priority_actions = torch.zeros((blen // 4, n_action_dims), dtype=torch.long, device=device)
-        else:
-            priority_actions = torch.zeros((blen // 4,), dtype=torch.long, device=device)
-        priority_obs = torch.zeros((blen // 4, obs_dim), dtype=torch.float32, device=device)
-        priority_next_obs = torch.zeros((blen // 4, obs_dim), dtype=torch.float32, device=device)
-        priority_term = torch.zeros((blen // 4,), dtype=torch.float32, device=device)
-        priority_r = torch.zeros((blen // 4,), dtype=torch.float32, device=device)
-
-        priority_idx = 0
-        priority_filled = 0
         buffer_ptr = 0
 
         while total_samples < total_step_budget:
@@ -610,7 +631,9 @@ def rollout_offline_rl(
                 timed_out = True
                 break
 
-            eps_current = max(1.0 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05)
+            eps_current = max(
+                1.0 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05
+            )
             tobs = torch.from_numpy(obs).to(device).float()
             actions = agent.sample_action(
                 tobs,
@@ -633,12 +656,18 @@ def rollout_offline_rl(
             for env_i in range(args.num_envs):
                 idx = buffer_ptr % blen
                 if n_action_dims > 1:
-                    buff_actions[idx] = torch.as_tensor(actions_arr[env_i], dtype=torch.long, device=device)
+                    buff_actions[idx] = torch.as_tensor(
+                        actions_arr[env_i], dtype=torch.long, device=device
+                    )
                 else:
-                    buff_actions[idx] = int(np.asarray(actions_arr[env_i]).reshape(-1)[0])
+                    buff_actions[idx] = int(
+                        np.asarray(actions_arr[env_i]).reshape(-1)[0]
+                    )
 
                 buff_obs[idx].copy_(torch.from_numpy(obs[env_i]).to(device).float())
-                buff_next_obs[idx].copy_(torch.from_numpy(next_obs[env_i]).to(device).float())
+                buff_next_obs[idx].copy_(
+                    torch.from_numpy(next_obs[env_i]).to(device).float()
+                )
                 buff_term[idx] = float(term[env_i] or trunc[env_i])
                 buff_r[idx] = float(r_mult[env_i])
 
@@ -657,7 +686,9 @@ def rollout_offline_rl(
                     ep += 1
 
                     writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
-                    writer.add_scalar("episode/smooth_reward", float(smooth_r), total_samples)
+                    writer.add_scalar(
+                        "episode/smooth_reward", float(smooth_r), total_samples
+                    )
 
                     if ep % 50 == 0 and total_samples > total_step_budget // 2:
                         evalr = 0.0
@@ -670,21 +701,9 @@ def rollout_offline_rl(
                                 n_steps=total_step_budget,
                             )
                         eval_hist.append(float(evalr / 5.0))
-                        writer.add_scalar("eval/reward", float(eval_hist[-1]), total_samples)
-
-                    if r_ep[env_i] > smooth_r:
-                        store_len = min(ep_len[env_i], blen // 4)
-                        for k in range(store_len, 0, -1):
-                            steps_back = store_len - k
-                            buff_idx = (buffer_ptr - 1 - steps_back * args.num_envs) % blen
-                            pidx = (priority_idx + store_len - k) % (blen // 4)
-                            priority_obs[pidx].copy_(buff_obs[buff_idx])
-                            priority_next_obs[pidx].copy_(buff_next_obs[buff_idx])
-                            priority_term[pidx] = buff_term[buff_idx]
-                            priority_r[pidx] = buff_r[buff_idx]
-                            priority_actions[pidx] = buff_actions[buff_idx]
-                        priority_idx = (priority_idx + store_len) % (blen // 4)
-                        priority_filled = min(priority_filled + store_len, blen // 4)
+                        writer.add_scalar(
+                            "eval/reward", float(eval_hist[-1]), total_samples
+                        )
 
                     ep_len[env_i] = 0
                     r_ep[env_i] = 0.0
@@ -717,18 +736,6 @@ def rollout_offline_rl(
                         )
                         lhist.append(float(loss_val))
                         updates_performed += 1
-                        if priority_filled >= batch_size:
-                            agent.update(
-                                priority_obs,
-                                priority_actions,
-                                priority_r,
-                                priority_next_obs,
-                                priority_term,
-                                batch_size=batch_size,
-                                step=min(priority_filled, blen // 4),
-                                extrinsic_only=True,
-                            )
-                            updates_performed += 1
                         agent.update_target()
                 steps_since_update -= args.update_every
 
@@ -752,7 +759,10 @@ def rollout_offline_rl(
             if total_samples < args.learning_starts:
                 if isinstance(vec_env.single_action_space, gym.spaces.Box):
                     actions_agent = np.array(
-                        [vec_env.single_action_space.sample() for _ in range(vec_env.num_envs)],
+                        [
+                            vec_env.single_action_space.sample()
+                            for _ in range(vec_env.num_envs)
+                        ],
                         dtype=np.float32,
                     )
                 else:
@@ -764,8 +774,12 @@ def rollout_offline_rl(
             else:
                 actions_agent = agent.sample_action(obs, deterministic=False)
 
-            actions_env = _continuous_to_env_action(actions_agent, vec_env.single_action_space)
-            next_obs, rewards, terminations, truncations, infos = vec_env.step(actions_env)
+            actions_env = _continuous_to_env_action(
+                actions_agent, vec_env.single_action_space
+            )
+            next_obs, rewards, terminations, truncations, infos = vec_env.step(
+                actions_env
+            )
 
             real_next_obs = next_obs.copy()
             for idx, trunc in enumerate(truncations):
@@ -785,9 +799,14 @@ def rollout_offline_rl(
                     smooth_rhist.append(float(smooth_r))
                     ep += 1
                     writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
-                    writer.add_scalar("episode/smooth_reward", float(smooth_r), total_samples)
+                    writer.add_scalar(
+                        "episode/smooth_reward", float(smooth_r), total_samples
+                    )
 
-                    if ep % eval_every_episodes == 0 and total_samples > total_step_budget // 3:
+                    if (
+                        ep % eval_every_episodes == 0
+                        and total_samples > total_step_budget // 3
+                    ):
                         evalr = evaluate_agent(
                             agent,
                             args,
@@ -806,7 +825,10 @@ def rollout_offline_rl(
             steps_since_update += args.num_envs
 
             while steps_since_update >= args.update_every:
-                if total_samples > args.learning_starts and buffer.size() >= args.batch_size:
+                if (
+                    total_samples > args.learning_starts
+                    and buffer.size() >= args.batch_size
+                ):
                     data = buffer.sample(args.batch_size)
                     loss = agent.update(data, global_step=total_samples)
                     lhist.append(float(loss))
@@ -845,7 +867,9 @@ def main():
         buffer = build_buffer(args, vec_env, device)
 
         max_wall = args.max_wall_time if args.max_wall_time > 0 else None
-        step_override = args.total_steps_override if args.total_steps_override > 0 else None
+        step_override = (
+            args.total_steps_override if args.total_steps_override > 0 else None
+        )
 
         if args.algo == "ppo":
             results = rollout_online_rl(
