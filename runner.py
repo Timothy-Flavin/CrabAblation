@@ -10,9 +10,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
-
-from cleanrl_buffers import ReplayBuffer
-from DQN_Rainbow import EVRainbowDQN, RainbowDQN
+from runner_utils import get_device_name, plot_results, resolve_torch_device
 from environment_utils import (
     _continuous_to_env_action,
     _proxy_action_space,
@@ -20,9 +18,10 @@ from environment_utils import (
     get_env_benchmark_spec,
     make_env_thunk,
 )
-from PG_Rainbow import PPOAgent
-from runner_utils import get_device_name, plot_results, resolve_torch_device
-from SAC_Rainbow import SACAgent
+from learning_algorithms.cleanrl_buffers import ReplayBuffer
+from learning_algorithms.DQN_Rainbow import EVRainbowDQN, RainbowDQN
+from learning_algorithms.PG_Rainbow import PPOAgent
+from learning_algorithms.SAC_Rainbow import SACAgent
 
 
 def get_args():

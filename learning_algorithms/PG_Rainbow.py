@@ -15,7 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from RainbowNetworks import IQN_Network
 from RandomDistilation import RNDModel, RunningMeanStd
-from agent import Agent
+from learning_algorithms.agent import Agent
 import tyro
 
 
@@ -33,7 +33,7 @@ class Args:
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "cleanRL"
     """the wandb's project name"""
-    wandb_entity: str = None
+    wandb_entity: str | None = None
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
@@ -73,7 +73,7 @@ class Args:
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    target_kl: float = None
+    target_kl: None | float = None
     """the target KL divergence threshold"""
 
     # to be filled in runtime
@@ -117,7 +117,7 @@ class PPOAgent(Agent):
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         norm_adv: bool = True,
-        target_kl: float = None,
+        target_kl: None | float = None,
         update_epochs: int = 4,
         num_minibatches: int = 4,
         num_envs: int = 4,
@@ -172,7 +172,9 @@ class PPOAgent(Agent):
             nn.Tanh(),
             layer_init(nn.Linear(hidden1, hidden2)),
             nn.Tanh(),
-            layer_init(nn.Linear(hidden2, self.n_action_dims * self.n_action_bins), std=0.01),
+            layer_init(
+                nn.Linear(hidden2, self.n_action_dims * self.n_action_bins), std=0.01
+            ),
         )
 
         if self.distributional:
@@ -288,14 +290,14 @@ class PPOAgent(Agent):
         # pred: [B, N], target: [B] or [B, 1]
         if target.dim() == 1:
             target = target.unsqueeze(1)  # [B, 1]
-        
+
         td = target - pred  # [B, 1] - [B, N] -> [B, N]
         abs_td = torch.abs(td)
         huber = torch.where(
             abs_td <= kappa, 0.5 * td.pow(2), kappa * (abs_td - 0.5 * kappa)
         )
-        I = (td < 0).float()
-        loss = (torch.abs(taus - I) * huber).sum(dim=1).mean()
+        I_ = (td < 0).float()
+        loss = (torch.abs(taus - I_) * huber).sum(dim=1).mean()
         return loss
 
     def update(
@@ -390,30 +392,34 @@ class PPOAgent(Agent):
                     + self.gamma * next_ext_values * nextnonterminal
                     - ext_values[t]
                 )
-                
+
                 delta_int = (
                     int_rewards[t]
                     + self.gamma * next_int_values * nextnonterminal
                     - int_values[t]
                 )
-                
+
                 if self.use_gae:
                     ext_advantages[t] = lastgaelam_ext = (
                         delta_ext
-                        + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam_ext
+                        + self.gamma
+                        * self.gae_lambda
+                        * nextnonterminal
+                        * lastgaelam_ext
                     )
                     int_advantages[t] = lastgaelam_int = (
                         delta_int
-                        + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam_int
+                        + self.gamma
+                        * self.gae_lambda
+                        * nextnonterminal
+                        * lastgaelam_int
                     )
                 else:
                     ext_advantages[t] = lastgaelam_ext = (
-                        delta_ext
-                        + self.gamma * nextnonterminal * lastgaelam_ext
+                        delta_ext + self.gamma * nextnonterminal * lastgaelam_ext
                     )
                     int_advantages[t] = lastgaelam_int = (
-                        delta_int
-                        + self.gamma * nextnonterminal * lastgaelam_int
+                        delta_int + self.gamma * nextnonterminal * lastgaelam_int
                     )
 
             ext_returns = ext_advantages + ext_values
@@ -556,10 +562,10 @@ class PPOAgent(Agent):
                 )
                 self.int_optim.step()
 
-                pg_loss_total = pg_loss
-                v_loss_ext_total = v_loss_ext
-                v_loss_int_total = v_loss_int
-                entropy_loss_total = entropy_loss
+                pg_loss_total = pg_loss_total + pg_loss
+                v_loss_ext_total = v_loss_ext_total + v_loss_ext
+                v_loss_int_total = v_loss_int_total + v_loss_int
+                entropy_loss_total = entropy_loss_total + entropy_loss
 
             if self.target_kl is not None and approx_kl > self.target_kl:
                 break
@@ -624,7 +630,7 @@ class PPOAgent(Agent):
                 f"{self.tb_prefix}/charts/Beta", float(self.Beta), self.step
             )
 
-        return loss.item()
+        return pg_loss_total.item()
 
 
 if __name__ == "__main__":
@@ -633,18 +639,6 @@ if __name__ == "__main__":
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    if args.track:
-        import wandb
-
-        wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
-            sync_tensorboard=True,
-            config=vars(args),
-            name=run_name,
-            monitor_gym=True,
-            save_code=True,
-        )
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -696,11 +690,19 @@ if __name__ == "__main__":
     # agent.attach_tensorboard(writer)
 
     # ALGO Logic: Storage setup
+    assert (
+        envs.single_observation_space is not None
+        and envs.single_observation_space.shape is not None
+    )
+    assert (
+        envs.single_action_space is not None
+        and envs.single_action_space.shape is not None
+    )
     obs = torch.zeros(
-        (args.num_steps, args.num_envs) + envs.single_observation_space.shape
+        [args.num_steps, args.num_envs] + list(envs.single_observation_space.shape)
     ).to(device)
     actions = torch.zeros(
-        (args.num_steps, args.num_envs) + envs.single_action_space.shape
+        [args.num_steps, args.num_envs] + list(envs.single_action_space.shape)
     ).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)

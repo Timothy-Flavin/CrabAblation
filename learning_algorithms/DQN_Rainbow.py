@@ -4,7 +4,7 @@ from typing import Optional
 from torch.utils.tensorboard import SummaryWriter
 from RandomDistilation import RNDModel, RunningMeanStd
 from RainbowNetworks import EV_Q_Network, IQN_Network
-from agent import Agent
+from learning_algorithms.agent import Agent
 
 
 class RainbowDQN(Agent):
@@ -222,9 +222,11 @@ class RainbowDQN(Agent):
         else:
             rnd_errors, rnd_loss = self._update_RND(b_next_obs)
         b_obs = obs[idx]
-        
+
         # Normalize only the sliced batch to prevent O(N) slowdown over entire buffer
-        b_r = self.ext_rms.normalize(r[idx], clip_range=self.ext_r_clamp).to(device=obs.device)
+        b_r = self.ext_rms.normalize(r[idx], clip_range=self.ext_r_clamp).to(
+            device=obs.device
+        )
         b_term = term[idx]
         b_actions = a[idx]
 
@@ -325,7 +327,9 @@ class RainbowDQN(Agent):
 
             if self.Thompson:
                 eps_val = 1e-6
-                rand_vals = torch.clamp(torch.rand_like(q_comb), min=eps_val, max=1.0-eps_val)
+                rand_vals = torch.clamp(
+                    torch.rand_like(q_comb), min=eps_val, max=1.0 - eps_val
+                )
                 g = -torch.log(-torch.log(rand_vals))
                 q_comb = q_comb + g
 
@@ -415,7 +419,9 @@ class RainbowDQN(Agent):
             )  # [B,D,Bins]
             if self.soft or self.munchausen:
                 # Soft reward for future policy entropy
-                logpi_next = torch.clamp(torch.log_softmax(online_next_q_norm / self.tau, dim=-1), min=-1e8)
+                logpi_next = torch.clamp(
+                    torch.log_softmax(online_next_q_norm / self.tau, dim=-1), min=-1e8
+                )
                 if torch.isnan(logpi_next).any():
                     print("NaN detected in logpi_next!")
                 pi_next = torch.exp(logpi_next)  # [B,D,Bins]
@@ -479,7 +485,9 @@ class RainbowDQN(Agent):
             if self.munchausen or self.soft:
                 if logpi is None:
                     qm = quantiles_norm.mean(dim=1)
-                    logpi = torch.clamp(torch.log_softmax(qm / self.tau, dim=-1), min=-1e8)
+                    logpi = torch.clamp(
+                        torch.log_softmax(qm / self.tau, dim=-1), min=-1e8
+                    )
 
                 if self.munchausen:
                     with torch.no_grad():
@@ -779,7 +787,7 @@ class EVRainbowDQN(Agent):
             batch_size = len(r)
         else:
             idx = torch.randint(low=0, high=step, size=(batch_size,))
-            
+
         b_obs = obs[idx]
         # Normalize only the sliced batch
         b_r = self.ext_rms.normalize(r[idx], self.ext_r_clip).to(
@@ -820,7 +828,9 @@ class EVRainbowDQN(Agent):
         # logpi and pi or calculate then later without grad if ent
         # reg is not being used
         if self.ent_reg_coef > 0.0:
-            logpi_now = torch.clamp(torch.log_softmax(q_now / self.tau, dim=-1), min=-1e8)
+            logpi_now = torch.clamp(
+                torch.log_softmax(q_now / self.tau, dim=-1), min=-1e8
+            )
             if torch.isnan(logpi_now).any():
                 print("NaN detected in logpi_now!")
             pi_now = torch.exp(logpi_now)
@@ -839,7 +849,9 @@ class EVRainbowDQN(Agent):
             if self.munchausen:
                 # only need this right now for ln(pi(a)) for munchausen loss
                 if logpi_now is None:
-                    logpi_now = torch.clamp(torch.log_softmax(q_now / self.tau, dim=-1), min=-1e8)
+                    logpi_now = torch.clamp(
+                        torch.log_softmax(q_now / self.tau, dim=-1), min=-1e8
+                    )
 
                 selected_logpi = torch.gather(logpi_now, -1, action_idx_now).squeeze(
                     -1
@@ -851,7 +863,9 @@ class EVRainbowDQN(Agent):
 
             if self.munchausen or self.soft:
                 # Need next probs for next entropy if soft
-                logpi_next = torch.clamp(torch.log_softmax(q_next / self.tau, dim=-1), min=-1e8)
+                logpi_next = torch.clamp(
+                    torch.log_softmax(q_next / self.tau, dim=-1), min=-1e8
+                )
                 pi_next = torch.exp(logpi_next)
                 next_head_vals = (pi_next * (self.alpha * logpi_next + q_next)).sum(-1)
             else:
