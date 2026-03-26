@@ -4,9 +4,9 @@ import random
 from typing import Callable, Optional
 
 # from torch.utils.tensorboard import SummaryWriter
-from MixedObservationEncoder import infer_encoder_out_dim
-from RandomDistilation import RNDModel, RunningMeanStd
-from RainbowNetworks import EV_Q_Network, IQN_Network
+from learning_algorithms.MixedObservationEncoder import infer_encoder_out_dim
+from learning_algorithms.RandomDistilation import RNDModel, RunningMeanStd
+from learning_algorithms.RainbowNetworks import EV_Q_Network, IQN_Network
 from learning_algorithms.agent import Agent
 
 

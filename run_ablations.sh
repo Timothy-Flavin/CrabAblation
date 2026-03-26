@@ -5,7 +5,7 @@ set -euo pipefail
 # Default parameters
 ALGOS=("dqn" "ppo" "sac")
 ENVS=("mujoco" "cartpole" "minigrid")
-ABLATIONS=(0 1 2 3 4 5 6)
+ABLATIONS=(0 1 2 3 4 5)
 RUNS=3
 DEVICE="cpu"
 DEVICE_NAME=$(hostname)

@@ -155,7 +155,9 @@ def create_vec_env(args, num_envs: int | None = None):
     return gym.vector.SyncVectorEnv(env_fns)
 
 
-def _encoder_factory_from_vec_env(args, vec_env) -> Optional[Callable[[], torch.nn.Module]]:
+def _encoder_factory_from_vec_env(
+    args, vec_env
+) -> Optional[Callable[[], torch.nn.Module]]:
     env_id = getattr(args, "env_id", args.env_name)
     if env_id != "hide-and-seek-engine" and args.env_name != "hide-and-seek-engine":
         return None
@@ -664,6 +666,12 @@ def rollout_offline_rl(
     obs, _ = vec_env.reset()
     total_step_budget = _compute_rollout_budget(args, total_steps_override)
 
+    time_taken_modular = {
+        "action_sample": 0.0,
+        "env_step": 0.0,
+        "update_agent": 0.0,
+        "eval_agent": 0.0,
+    }
     rhist = []
     smooth_rhist = []
     lhist = []
@@ -735,15 +743,20 @@ def rollout_offline_rl(
                 1.0 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05
             )
             tobs = torch.from_numpy(obs).to(device).float()
+            t_ = time.time()
             actions = agent.sample_action(
                 tobs,
                 eps=eps_current,
                 step=total_samples,
                 n_steps=total_step_budget,
             )
+            time_taken_modular["action_sample"] += time.time() - t_
             step_action = dqn_action_transform.transform_action(actions)
 
+            t_ = time.time()
             next_obs, r, term, trunc, _ = vec_env.step(step_action)
+            time_taken_modular["env_step"] += time.time() - t_
+
             r_mult = r * 10.0
 
             if hasattr(agent, "update_running_stats"):
@@ -790,6 +803,7 @@ def rollout_offline_rl(
                         "episode/smooth_reward", float(smooth_r), total_samples
                     )
 
+                    t_ = time.time()
                     if ep % 50 == 0 and total_samples > total_step_budget // 2:
                         evalr = 0.0
                         for _ in range(5):
@@ -804,6 +818,7 @@ def rollout_offline_rl(
                         writer.add_scalar(
                             "eval/reward", float(eval_hist[-1]), total_samples
                         )
+                    time_taken_modular["eval_agent"] += time.time() - t_
 
                     ep_len[env_i] = 0
                     r_ep[env_i] = 0.0
@@ -811,6 +826,7 @@ def rollout_offline_rl(
             obs = next_obs
             steps_since_update += args.num_envs
 
+            t_ = time.time()
             while steps_since_update >= args.update_every:
                 if total_samples > batch_size:
                     if total_samples < rnd_burn_in:
@@ -838,6 +854,7 @@ def rollout_offline_rl(
                         updates_performed += 1
                         agent.update_target()
                 steps_since_update -= args.update_every
+            time_taken_modular["update_agent"] += time.time() - t_
 
     else:
         if buffer is None:
@@ -960,6 +977,7 @@ def rollout_offline_rl(
         "updates_per_sec": float(updates_per_sec),
         "timed_out": bool(timed_out),
         "train_time": float(train_time),
+        "time_taken_modular": time_taken_modular,
     }
 
 
@@ -997,6 +1015,8 @@ def main():
                 max_wall_time_seconds=max_wall,
                 total_steps_override=step_override,
             )
+            if "time_taken_modular" in results:
+                print(f"Time taken modular {results['time_taken_modular']}")
 
         plot_results(results, args, args.algo)
     finally:

@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 from typing import Optional
-from PopArtLayer import PopArtLayer
-from PopArtDuelingLayer import PopArtDuelingHead
-from PopArtIQNLayer import PopArtIQNLayer
-from PopArtDuelingIQNLayer import PopArtDuelingIQNLayer
+from learning_algorithms.PopArtLayer import PopArtLayer
+from learning_algorithms.PopArtDuelingLayer import PopArtDuelingHead
+from learning_algorithms.PopArtIQNLayer import PopArtIQNLayer
+from learning_algorithms.PopArtDuelingIQNLayer import PopArtDuelingIQNLayer
 
 
 class EV_Q_Network(nn.Module):
@@ -131,7 +131,9 @@ class IQN_Network(nn.Module):
         if encoder is None:
             base = [nn.Linear(input_dim, hidden_layer_sizes[0])]
             for li in range(len(hidden_layer_sizes) - 1):
-                base.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
+                base.append(
+                    nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1])
+                )
             self.base_layers = nn.ModuleList(base)
             self.encoder = None
             last_hidden = hidden_layer_sizes[-1]

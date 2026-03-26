@@ -9,6 +9,7 @@ try:
 except Exception:
     minigrid = None
 
+
 def get_env_benchmark_spec(env_name: str):
     """Return shared benchmark model/action configuration by environment family."""
     if env_name == "hide-and-seek-engine":
@@ -161,23 +162,36 @@ def make_env_thunk(
 
 
 def _extract_mixed_observation_space_parts(observation_space):
-    if isinstance(observation_space, gym.spaces.Tuple) and len(observation_space.spaces) >= 2:
+    if (
+        isinstance(observation_space, gym.spaces.Tuple)
+        and len(observation_space.spaces) >= 2
+    ):
         first = observation_space.spaces[0]
         second = observation_space.spaces[1]
         if isinstance(first, gym.spaces.Box) and isinstance(second, gym.spaces.Box):
             return first, second
 
     if isinstance(observation_space, gym.spaces.Dict):
-        if "spatial" in observation_space.spaces and "internal" in observation_space.spaces:
+        if (
+            "spatial" in observation_space.spaces
+            and "internal" in observation_space.spaces
+        ):
             spatial = observation_space.spaces["spatial"]
             vector = observation_space.spaces["internal"]
-            if isinstance(spatial, gym.spaces.Box) and isinstance(vector, gym.spaces.Box):
+            if isinstance(spatial, gym.spaces.Box) and isinstance(
+                vector, gym.spaces.Box
+            ):
                 return spatial, vector
 
-        if "spatial" in observation_space.spaces and "vector" in observation_space.spaces:
+        if (
+            "spatial" in observation_space.spaces
+            and "vector" in observation_space.spaces
+        ):
             spatial = observation_space.spaces["spatial"]
             vector = observation_space.spaces["vector"]
-            if isinstance(spatial, gym.spaces.Box) and isinstance(vector, gym.spaces.Box):
+            if isinstance(spatial, gym.spaces.Box) and isinstance(
+                vector, gym.spaces.Box
+            ):
                 return spatial, vector
 
         box_items = [
@@ -195,7 +209,9 @@ def _extract_mixed_observation_space_parts(observation_space):
 
 
 def extract_mixed_observation_shapes(observation_space):
-    spatial_space, vector_space = _extract_mixed_observation_space_parts(observation_space)
+    spatial_space, vector_space = _extract_mixed_observation_space_parts(
+        observation_space
+    )
     spatial_shape = tuple(int(v) for v in spatial_space.shape)
     vector_dim = int(np.prod(vector_space.shape))
     return spatial_shape, vector_dim
@@ -273,7 +289,9 @@ def _mixed_action_space_parts(action_space):
             radio_key, radio_space = discrete_items[0]
             return move_space, radio_space, ("dict", move_key, radio_key)
 
-    raise ValueError("Expected hybrid action space (Tuple(Box, Discrete) or Dict(move, radio))")
+    raise ValueError(
+        "Expected hybrid action space (Tuple(Box, Discrete) or Dict(move, radio))"
+    )
 
 
 def _format_mixed_action(move_values, radio_value: int, structure):
@@ -318,7 +336,9 @@ def mixed_discrete_action_size(action_space, bins_per_dim: int = 3) -> int:
     return int((bins_per_dim**box_dim) * int(discrete_space.n))
 
 
-def map_discrete_to_mixed_action(action_index: int, action_space, bins_per_dim: int = 3):
+def map_discrete_to_mixed_action(
+    action_index: int, action_space, bins_per_dim: int = 3
+):
     box_space, discrete_space, structure = _mixed_action_space_parts(action_space)
     total_actions = mixed_discrete_action_size(action_space, bins_per_dim=bins_per_dim)
     idx = int(np.clip(int(action_index), 0, total_actions - 1))
@@ -340,7 +360,9 @@ def map_discrete_to_mixed_action(action_index: int, action_space, bins_per_dim: 
 
     low = np.asarray(box_space.low, dtype=np.float32).reshape(-1)
     high = np.asarray(box_space.high, dtype=np.float32).reshape(-1)
-    box_values = (low + ratio * (high - low)).reshape(box_space.shape).astype(np.float32)
+    box_values = (
+        (low + ratio * (high - low)).reshape(box_space.shape).astype(np.float32)
+    )
     return _format_mixed_action(box_values, int(discrete_value), structure)
 
 
@@ -394,13 +416,17 @@ def _normalize_parallel_reset_output(reset_out):
 class PettingZooParallelVecAdapter:
     """Adapter exposing a PettingZoo parallel env with a vec-env-like API."""
 
-    def __init__(self, parallel_env, action_mode: str = "discrete", bins_per_dim: int = 3):
+    def __init__(
+        self, parallel_env, action_mode: str = "discrete", bins_per_dim: int = 3
+    ):
         self.env = parallel_env
         self.agent_ids = list(getattr(self.env, "possible_agents", []))
         if not self.agent_ids:
             self.agent_ids = list(getattr(self.env, "agents", []))
         if not self.agent_ids:
-            raise ValueError("Parallel environment must expose possible_agents or agents")
+            raise ValueError(
+                "Parallel environment must expose possible_agents or agents"
+            )
 
         self.num_envs = len(self.agent_ids)
         self.action_mode = action_mode
@@ -422,7 +448,9 @@ class PettingZooParallelVecAdapter:
         )
 
         if self.action_mode == "continuous":
-            box_space, discrete_space, _ = _mixed_action_space_parts(self.raw_action_space)
+            box_space, discrete_space, _ = _mixed_action_space_parts(
+                self.raw_action_space
+            )
             low = np.concatenate(
                 [
                     np.asarray(box_space.low, dtype=np.float32).reshape(-1),
@@ -484,9 +512,13 @@ class PettingZooParallelVecAdapter:
             actions_arr = actions_arr.reshape(1)
         action_dict = {}
         for i, aid in enumerate(self.agent_ids):
-            action_dict[aid] = self._raw_action_transform.transform_action(actions_arr[i])
+            action_dict[aid] = self._raw_action_transform.transform_action(
+                actions_arr[i]
+            )
 
-        obs_dict, rew_dict, term_dict, trunc_dict, info_dict = self.env.step(action_dict)
+        obs_dict, rew_dict, term_dict, trunc_dict, info_dict = self.env.step(
+            action_dict
+        )
 
         obs_batch = np.stack(
             [self._flatten_obs_for_agent(obs_dict, aid) for aid in self.agent_ids],
@@ -517,19 +549,16 @@ class PettingZooParallelVecAdapter:
 
 
 def _load_hide_and_seek_parallel_env():
-    module = importlib.import_module("hide_and_seek_engine")
+    import os
+    from hide_and_seek_engine.env_wrapper import SARParallelPettingZooEnv
 
-    if hasattr(module, "parallel_env"):
-        return module.parallel_env()
-    if hasattr(module, "make_parallel_env"):
-        return module.make_parallel_env()
-    if hasattr(module, "env"):
-        candidate = module.env
-        if callable(candidate):
-            return candidate(parallel=True)
+    level_dir = "./test_level"
 
-    raise AttributeError(
-        "hide_and_seek_engine must expose parallel_env(), make_parallel_env(), or env(parallel=True)."
+    return SARParallelPettingZooEnv(
+        map_png=os.path.join(level_dir, "level.png"),
+        tiles_json=os.path.join(level_dir, "tiles.json"),
+        agents_json=os.path.join(level_dir, "agents.json"),
+        survivors_json=os.path.join(level_dir, "survivors.json"),
     )
 
 
@@ -647,7 +676,9 @@ class ActionTransformHandler:
                 return np.clip(bins, 0, self.action_space.n - 1)
 
             x = float(np.clip(np.asarray(arr).reshape(-1)[0], 0.0, 1.0 - 1e-8))
-            return int(np.clip(int(x * self.action_space.n), 0, self.action_space.n - 1))
+            return int(
+                np.clip(int(x * self.action_space.n), 0, self.action_space.n - 1)
+            )
 
         if isinstance(self.action_space, gym.spaces.MultiDiscrete):
             nvec = np.asarray(self.action_space.nvec, dtype=np.int64)
@@ -752,4 +783,3 @@ def _proxy_action_space(action_space):
             dtype=np.float32,
         )
     raise NotImplementedError(f"Unsupported action space: {action_space}")
-

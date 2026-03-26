@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 :: Default parameters
 set ALGOS=dqn ppo sac
 set ENVS=mujoco cartpole minigrid
-set ABLATIONS=0 1 2 3 4 5 6
+set ABLATIONS=0 1 2 3 4 5
 set RUNS=3
 set DEVICE=cpu
 set DEVICE_NAME=%COMPUTERNAME%

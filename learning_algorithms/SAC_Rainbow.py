@@ -14,10 +14,10 @@ import torch.optim as optim
 import tyro
 from torch.utils.tensorboard import SummaryWriter
 
-from MixedObservationEncoder import infer_encoder_out_dim
+from learning_algorithms.MixedObservationEncoder import infer_encoder_out_dim
 from learning_algorithms.cleanrl_buffers import ReplayBuffer
 from learning_algorithms.agent import Agent
-from RainbowNetworks import EV_Q_Network, IQN_Network
+from learning_algorithms.RainbowNetworks import EV_Q_Network, IQN_Network
 from environment_utils import make_env_thunk
 
 
@@ -101,7 +101,9 @@ class ObsActEncoder(nn.Module):
         self.obs_encoder = obs_encoder
         self.obs_dim = int(obs_dim)
         self.act_dim = int(act_dim)
-        self.output_dim = infer_encoder_out_dim(obs_encoder, self.obs_dim) + self.act_dim
+        self.output_dim = (
+            infer_encoder_out_dim(obs_encoder, self.obs_dim) + self.act_dim
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         obs = x[..., : self.obs_dim]
@@ -261,7 +263,9 @@ class SACAgent(Agent):
             if encoder_factory is None:
                 return {}
             obs_encoder = encoder_factory()
-            obs_act_encoder = ObsActEncoder(obs_encoder, obs_dim=obs_dim, act_dim=act_dim)
+            obs_act_encoder = ObsActEncoder(
+                obs_encoder, obs_dim=obs_dim, act_dim=act_dim
+            )
             return {
                 "encoder": obs_act_encoder,
                 "encoder_out_dim": int(obs_act_encoder.output_dim),

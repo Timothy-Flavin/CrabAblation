@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Optional
-from MixedObservationEncoder import infer_encoder_out_dim
+from learning_algorithms.MixedObservationEncoder import infer_encoder_out_dim
 
 
 class RNDModel(nn.Module):
@@ -38,9 +38,7 @@ class RNDModel(nn.Module):
                 nn.Linear(256, output_dim),
             )
         else:
-            predictor_out_dim = infer_encoder_out_dim(
-                encoder_predictor, int(input_dim)
-            )
+            predictor_out_dim = infer_encoder_out_dim(encoder_predictor, int(input_dim))
             self.predictor = nn.Sequential(
                 encoder_predictor,
                 nn.ReLU(),

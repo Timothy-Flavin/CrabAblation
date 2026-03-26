@@ -13,9 +13,9 @@ import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
-from MixedObservationEncoder import infer_encoder_out_dim
-from RainbowNetworks import IQN_Network
-from RandomDistilation import RNDModel, RunningMeanStd
+from learning_algorithms.MixedObservationEncoder import infer_encoder_out_dim
+from learning_algorithms.RainbowNetworks import IQN_Network
+from learning_algorithms.RandomDistilation import RNDModel, RunningMeanStd
 from learning_algorithms.agent import Agent
 import tyro
 
@@ -176,7 +176,8 @@ class PPOAgent(Agent):
                 layer_init(nn.Linear(hidden1, hidden2)),
                 nn.Tanh(),
                 layer_init(
-                    nn.Linear(hidden2, self.n_action_dims * self.n_action_bins), std=0.01
+                    nn.Linear(hidden2, self.n_action_dims * self.n_action_bins),
+                    std=0.01,
                 ),
             )
         else:
@@ -198,11 +199,15 @@ class PPOAgent(Agent):
                 int_encoder = encoder_factory()
                 ext_critic_kwargs = {
                     "encoder": ext_encoder,
-                    "encoder_out_dim": infer_encoder_out_dim(ext_encoder, int(input_dim)),
+                    "encoder_out_dim": infer_encoder_out_dim(
+                        ext_encoder, int(input_dim)
+                    ),
                 }
                 int_critic_kwargs = {
                     "encoder": int_encoder,
-                    "encoder_out_dim": infer_encoder_out_dim(int_encoder, int(input_dim)),
+                    "encoder_out_dim": infer_encoder_out_dim(
+                        int_encoder, int(input_dim)
+                    ),
                 }
 
             self.ext_critic = IQN_Network(
