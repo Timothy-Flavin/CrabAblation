@@ -196,9 +196,9 @@ class RainbowDQN(Agent):
             abs_td <= kappa, 0.5 * td.pow(2), kappa * (abs_td - 0.5 * kappa)
         )
         # Indicator for td < 0 (for quantile weighting)
-        I = (td < 0).float()
+        I_ = (td < 0).float()
         taus_expanded = taus.unsqueeze(2)  # [B,N,1]
-        loss = (torch.abs(taus_expanded - I) * huber).mean()
+        loss = (torch.abs(taus_expanded - I_) * huber).mean()
         return loss
 
     def update(

@@ -13,8 +13,8 @@ import torch.optim as optim
 import tyro
 from torch.utils.tensorboard import SummaryWriter
 
-from cleanrl_buffers import ReplayBuffer
-from agent import Agent
+from learning_algorithms.cleanrl_buffers import ReplayBuffer
+from learning_algorithms.agent import Agent
 from RainbowNetworks import EV_Q_Network, IQN_Network
 from environment_utils import make_env_thunk
 
@@ -33,7 +33,7 @@ class Args:
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "cleanRL"
     """the wandb's project name"""
-    wandb_entity: str = None
+    wandb_entity: str | None = None
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
@@ -53,7 +53,7 @@ class Args:
     """target smoothing coefficient (default: 0.005)"""
     batch_size: int = 256
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 5e3
+    learning_starts: int = int(5e3)
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -86,13 +86,21 @@ class Args:
     random_start_steps: int = 0
     """max random steps sampled in [0, n] after each reset to desynchronize parallel envs"""
 
+
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
 
 
 def hidden_layer_sizes_for_env_id(env_id: str) -> tuple[int, int]:
     env = env_id.lower()
-    if "mujoco" in env or "cheetah" in env or "hopper" in env or "walker" in env or "ant" in env or "humanoid" in env:
+    if (
+        "mujoco" in env
+        or "cheetah" in env
+        or "hopper" in env
+        or "walker" in env
+        or "ant" in env
+        or "humanoid" in env
+    ):
         return (128, 128)
     if "cartpole" in env:
         return (32, 32)
@@ -131,7 +139,9 @@ class Actor(nn.Module):
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
         log_std = torch.tanh(log_std)
-        log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)  # From SpinUp / Denis Yarats
+        log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (
+            log_std + 1
+        )  # From SpinUp / Denis Yarats
 
         return mean, log_std
 
@@ -141,12 +151,14 @@ class Actor(nn.Module):
         normal = torch.distributions.Normal(mean, std)
         x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
         y_t = torch.tanh(x_t)
-        action = y_t * self.action_scale + self.action_bias
+        action = y_t * self.action_scale + self.action_bias  # type:ignore
         log_prob = normal.log_prob(x_t)
         # Enforcing Action Bound
-        log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
+        log_prob -= torch.log(
+            self.action_scale * (1 - y_t.pow(2)) + 1e-6  # type:ignore
+        )
         log_prob = log_prob.sum(1, keepdim=True)
-        mean = torch.tanh(mean) * self.action_scale + self.action_bias
+        mean = torch.tanh(mean) * self.action_scale + self.action_bias  # type:ignore
         return action, log_prob, mean
 
 
@@ -201,10 +213,10 @@ class SACAgent(Agent):
             dueling=self.dueling,
             popart=self.popart,
         )
-        self.qf1 = CriticClass(**critic_kwargs)
-        self.qf2 = CriticClass(**critic_kwargs)
-        self.qf1_target = CriticClass(**critic_kwargs)
-        self.qf2_target = CriticClass(**critic_kwargs)
+        self.qf1 = CriticClass(**critic_kwargs)  # type:ignore
+        self.qf2 = CriticClass(**critic_kwargs)  # type:ignore
+        self.qf1_target = CriticClass(**critic_kwargs)  # type:ignore
+        self.qf2_target = CriticClass(**critic_kwargs)  # type:ignore
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
 
@@ -238,7 +250,9 @@ class SACAgent(Agent):
         if self.autotune and self.log_alpha is not None:
             self.log_alpha = nn.Parameter(self.log_alpha.detach().to(device))
             self.target_entropy = torch.tensor(
-                float(self.target_entropy), dtype=torch.float32, device=device
+                float(self.target_entropy),  # type:ignore
+                dtype=torch.float32,
+                device=device,
             )
             self.alpha = self.log_alpha.exp().item()
             q_lr = self.q_optimizer.param_groups[0]["lr"]
@@ -248,7 +262,9 @@ class SACAgent(Agent):
     @torch.no_grad()
     def sample_action(self, obs, deterministic: bool = False):
         if isinstance(obs, np.ndarray):
-            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.actor.fc1.weight.device)
+            obs_t = torch.as_tensor(
+                obs, dtype=torch.float32, device=self.actor.fc1.weight.device
+            )
         else:
             obs_t = obs.to(device=self.actor.fc1.weight.device, dtype=torch.float32)
 
@@ -272,11 +288,15 @@ class SACAgent(Agent):
     def update_target(self):
         if not self.delayed_critics:
             return
-        for param, target_param in zip(self.qf1.parameters(), self.qf1_target.parameters()):
+        for param, target_param in zip(
+            self.qf1.parameters(), self.qf1_target.parameters()
+        ):
             target_param.data.copy_(
                 self.tau * param.data + (1 - self.tau) * target_param.data
             )
-        for param, target_param in zip(self.qf2.parameters(), self.qf2_target.parameters()):
+        for param, target_param in zip(
+            self.qf2.parameters(), self.qf2_target.parameters()
+        ):
             target_param.data.copy_(
                 self.tau * param.data + (1 - self.tau) * target_param.data
             )
@@ -296,18 +316,26 @@ class SACAgent(Agent):
         huber = torch.where(
             abs_td <= kappa, 0.5 * td.pow(2), kappa * (abs_td - 0.5 * kappa)
         )
-        I = (td < 0).float()
+        I_ = (td < 0).float()
         taus_expanded = taus.unsqueeze(2)
-        return (torch.abs(taus_expanded - I) * huber).mean()
+        return (torch.abs(taus_expanded - I_) * huber).mean()
 
     def _critic_input(self, obs: torch.Tensor, act: torch.Tensor):
         return torch.cat([obs, act.to(dtype=obs.dtype)], dim=1)
 
-    def _critic_scalar_value(self, critic, critic_input: torch.Tensor, normalized: bool = False):
+    def _critic_scalar_value(
+        self, critic, critic_input: torch.Tensor, normalized: bool = False
+    ):
         q = critic(critic_input, normalized=normalized)
         return q.view(-1)
 
-    def _critic_quantiles(self, critic, critic_input: torch.Tensor, taus: torch.Tensor, normalized: bool = False):
+    def _critic_quantiles(
+        self,
+        critic,
+        critic_input: torch.Tensor,
+        taus: torch.Tensor,
+        normalized: bool = False,
+    ):
         q = critic(critic_input, taus, normalized=normalized)
         return q.view(q.shape[0], q.shape[1])
 
@@ -335,12 +363,13 @@ class SACAgent(Agent):
                 qf2_next_quantiles = self._critic_quantiles(
                     target_qf2, next_critic_input, target_taus, normalized=False
                 )
-                min_qf_next_quantiles = torch.min(qf1_next_quantiles, qf2_next_quantiles)
-                next_q_quantiles = (
-                    data.rewards.flatten().unsqueeze(1)
-                    + (1 - data.dones.flatten()).unsqueeze(1)
-                    * self.gamma
-                    * (min_qf_next_quantiles - self.alpha * next_state_log_pi)
+                min_qf_next_quantiles = torch.min(
+                    qf1_next_quantiles, qf2_next_quantiles
+                )
+                next_q_quantiles = data.rewards.flatten().unsqueeze(1) + (
+                    1 - data.dones.flatten()
+                ).unsqueeze(1) * self.gamma * (
+                    min_qf_next_quantiles - self.alpha * next_state_log_pi
                 )
             else:
                 qf1_next_target = self._critic_scalar_value(
@@ -350,7 +379,9 @@ class SACAgent(Agent):
                     target_qf2, next_critic_input, normalized=False
                 )
                 min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
-                next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * self.gamma * (
+                next_q_value = data.rewards.flatten() + (
+                    1 - data.dones.flatten()
+                ) * self.gamma * (
                     min_qf_next_target - self.alpha * next_state_log_pi.view(-1)
                 )
 
@@ -360,10 +391,14 @@ class SACAgent(Agent):
                 critic_input.shape[0], self.n_quantiles, critic_input.device
             )
             if self.popart:
-                self.qf1.output_layer.update_stats(next_q_quantiles)
-                self.qf2.output_layer.update_stats(next_q_quantiles)
-                target_quantiles_1 = self.qf1.output_layer.normalize(next_q_quantiles)
-                target_quantiles_2 = self.qf2.output_layer.normalize(next_q_quantiles)
+                self.qf1.output_layer.update_stats(next_q_quantiles)  # type:ignore
+                self.qf2.output_layer.update_stats(next_q_quantiles)  # type:ignore
+                target_quantiles_1 = self.qf1.output_layer.normalize(
+                    next_q_quantiles  # type:ignore
+                )
+                target_quantiles_2 = self.qf2.output_layer.normalize(
+                    next_q_quantiles  # type:ignore
+                )
                 qf1_quantiles = self._critic_quantiles(
                     self.qf1, critic_input, taus, normalized=True
                 )
@@ -371,8 +406,8 @@ class SACAgent(Agent):
                     self.qf2, critic_input, taus, normalized=True
                 )
             else:
-                target_quantiles_1 = next_q_quantiles
-                target_quantiles_2 = next_q_quantiles
+                target_quantiles_1 = next_q_quantiles  # type:ignore
+                target_quantiles_2 = next_q_quantiles  # type:ignore
                 qf1_quantiles = self._critic_quantiles(
                     self.qf1, critic_input, taus, normalized=False
                 )
@@ -389,11 +424,15 @@ class SACAgent(Agent):
             qf2_a_values = qf2_quantiles.mean(dim=1)
         else:
             if self.popart:
-                target_for_stats = next_q_value.unsqueeze(1)
+                target_for_stats = next_q_value.unsqueeze(1)  # type:ignore
                 self.qf1.output_layer.update_stats(target_for_stats)
                 self.qf2.output_layer.update_stats(target_for_stats)
-                next_q_value_norm_1 = self.qf1.output_layer.normalize(target_for_stats).view(-1)
-                next_q_value_norm_2 = self.qf2.output_layer.normalize(target_for_stats).view(-1)
+                next_q_value_norm_1 = self.qf1.output_layer.normalize(
+                    target_for_stats
+                ).view(-1)
+                next_q_value_norm_2 = self.qf2.output_layer.normalize(
+                    target_for_stats
+                ).view(-1)
                 qf1_a_values = self._critic_scalar_value(
                     self.qf1, critic_input, normalized=True
                 )
@@ -409,8 +448,8 @@ class SACAgent(Agent):
                 qf2_a_values = self._critic_scalar_value(
                     self.qf2, critic_input, normalized=False
                 )
-                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-                qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
+                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)  # type:ignore
+                qf2_loss = F.mse_loss(qf2_a_values, next_q_value)  # type:ignore
 
         qf_loss = qf1_loss + qf2_loss
 
@@ -427,7 +466,9 @@ class SACAgent(Agent):
                 pi_critic_input = self._critic_input(data.observations, pi)
                 if self.distributional:
                     pi_taus = self._sample_taus(
-                        pi_critic_input.shape[0], self.n_quantiles, pi_critic_input.device
+                        pi_critic_input.shape[0],
+                        self.n_quantiles,
+                        pi_critic_input.device,
                     )
                     qf1_pi = self._critic_quantiles(
                         self.qf1, pi_critic_input, pi_taus, normalized=False
@@ -449,10 +490,17 @@ class SACAgent(Agent):
                 actor_loss.backward()
                 self.actor_optimizer.step()
 
-                if self.autotune and self.log_alpha is not None and self.a_optimizer is not None:
+                if (
+                    self.autotune
+                    and self.log_alpha is not None
+                    and self.a_optimizer is not None
+                ):
                     with torch.no_grad():
                         _, log_pi, _ = self.actor.get_action(data.observations)
-                    alpha_loss = (-self.log_alpha.exp() * (log_pi + self.target_entropy)).mean()
+                    alpha_loss = (
+                        -self.log_alpha.exp()
+                        * (log_pi + self.target_entropy)  # type:ignore
+                    ).mean()
 
                     self.a_optimizer.zero_grad()
                     alpha_loss.backward()
@@ -480,7 +528,9 @@ class SACAgent(Agent):
 
         if self.tb_writer is not None and global_step % 100 == 0:
             for k, v in self.last_losses.items():
-                self.tb_writer.add_scalar(f"{self.tb_prefix}/losses/{k}", v, global_step)
+                self.tb_writer.add_scalar(
+                    f"{self.tb_prefix}/losses/{k}", v, global_step
+                )
 
         return float(qf_loss.item())
 
@@ -489,22 +539,11 @@ if __name__ == "__main__":
 
     args = tyro.cli(Args)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    if args.track:
-        import wandb
-
-        wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
-            sync_tensorboard=True,
-            config=vars(args),
-            name=run_name,
-            monitor_gym=True,
-            save_code=True,
-        )
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        "|param|value|\n|-|-|\n%s"
+        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
     # TRY NOT TO MODIFY: seeding
@@ -531,7 +570,9 @@ if __name__ == "__main__":
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+    assert isinstance(
+        envs.single_action_space, gym.spaces.Box
+    ), "only continuous action space is supported"
 
     hidden_layer_sizes = hidden_layer_sizes_for_env_id(args.env_id)
     agent = SACAgent(
@@ -555,7 +596,7 @@ if __name__ == "__main__":
     ).to(device)
     agent.attach_tensorboard(writer, prefix="agent")
 
-    envs.single_observation_space.dtype = np.float32
+    envs.single_observation_space.dtype = np.float32  # type:ignore
     rb = ReplayBuffer(
         args.buffer_size,
         envs.single_observation_space,
@@ -573,7 +614,9 @@ if __name__ == "__main__":
     while env_steps < args.total_timesteps:
         # ALGO LOGIC: put action logic here
         if env_steps < args.learning_starts:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+            actions = np.array(
+                [envs.single_action_space.sample() for _ in range(envs.num_envs)]
+            )
         else:
             actions = agent.sample_action(obs)
 
@@ -584,9 +627,15 @@ if __name__ == "__main__":
         if "final_info" in infos:
             for info in infos["final_info"]:
                 if info is not None:
-                    print(f"global_step={env_steps}, episodic_return={info['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], env_steps)
-                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], env_steps)
+                    print(
+                        f"global_step={env_steps}, episodic_return={info['episode']['r']}"
+                    )
+                    writer.add_scalar(
+                        "charts/episodic_return", info["episode"]["r"], env_steps
+                    )
+                    writer.add_scalar(
+                        "charts/episodic_length", info["episode"]["l"], env_steps
+                    )
                     break
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
@@ -594,7 +643,7 @@ if __name__ == "__main__":
         for idx, trunc in enumerate(truncations):
             if trunc:
                 real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)  # type:ignore
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
@@ -612,10 +661,14 @@ if __name__ == "__main__":
 
             if env_steps % 100 == 0:
                 writer.add_scalar(
-                    "losses/qf1_values", agent.last_losses.get("qf1_values", 0.0), env_steps
+                    "losses/qf1_values",
+                    agent.last_losses.get("qf1_values", 0.0),
+                    env_steps,
                 )
                 writer.add_scalar(
-                    "losses/qf2_values", agent.last_losses.get("qf2_values", 0.0), env_steps
+                    "losses/qf2_values",
+                    agent.last_losses.get("qf2_values", 0.0),
+                    env_steps,
                 )
                 writer.add_scalar(
                     "losses/qf1_loss", agent.last_losses.get("qf1_loss", 0.0), env_steps
@@ -627,9 +680,13 @@ if __name__ == "__main__":
                     "losses/qf_loss", agent.last_losses.get("qf_loss", 0.0), env_steps
                 )
                 writer.add_scalar(
-                    "losses/actor_loss", agent.last_losses.get("actor_loss", 0.0), env_steps
+                    "losses/actor_loss",
+                    agent.last_losses.get("actor_loss", 0.0),
+                    env_steps,
                 )
-                writer.add_scalar("losses/alpha", agent.last_losses.get("alpha", 0.0), env_steps)
+                writer.add_scalar(
+                    "losses/alpha", agent.last_losses.get("alpha", 0.0), env_steps
+                )
                 print("SPS:", int(env_steps / (time.time() - start_time)))
                 writer.add_scalar(
                     "charts/SPS",
@@ -638,7 +695,9 @@ if __name__ == "__main__":
                 )
                 if args.autotune:
                     writer.add_scalar(
-                        "losses/alpha_loss", agent.last_losses.get("alpha_loss", 0.0), env_steps
+                        "losses/alpha_loss",
+                        agent.last_losses.get("alpha_loss", 0.0),
+                        env_steps,
                     )
 
     envs.close()
