@@ -1,8 +1,10 @@
 import torch
+import torch.nn as nn
 import random
-from typing import Optional
+from typing import Callable, Optional
 
 # from torch.utils.tensorboard import SummaryWriter
+from MixedObservationEncoder import infer_encoder_out_dim
 from RandomDistilation import RNDModel, RunningMeanStd
 from RainbowNetworks import EV_Q_Network, IQN_Network
 from learning_algorithms.agent import Agent
@@ -42,9 +44,25 @@ class RainbowDQN(Agent):
         Beta_half_life_steps: Optional[int] = None,
         norm_obs: bool = True,
         burn_in_updates: int = 0,
+        encoder_factory: Optional[Callable[[], nn.Module]] = None,
     ):
         super().__init__()
         self.popart = popart
+
+        def _encoder_kwargs():
+            if encoder_factory is None:
+                return {}
+            encoder = encoder_factory()
+            return {
+                "encoder": encoder,
+                "encoder_out_dim": infer_encoder_out_dim(encoder, int(input_dim)),
+            }
+
+        ext_online_kwargs = _encoder_kwargs()
+        ext_target_kwargs = _encoder_kwargs()
+        int_online_kwargs = _encoder_kwargs()
+        int_target_kwargs = _encoder_kwargs()
+
         self.ext_online = IQN_Network(
             input_dim,
             n_action_dims,
@@ -52,6 +70,7 @@ class RainbowDQN(Agent):
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
             popart=popart,
+            **ext_online_kwargs,
         ).float()
         self.ext_target = IQN_Network(
             input_dim,
@@ -60,6 +79,7 @@ class RainbowDQN(Agent):
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
             popart=popart,
+            **ext_target_kwargs,
         ).float()
         # Intrinsic Q networks (separate head trained on intrinsic rewards only)
         self.int_online = IQN_Network(
@@ -69,6 +89,7 @@ class RainbowDQN(Agent):
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
             popart=popart,
+            **int_online_kwargs,
         ).float()
         self.int_target = IQN_Network(
             input_dim,
@@ -77,6 +98,7 @@ class RainbowDQN(Agent):
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
             popart=popart,
+            **int_target_kwargs,
         ).float()
         self.beta_half_life_steps = Beta_half_life_steps
         self.burn_in_updates = burn_in_updates
@@ -111,7 +133,16 @@ class RainbowDQN(Agent):
         self.ent_reg_coef = ent_reg_coef
 
         # RND intrinsic reward model and normalizers
-        self.rnd = RNDModel(input_dim, rnd_output_dim).float()
+        rnd_target_encoder = encoder_factory() if encoder_factory is not None else None
+        rnd_predictor_encoder = (
+            encoder_factory() if encoder_factory is not None else None
+        )
+        self.rnd = RNDModel(
+            input_dim,
+            rnd_output_dim,
+            encoder_target=rnd_target_encoder,
+            encoder_predictor=rnd_predictor_encoder,
+        ).float()
         self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         # Running stats: observations and intrinsic reward magnitude
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
@@ -651,11 +682,27 @@ class EVRainbowDQN(Agent):
         burn_in_updates: int = 0,
         int_r_clip=5,
         ext_r_clip=5,
+        encoder_factory: Optional[Callable[[], nn.Module]] = None,
     ):
         super().__init__()
         self.popart = popart
         self.int_r_clip = int_r_clip
         self.ext_r_clip = ext_r_clip
+
+        def _encoder_kwargs():
+            if encoder_factory is None:
+                return {}
+            encoder = encoder_factory()
+            return {
+                "encoder": encoder,
+                "encoder_out_dim": infer_encoder_out_dim(encoder, int(input_dim)),
+            }
+
+        ext_online_kwargs = _encoder_kwargs()
+        ext_target_kwargs = _encoder_kwargs()
+        int_online_kwargs = _encoder_kwargs()
+        int_target_kwargs = _encoder_kwargs()
+
         self.ext_online = EV_Q_Network(
             input_dim,
             n_action_dims,
@@ -663,6 +710,7 @@ class EVRainbowDQN(Agent):
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
             popart=popart,
+            **ext_online_kwargs,
         ).float()
         self.ext_target = EV_Q_Network(
             input_dim,
@@ -671,6 +719,7 @@ class EVRainbowDQN(Agent):
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
             popart=popart,
+            **ext_target_kwargs,
         ).float()
         # Intrinsic Q networks (separate head trained on intrinsic rewards only)
         self.int_online = EV_Q_Network(
@@ -680,6 +729,7 @@ class EVRainbowDQN(Agent):
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
             popart=popart,
+            **int_online_kwargs,
         ).float()
         self.int_target = EV_Q_Network(
             input_dim,
@@ -688,6 +738,7 @@ class EVRainbowDQN(Agent):
             hidden_layer_sizes=hidden_layer_sizes,
             dueling=dueling,
             popart=popart,
+            **int_target_kwargs,
         ).float()
         self.norm_obs = norm_obs
         self.burn_in_updates = burn_in_updates
@@ -715,7 +766,16 @@ class EVRainbowDQN(Agent):
         self.int_optim = torch.optim.Adam(self.int_online.parameters(), lr=intrinsic_lr)
 
         # RND and running stats
-        self.rnd = RNDModel(input_dim, rnd_output_dim).float()
+        rnd_target_encoder = encoder_factory() if encoder_factory is not None else None
+        rnd_predictor_encoder = (
+            encoder_factory() if encoder_factory is not None else None
+        )
+        self.rnd = RNDModel(
+            input_dim,
+            rnd_output_dim,
+            encoder_target=rnd_target_encoder,
+            encoder_predictor=rnd_predictor_encoder,
+        ).float()
         self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
         self.int_rms = RunningMeanStd(shape=())

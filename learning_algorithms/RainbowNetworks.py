@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from typing import Optional
 from PopArtLayer import PopArtLayer
 from PopArtDuelingLayer import PopArtDuelingHead
 from PopArtIQNLayer import PopArtIQNLayer
@@ -22,6 +23,8 @@ class EV_Q_Network(nn.Module):
         hidden_layer_sizes=[128, 128],
         dueling: bool = False,
         popart: bool = False,
+        encoder: Optional[nn.Module] = None,
+        encoder_out_dim: Optional[int] = None,
     ):
         super().__init__()
         self.dueling = dueling
@@ -29,12 +32,23 @@ class EV_Q_Network(nn.Module):
         self.n_action_dims = n_action_dims
         self.n_action_bins = n_action_bins
         self.n_actions_total = n_action_dims * n_action_bins  # legacy convenience
-        layers = [nn.Linear(input_dim, hidden_layer_sizes[0])]
-        for li in range(len(hidden_layer_sizes) - 1):
-            layers.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
-        self.layers = nn.ModuleList(layers)
         self.relu = nn.ReLU()
-        last_hidden = hidden_layer_sizes[-1]
+        if encoder is None:
+            layers = [nn.Linear(input_dim, hidden_layer_sizes[0])]
+            for li in range(len(hidden_layer_sizes) - 1):
+                layers.append(
+                    nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1])
+                )
+            self.base_layers = nn.ModuleList(layers)
+            self.encoder = None
+            last_hidden = hidden_layer_sizes[-1]
+        else:
+            if encoder_out_dim is None:
+                raise ValueError("encoder_out_dim is required when encoder is provided")
+            self.encoder = encoder
+            self.base_layers = None
+            last_hidden = int(encoder_out_dim)
+
         if self.dueling:
             if self.popart:
                 self.output_layer = PopArtDuelingHead(last_hidden, self.n_actions_total)
@@ -50,9 +64,13 @@ class EV_Q_Network(nn.Module):
                 self.out_layer = nn.Linear(last_hidden, self.n_actions_total)
 
     def forward(self, x: torch.Tensor, normalized: bool = False) -> torch.Tensor:
-        h = x
-        for layer in self.layers:
-            h = self.relu(layer(h))
+        if self.encoder is not None:
+            h = self.encoder(x)
+        else:
+            h = x
+            assert self.base_layers is not None
+            for layer in self.base_layers:
+                h = self.relu(layer(h))
 
         if self.popart:
             out = self.output_layer(h, normalized=normalized)
@@ -99,6 +117,8 @@ class IQN_Network(nn.Module):
         n_cosines: int = 64,
         dueling: bool = False,
         popart: bool = False,
+        encoder: Optional[nn.Module] = None,
+        encoder_out_dim: Optional[int] = None,
     ):
         super().__init__()
         self.dueling = dueling
@@ -107,12 +127,21 @@ class IQN_Network(nn.Module):
         self.n_action_bins = n_action_bins
         self.n_actions_total = n_action_dims * n_action_bins
         self.n_cosines = n_cosines
-        base = [nn.Linear(input_dim, hidden_layer_sizes[0])]
-        for li in range(len(hidden_layer_sizes) - 1):
-            base.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
-        self.base_layers = nn.ModuleList(base)
         self.relu = nn.ReLU()
-        last_hidden = hidden_layer_sizes[-1]
+        if encoder is None:
+            base = [nn.Linear(input_dim, hidden_layer_sizes[0])]
+            for li in range(len(hidden_layer_sizes) - 1):
+                base.append(nn.Linear(hidden_layer_sizes[li], hidden_layer_sizes[li + 1]))
+            self.base_layers = nn.ModuleList(base)
+            self.encoder = None
+            last_hidden = hidden_layer_sizes[-1]
+        else:
+            if encoder_out_dim is None:
+                raise ValueError("encoder_out_dim is required when encoder is provided")
+            self.encoder = encoder
+            self.base_layers = None
+            last_hidden = int(encoder_out_dim)
+
         self.cosine_layer = nn.Linear(n_cosines, last_hidden)
         if dueling:
             if self.popart:
@@ -141,9 +170,13 @@ class IQN_Network(nn.Module):
     def forward(
         self, x: torch.Tensor, tau: torch.Tensor, normalized: bool = False
     ) -> torch.Tensor:
-        h = x
-        for layer in self.base_layers:
-            h = self.relu(layer(h))  # [B,H]
+        if self.encoder is not None:
+            h = self.encoder(x)
+        else:
+            h = x
+            assert self.base_layers is not None
+            for layer in self.base_layers:
+                h = self.relu(layer(h))  # [B,H]
         h = h.unsqueeze(1)  # [B,1,H]
         tau_emb = self._phi(tau)  # [B,N,H]
         h = h * tau_emb  # [B,N,H]

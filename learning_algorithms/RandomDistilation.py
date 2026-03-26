@@ -1,25 +1,55 @@
 import torch
 import torch.nn as nn
+from typing import Optional
+from MixedObservationEncoder import infer_encoder_out_dim
 
 
 class RNDModel(nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(
+        self,
+        input_dim,
+        output_dim,
+        encoder_target: Optional[nn.Module] = None,
+        encoder_predictor: Optional[nn.Module] = None,
+    ):
         super().__init__()
         # 1. Define Target Network (Fixed)
-        self.target = nn.Sequential(
-            nn.Linear(input_dim, 256), nn.ReLU(), nn.Linear(256, output_dim)
-        )
+        if encoder_target is None:
+            self.target = nn.Sequential(
+                nn.Linear(input_dim, 256), nn.ReLU(), nn.Linear(256, output_dim)
+            )
+        else:
+            target_out_dim = infer_encoder_out_dim(encoder_target, int(input_dim))
+            self.target = nn.Sequential(
+                encoder_target,
+                nn.ReLU(),
+                nn.Linear(target_out_dim, output_dim),
+            )
         # Freeze target weights immediately
         for param in self.target.parameters():
             param.requires_grad = False
         # 2. Define Predictor Network (Trainable)
-        self.predictor = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, 256),  # Predictor is often slightly deeper/wider
-            nn.ReLU(),
-            nn.Linear(256, output_dim),
-        )
+        if encoder_predictor is None:
+            self.predictor = nn.Sequential(
+                nn.Linear(input_dim, 256),
+                nn.ReLU(),
+                nn.Linear(256, 256),  # Predictor is often slightly deeper/wider
+                nn.ReLU(),
+                nn.Linear(256, output_dim),
+            )
+        else:
+            predictor_out_dim = infer_encoder_out_dim(
+                encoder_predictor, int(input_dim)
+            )
+            self.predictor = nn.Sequential(
+                encoder_predictor,
+                nn.ReLU(),
+                nn.Linear(predictor_out_dim, 256),
+                nn.ReLU(),
+                nn.Linear(256, 256),
+                nn.ReLU(),
+                nn.Linear(256, output_dim),
+            )
 
     def _device(self):
         # Helper to get current device of the module's parameters

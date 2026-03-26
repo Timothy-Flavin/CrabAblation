@@ -5,6 +5,7 @@ import json
 import os
 import time
 from types import SimpleNamespace
+from typing import Callable, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -12,14 +13,16 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from runner_utils import get_device_name, plot_results, resolve_torch_device
 from environment_utils import (
-    _continuous_to_env_action,
+    ActionTransformHandler,
     _proxy_action_space,
-    bins_to_continuous,
+    extract_mixed_observation_shapes,
     get_env_benchmark_spec,
+    make_hide_and_seek_vec_env,
     make_env_thunk,
 )
 from learning_algorithms.cleanrl_buffers import ReplayBuffer
 from learning_algorithms.DQN_Rainbow import EVRainbowDQN, RainbowDQN
+from learning_algorithms.MixedObservationEncoder import MixedObservationEncoder
 from learning_algorithms.PG_Rainbow import PPOAgent
 from learning_algorithms.SAC_Rainbow import SACAgent
 
@@ -33,7 +36,13 @@ def get_args():
         "--env_name",
         type=str,
         default="minigrid",
-        choices=["cartpole", "minigrid", "mujoco"],
+        choices=["cartpole", "minigrid", "mujoco", "hide-and-seek-engine"],
+    )
+    parser.add_argument(
+        "--env_id",
+        type=str,
+        default="",
+        help="Optional explicit env id. Defaults to env_name.",
     )
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5])
@@ -81,6 +90,12 @@ def get_args():
     parser.add_argument("--autotune", action="store_true", default=True)
     parser.add_argument("--n_quantiles", type=int, default=32)
     parser.add_argument("--n_target_quantiles", type=int, default=32)
+    parser.add_argument(
+        "--hide_seek_bins_per_dim",
+        type=int,
+        default=3,
+        help="Discretization bins per Box dimension for discrete mixed-action wrapper.",
+    )
 
     args = parser.parse_args()
 
@@ -98,6 +113,9 @@ def get_args():
 
     if not args.skip_best_params:
         _maybe_load_best_params(args)
+
+    if not args.env_id:
+        args.env_id = args.env_name
 
     return args
 
@@ -118,12 +136,41 @@ def _maybe_load_best_params(args):
 
 
 def create_vec_env(args, num_envs: int | None = None):
+    env_id = getattr(args, "env_id", args.env_name)
+    if env_id == "hide-and-seek-engine" or args.env_name == "hide-and-seek-engine":
+        action_mode = "continuous" if args.algo == "sac" else "discrete"
+
+        vec_env = make_hide_and_seek_vec_env(
+            action_mode=action_mode,
+            bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
+        )
+        args.num_envs = int(vec_env.num_envs)
+        return vec_env
+
     n_envs = int(num_envs if num_envs is not None else args.num_envs)
     env_fns = [
         make_env_thunk(args.fully_obs, args.env_name, seed=args.run + i, idx=i)
         for i in range(n_envs)
     ]
     return gym.vector.SyncVectorEnv(env_fns)
+
+
+def _encoder_factory_from_vec_env(args, vec_env) -> Optional[Callable[[], torch.nn.Module]]:
+    env_id = getattr(args, "env_id", args.env_name)
+    if env_id != "hide-and-seek-engine" and args.env_name != "hide-and-seek-engine":
+        return None
+
+    spatial_shape = getattr(vec_env, "spatial_shape", None)
+    vector_dim = getattr(vec_env, "vector_dim", None)
+    if spatial_shape is None or vector_dim is None:
+        raw_obs_space = getattr(vec_env, "raw_observation_space", None)
+        if raw_obs_space is None:
+            return None
+        spatial_shape, vector_dim = extract_mixed_observation_shapes(raw_obs_space)
+
+    spatial_shape = tuple(int(v) for v in spatial_shape)
+    vector_dim = int(vector_dim)
+    return lambda: MixedObservationEncoder(spatial_shape, vector_dim)
 
 
 def _agent_spec_from_vec_env(vec_env):
@@ -133,7 +180,7 @@ def _agent_spec_from_vec_env(vec_env):
     )
 
 
-def _dqn_agent_from_args(args, obs_dim):
+def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     cfg = {
         "munchausen": True,
         "soft": True,
@@ -162,8 +209,12 @@ def _dqn_agent_from_args(args, obs_dim):
         cfg["delayed"] = False
 
     env_spec = get_env_benchmark_spec(args.env_name)
-    n_action_dims = int(env_spec["n_action_dims"])
-    n_action_bins = int(env_spec["n_action_bins"])
+    if isinstance(vec_env.single_action_space, gym.spaces.Discrete):
+        n_action_dims = 1
+        n_action_bins = int(vec_env.single_action_space.n)
+    else:
+        n_action_dims = int(env_spec["n_action_dims"])
+        n_action_bins = int(env_spec["n_action_bins"])
     hidden_layer_sizes = env_spec["hidden_layer_sizes"]
 
     AgentClass = RainbowDQN if cfg["distributional"] else EVRainbowDQN
@@ -196,6 +247,7 @@ def _dqn_agent_from_args(args, obs_dim):
             Beta_half_life_steps=50000,
             norm_obs=False,
             burn_in_updates=1000,
+            encoder_factory=encoder_factory,
         )
     else:
         agent = AgentClass(
@@ -216,11 +268,12 @@ def _dqn_agent_from_args(args, obs_dim):
             alpha=alpha,
             norm_obs=False,
             burn_in_updates=1000,
+            encoder_factory=encoder_factory,
         )
     return agent, cfg
 
 
-def _ppo_agent_from_args(args, vec_env):
+def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
     cfg = {
         "clip_coef": 0.2,
         "ent_coef": 0.01,
@@ -248,15 +301,16 @@ def _ppo_agent_from_args(args, vec_env):
         ent_coef=cfg["ent_coef"],
         distributional=cfg["distributional"],
         Beta=cfg["Beta"],
-        num_envs=args.num_envs,
+        num_envs=int(vec_env.num_envs),
         num_steps=args.num_steps,
         hidden_layer_sizes=hidden_layer_sizes,
         use_gae=cfg["use_gae"],
+        encoder_factory=encoder_factory,
     )
     return agent, cfg
 
 
-def _sac_agent_from_args(args, vec_env):
+def _sac_agent_from_args(args, vec_env, encoder_factory=None):
     cfg = {
         "entropy_coef_zero": False,
         "distributional": True,
@@ -294,18 +348,36 @@ def _sac_agent_from_args(args, vec_env):
         hidden_layer_sizes=hidden_layer_sizes,
         n_quantiles=args.n_quantiles,
         n_target_quantiles=args.n_target_quantiles,
+        encoder_factory=encoder_factory,
     )
     return agent, cfg
 
 
 def build_agent(args, vec_env, device):
-    obs_dim = int(np.prod(vec_env.single_observation_space.shape))
+    obs_shape = vec_env.single_observation_space.shape
+    if obs_shape is None:
+        raise ValueError("Environment observation space shape is undefined")
+    obs_dim = int(np.prod(obs_shape))
+    encoder_factory = _encoder_factory_from_vec_env(args, vec_env)
     if args.algo == "dqn":
-        agent, cfg = _dqn_agent_from_args(args, obs_dim)
+        agent, cfg = _dqn_agent_from_args(
+            args,
+            obs_dim,
+            vec_env,
+            encoder_factory=encoder_factory,
+        )
     elif args.algo == "ppo":
-        agent, cfg = _ppo_agent_from_args(args, vec_env)
+        agent, cfg = _ppo_agent_from_args(
+            args,
+            vec_env,
+            encoder_factory=encoder_factory,
+        )
     elif args.algo == "sac":
-        agent, cfg = _sac_agent_from_args(args, vec_env)
+        agent, cfg = _sac_agent_from_args(
+            args,
+            vec_env,
+            encoder_factory=encoder_factory,
+        )
     else:
         raise ValueError(f"Unsupported algo: {args.algo}")
 
@@ -316,76 +388,91 @@ def build_buffer(args, vec_env, device):
     if args.algo != "sac":
         return None
     proxy_action_space = _proxy_action_space(vec_env.single_action_space)
+    n_envs = int(getattr(vec_env, "num_envs", args.num_envs))
     return ReplayBuffer(
         args.buffer_size,
         vec_env.single_observation_space,
         proxy_action_space,
         device,
-        n_envs=args.num_envs,
+        n_envs=n_envs,
         handle_timeout_termination=False,
     )
 
 
-def _dqn_action_to_env(action_bins_batch, env_name):
-    if env_name == "mujoco":
-        return np.array([bins_to_continuous(a) for a in action_bins_batch])
-
-    if (
-        isinstance(action_bins_batch, list)
-        and action_bins_batch
-        and isinstance(action_bins_batch[0], list)
-    ):
-        action_bins_batch = [a[0] for a in action_bins_batch]
-    action_bins_batch = np.asarray(action_bins_batch)
-    if action_bins_batch.ndim > 1:
-        return action_bins_batch[:, 0]
-    return action_bins_batch
-
-
-def _single_eval_action_from_proxy(proxy_action, action_space):
-    converted = _continuous_to_env_action(
-        np.asarray(proxy_action, dtype=np.float32), action_space
-    )
-    converted = np.asarray(converted)
-    if isinstance(action_space, gym.spaces.Discrete):
-        return int(converted.reshape(-1)[0])
-    if isinstance(action_space, gym.spaces.MultiDiscrete):
-        return converted.reshape(-1)
-    return converted
-
-
 def evaluate_agent(agent, args, device, step=0, n_steps=300000):
+    if args.env_name == "hide-and-seek-engine":
+        vec_env = create_vec_env(args)
+        try:
+            env_spec = get_env_benchmark_spec(args.env_name)
+            action_transform = ActionTransformHandler(
+                args.env_name,
+                args.algo,
+                vec_env.single_action_space,
+                bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
+                discrete_bins=int(env_spec["n_action_bins"]),
+                batched=True,
+            )
+            obs, _ = vec_env.reset()
+            done = np.zeros(int(vec_env.num_envs), dtype=bool)
+            reward = np.zeros(int(vec_env.num_envs), dtype=np.float32)
+
+            while not bool(np.all(done)):
+                with torch.no_grad():
+                    if args.algo == "ppo":
+                        tobs = torch.from_numpy(np.asarray(obs)).float().to(device)
+                        action, _, _, _ = agent.sample_action(tobs)
+                        raw_action = action.cpu().numpy()
+                    elif args.algo == "dqn":
+                        raw_action = agent.sample_action(
+                            torch.from_numpy(np.asarray(obs)).float().to(device),
+                            eps=0.0,
+                            step=step,
+                            n_steps=n_steps,
+                        )
+                    else:
+                        raw_action = agent.sample_action(obs, deterministic=True)
+
+                    step_action = action_transform.transform_action(raw_action)
+
+                obs, r, term, trunc, _ = vec_env.step(step_action)
+                reward += np.asarray(r, dtype=np.float32)
+                done = np.logical_or(done, np.logical_or(term, trunc))
+
+            return float(np.mean(reward))
+        finally:
+            vec_env.close()
+
     env = make_env_thunk(False, args.env_name)()
     obs, _ = env.reset()
     done = False
     reward = 0.0
+    env_spec = get_env_benchmark_spec(args.env_name)
+    action_transform = ActionTransformHandler(
+        args.env_name,
+        args.algo,
+        env.action_space,
+        bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
+        discrete_bins=int(env_spec["n_action_bins"]),
+        batched=False,
+    )
 
     while not done:
         with torch.no_grad():
             if args.algo == "ppo":
                 tobs = torch.from_numpy(np.asarray(obs)).float().unsqueeze(0).to(device)
                 action, _, _, _ = agent.sample_action(tobs)
-                action_np = action.cpu().numpy()[0]
-                if args.env_name == "mujoco":
-                    env_action = bins_to_continuous(action_np)
-                else:
-                    env_action = int(np.asarray(action_np).reshape(-1)[0])
+                raw_action = action.cpu().numpy()[0]
             elif args.algo == "dqn":
-                action_bins = agent.sample_action(
+                raw_action = agent.sample_action(
                     torch.from_numpy(np.asarray(obs)).float().to(device),
                     eps=0.0,
                     step=step,
                     n_steps=n_steps,
                 )
-                if args.env_name == "mujoco":
-                    env_action = bins_to_continuous(action_bins)
-                else:
-                    env_action = int(np.asarray(action_bins).reshape(-1)[0])
             else:
-                proxy_action = agent.sample_action(np.asarray(obs), deterministic=True)
-                env_action = _single_eval_action_from_proxy(
-                    proxy_action, env.action_space
-                )
+                raw_action = agent.sample_action(np.asarray(obs), deterministic=True)
+
+            env_action = action_transform.transform_action(raw_action)
 
         obs, r, term, trunc, _ = env.step(env_action)
         reward += float(r)
@@ -410,6 +497,15 @@ def rollout_online_rl(
     total_steps_override=None,
 ):
     obs_raw, _ = vec_env.reset()
+    env_spec = get_env_benchmark_spec(args.env_name)
+    action_transform = ActionTransformHandler(
+        args.env_name,
+        "ppo",
+        vec_env.single_action_space,
+        bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
+        discrete_bins=int(env_spec["n_action_bins"]),
+        batched=True,
+    )
 
     total_step_budget = _compute_rollout_budget(args, total_steps_override)
     num_iterations = max(1, total_step_budget // (args.num_envs * args.num_steps))
@@ -479,10 +575,7 @@ def rollout_online_rl(
             agent_logprobs[step] = logprob
 
             np_action = action.cpu().numpy()
-            if args.env_name == "mujoco":
-                step_action = np.array([bins_to_continuous(a) for a in np_action])
-            else:
-                step_action = np_action
+            step_action = action_transform.transform_action(np_action)
 
             next_obs_np, reward, terminations, truncations, _ = vec_env.step(
                 step_action
@@ -603,6 +696,14 @@ def rollout_offline_rl(
         obs_dim = int(np.prod(vec_env.single_observation_space.shape))
         env_spec = get_env_benchmark_spec(args.env_name)
         n_action_dims = int(env_spec["n_action_dims"])
+        dqn_action_transform = ActionTransformHandler(
+            args.env_name,
+            "dqn",
+            vec_env.single_action_space,
+            bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
+            discrete_bins=int(env_spec["n_action_bins"]),
+            batched=True,
+        )
 
         blen = int(args.dqn_buffer_size)
         batch_size = int(args.dqn_batch_size)
@@ -640,7 +741,7 @@ def rollout_offline_rl(
                 step=total_samples,
                 n_steps=total_step_budget,
             )
-            step_action = _dqn_action_to_env(actions, args.env_name)
+            step_action = dqn_action_transform.transform_action(actions)
 
             next_obs, r, term, trunc, _ = vec_env.step(step_action)
             r_mult = r * 10.0
@@ -744,6 +845,15 @@ def rollout_offline_rl(
 
         proxy_action_space = _proxy_action_space(vec_env.single_action_space)
         proxy_action_dim = int(np.prod(proxy_action_space.shape))
+        env_spec = get_env_benchmark_spec(args.env_name)
+        sac_action_transform = ActionTransformHandler(
+            args.env_name,
+            "sac",
+            vec_env.single_action_space,
+            bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
+            discrete_bins=int(env_spec["n_action_bins"]),
+            batched=True,
+        )
         eval_every_episodes = 25
 
         while total_samples < total_step_budget:
@@ -773,9 +883,7 @@ def rollout_offline_rl(
             else:
                 actions_agent = agent.sample_action(obs, deterministic=False)
 
-            actions_env = _continuous_to_env_action(
-                actions_agent, vec_env.single_action_space
-            )
+            actions_env = sac_action_transform.transform_action(actions_agent)
             next_obs, rewards, terminations, truncations, infos = vec_env.step(
                 actions_env
             )

@@ -3,6 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -12,6 +13,7 @@ import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
+from MixedObservationEncoder import infer_encoder_out_dim
 from RainbowNetworks import IQN_Network
 from RandomDistilation import RNDModel, RunningMeanStd
 from learning_algorithms.agent import Agent
@@ -130,6 +132,7 @@ class PPOAgent(Agent):
         rnd_lr: float = 1e-3,
         intrinsic_lr: float = 2.5e-4,
         use_gae: bool = True,
+        encoder_factory: Optional[Callable[[], nn.Module]] = None,
     ):
         super().__init__()
         self.anneal_lr = anneal_lr
@@ -166,23 +169,49 @@ class PPOAgent(Agent):
         hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
 
         input_dim = np.array(self.obs_shape).prod()
-        self.actor = nn.Sequential(
-            layer_init(nn.Linear(input_dim, hidden1)),
-            nn.Tanh(),
-            layer_init(nn.Linear(hidden1, hidden2)),
-            nn.Tanh(),
-            layer_init(
-                nn.Linear(hidden2, self.n_action_dims * self.n_action_bins), std=0.01
-            ),
-        )
+        if encoder_factory is None:
+            self.actor = nn.Sequential(
+                layer_init(nn.Linear(input_dim, hidden1)),
+                nn.Tanh(),
+                layer_init(nn.Linear(hidden1, hidden2)),
+                nn.Tanh(),
+                layer_init(
+                    nn.Linear(hidden2, self.n_action_dims * self.n_action_bins), std=0.01
+                ),
+            )
+        else:
+            actor_encoder = encoder_factory()
+            actor_out_dim = infer_encoder_out_dim(actor_encoder, int(input_dim))
+            self.actor = nn.Sequential(
+                actor_encoder,
+                layer_init(
+                    nn.Linear(actor_out_dim, self.n_action_dims * self.n_action_bins),
+                    std=0.01,
+                ),
+            )
 
         if self.distributional:
+            ext_critic_kwargs = {}
+            int_critic_kwargs = {}
+            if encoder_factory is not None:
+                ext_encoder = encoder_factory()
+                int_encoder = encoder_factory()
+                ext_critic_kwargs = {
+                    "encoder": ext_encoder,
+                    "encoder_out_dim": infer_encoder_out_dim(ext_encoder, int(input_dim)),
+                }
+                int_critic_kwargs = {
+                    "encoder": int_encoder,
+                    "encoder_out_dim": infer_encoder_out_dim(int_encoder, int(input_dim)),
+                }
+
             self.ext_critic = IQN_Network(
                 input_dim=input_dim,
                 n_action_dims=1,
                 n_action_bins=1,
                 hidden_layer_sizes=[hidden1, hidden2],
                 dueling=False,
+                **ext_critic_kwargs,
             )
             self.int_critic = IQN_Network(
                 input_dim=input_dim,
@@ -190,23 +219,38 @@ class PPOAgent(Agent):
                 n_action_bins=1,
                 hidden_layer_sizes=[hidden1, hidden2],
                 dueling=False,
+                **int_critic_kwargs,
             )
             self.n_quantiles = 32
         else:
-            self.ext_critic = nn.Sequential(
-                layer_init(nn.Linear(input_dim, hidden1)),
-                nn.Tanh(),
-                layer_init(nn.Linear(hidden1, hidden2)),
-                nn.Tanh(),
-                layer_init(nn.Linear(hidden2, 1), std=1.0),
-            )
-            self.int_critic = nn.Sequential(
-                layer_init(nn.Linear(input_dim, hidden1)),
-                nn.Tanh(),
-                layer_init(nn.Linear(hidden1, hidden2)),
-                nn.Tanh(),
-                layer_init(nn.Linear(hidden2, 1), std=1.0),
-            )
+            if encoder_factory is None:
+                self.ext_critic = nn.Sequential(
+                    layer_init(nn.Linear(input_dim, hidden1)),
+                    nn.Tanh(),
+                    layer_init(nn.Linear(hidden1, hidden2)),
+                    nn.Tanh(),
+                    layer_init(nn.Linear(hidden2, 1), std=1.0),
+                )
+                self.int_critic = nn.Sequential(
+                    layer_init(nn.Linear(input_dim, hidden1)),
+                    nn.Tanh(),
+                    layer_init(nn.Linear(hidden1, hidden2)),
+                    nn.Tanh(),
+                    layer_init(nn.Linear(hidden2, 1), std=1.0),
+                )
+            else:
+                ext_encoder = encoder_factory()
+                int_encoder = encoder_factory()
+                ext_out_dim = infer_encoder_out_dim(ext_encoder, int(input_dim))
+                int_out_dim = infer_encoder_out_dim(int_encoder, int(input_dim))
+                self.ext_critic = nn.Sequential(
+                    ext_encoder,
+                    layer_init(nn.Linear(ext_out_dim, 1), std=1.0),
+                )
+                self.int_critic = nn.Sequential(
+                    int_encoder,
+                    layer_init(nn.Linear(int_out_dim, 1), std=1.0),
+                )
 
         self.rnd = RNDModel(input_dim, rnd_output_dim)
         self.obs_rms = RunningMeanStd(shape=self.obs_shape)

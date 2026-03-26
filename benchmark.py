@@ -7,7 +7,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from environment_utils import get_env_benchmark_spec, make_env_thunk
+from environment_utils import get_env_benchmark_spec
 from runner import (
     build_agent,
     build_buffer,
@@ -33,8 +33,14 @@ def get_args():
         "--env_name",
         type=str,
         default="minigrid",
-        choices=["cartpole", "minigrid", "mujoco"],
+        choices=["cartpole", "minigrid", "mujoco", "hide-and-seek-engine"],
         help="Environment to use",
+    )
+    parser.add_argument(
+        "--env_id",
+        type=str,
+        default="",
+        help="Optional explicit env id. Defaults to env_name.",
     )
     parser.add_argument("--grid_search", action="store_true", help="Run grid search")
     parser.add_argument("--device_name", type=str, default=get_device_name())
@@ -82,6 +88,7 @@ def get_args():
     parser.add_argument("--autotune", action="store_true", default=True)
     parser.add_argument("--n_quantiles", type=int, default=32)
     parser.add_argument("--n_target_quantiles", type=int, default=32)
+    parser.add_argument("--hide_seek_bins_per_dim", type=int, default=3)
 
     args = parser.parse_args()
 
@@ -89,6 +96,9 @@ def get_args():
         args.update_every = 8
     if args.env_name == "mujoco" and args.algo == "dqn" and args.dqn_buffer_size == 10000:
         args.dqn_buffer_size = 20000
+
+    if not args.env_id:
+        args.env_id = args.env_name
 
     return args
 
@@ -134,6 +144,7 @@ def run_grid_search(args, total_steps=2000):
                     device = resolve_torch_device(dev)
                     agent, _ = build_agent(args, vec_env, device)
                     buffer = build_buffer(args, vec_env, device)
+                    actual_num_envs = int(getattr(vec_env, "num_envs", num_envs))
 
                     if args.algo == "ppo":
                         results = rollout_online_rl(
@@ -157,7 +168,7 @@ def run_grid_search(args, total_steps=2000):
 
                     current_config = {
                         "device": dev,
-                        "num_envs": num_envs,
+                        "num_envs": actual_num_envs,
                         "steps_per_sec": float(results.get("steps_per_sec", 0.0)),
                         "updates_per_sec": float(results.get("updates_per_sec", 0.0)),
                     }
@@ -212,8 +223,8 @@ def benchmark_updates(agent, args, obs_dim, action_dim, device="cpu", batch_size
 
     if args.algo == "dqn":
         env_spec = get_env_benchmark_spec(args.env_name)
-        n_action_dims = int(env_spec["n_action_dims"])
-        n_action_bins = int(env_spec["n_action_bins"])
+        n_action_dims = int(getattr(agent, "n_action_dims", env_spec["n_action_dims"]))
+        n_action_bins = int(getattr(agent, "n_action_bins", env_spec["n_action_bins"]))
 
         def make_batch_dqn(bs, dev):
             obs = torch.randn((bs, obs_dim), device=dev)
@@ -249,7 +260,13 @@ def benchmark_updates(agent, args, obs_dim, action_dim, device="cpu", batch_size
 
     elif args.algo == "ppo":
         act_shape = tuple(args._vec_env.single_action_space.shape)
-        n_action_bins = int(get_env_benchmark_spec(args.env_name)["n_action_bins"])
+        n_action_bins = int(
+            getattr(
+                agent,
+                "n_action_bins",
+                get_env_benchmark_spec(args.env_name)["n_action_bins"],
+            )
+        )
 
         def make_batch_ppo(bs, dev):
             obs = torch.randn((args.num_steps, args.num_envs, obs_dim), device=dev)
@@ -378,11 +395,13 @@ def _action_dim_for_space(space):
 def main():
     args = get_args()
 
-    env = make_env_thunk(args.fully_obs, args.env_name)()
-    obs, _ = env.reset()
-    obs_dim = int(np.prod(np.asarray(obs).shape))
-    action_dim = _action_dim_for_space(env.action_space)
-    env.close()
+    probe_env = create_vec_env(args, num_envs=max(1, args.num_envs))
+    obs_shape = probe_env.single_observation_space.shape
+    if obs_shape is None:
+        raise ValueError("Environment observation space shape is undefined")
+    obs_dim = int(np.prod(obs_shape))
+    action_dim = _action_dim_for_space(probe_env.single_action_space)
+    probe_env.close()
 
     print("=== Configuration ===")
     print(f"Algorithm: {args.algo}")

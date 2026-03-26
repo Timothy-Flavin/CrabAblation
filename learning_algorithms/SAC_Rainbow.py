@@ -3,6 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -13,6 +14,7 @@ import torch.optim as optim
 import tyro
 from torch.utils.tensorboard import SummaryWriter
 
+from MixedObservationEncoder import infer_encoder_out_dim
 from learning_algorithms.cleanrl_buffers import ReplayBuffer
 from learning_algorithms.agent import Agent
 from RainbowNetworks import EV_Q_Network, IQN_Network
@@ -91,6 +93,23 @@ LOG_STD_MAX = 2
 LOG_STD_MIN = -5
 
 
+class ObsActEncoder(nn.Module):
+    """Encode observation slice, then concatenate untouched action slice."""
+
+    def __init__(self, obs_encoder: nn.Module, obs_dim: int, act_dim: int):
+        super().__init__()
+        self.obs_encoder = obs_encoder
+        self.obs_dim = int(obs_dim)
+        self.act_dim = int(act_dim)
+        self.output_dim = infer_encoder_out_dim(obs_encoder, self.obs_dim) + self.act_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        obs = x[..., : self.obs_dim]
+        act = x[..., self.obs_dim : self.obs_dim + self.act_dim]
+        obs_features = self.obs_encoder(obs)
+        return torch.cat([obs_features, act], dim=-1)
+
+
 def hidden_layer_sizes_for_env_id(env_id: str) -> tuple[int, int]:
     env = env_id.lower()
     if (
@@ -108,15 +127,30 @@ def hidden_layer_sizes_for_env_id(env_id: str) -> tuple[int, int]:
 
 
 class Actor(nn.Module):
-    def __init__(self, env, hidden_layer_sizes: tuple[int, int] = (256, 256)):
+    def __init__(
+        self,
+        env,
+        hidden_layer_sizes: tuple[int, int] = (256, 256),
+        encoder: Optional[nn.Module] = None,
+    ):
         super().__init__()
         obs_dim = int(np.array(env.single_observation_space.shape).prod())
         act_dim = int(np.prod(env.single_action_space.shape))
         hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
-        self.fc1 = nn.Linear(obs_dim, hidden1)
-        self.fc2 = nn.Linear(hidden1, hidden2)
-        self.fc_mean = nn.Linear(hidden2, act_dim)
-        self.fc_logstd = nn.Linear(hidden2, act_dim)
+        if encoder is None:
+            self.encoder = nn.Sequential(
+                nn.Linear(obs_dim, hidden1),
+                nn.ReLU(),
+                nn.Linear(hidden1, hidden2),
+                nn.ReLU(),
+            )
+            head_in_dim = hidden2
+        else:
+            self.encoder = encoder
+            head_in_dim = infer_encoder_out_dim(encoder, obs_dim)
+
+        self.fc_mean = nn.Linear(head_in_dim, act_dim)
+        self.fc_logstd = nn.Linear(head_in_dim, act_dim)
         # action rescaling
         self.register_buffer(
             "action_scale",
@@ -134,16 +168,19 @@ class Actor(nn.Module):
         )
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        mean = self.fc_mean(x)
-        log_std = self.fc_logstd(x)
+        features = self.encoder(x)
+        mean = self.fc_mean(features)
+        log_std = self.fc_logstd(features)
         log_std = torch.tanh(log_std)
         log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (
             log_std + 1
         )  # From SpinUp / Denis Yarats
 
         return mean, log_std
+
+    @property
+    def device(self) -> torch.device:
+        return next(self.parameters()).device
 
     def get_action(self, x):
         mean, log_std = self(x)
@@ -182,6 +219,7 @@ class SACAgent(Agent):
         hidden_layer_sizes: tuple[int, int] = (128, 128),
         n_quantiles: int = 32,
         n_target_quantiles: int = 32,
+        encoder_factory: Optional[Callable[[], nn.Module]] = None,
     ):
         super().__init__()
         self.gamma = gamma
@@ -202,21 +240,46 @@ class SACAgent(Agent):
         act_dim = int(np.prod(envs.single_action_space.shape))
         critic_input_dim = obs_dim + act_dim
 
-        self.actor = Actor(envs, hidden_layer_sizes=(hidden1, hidden2))
+        actor_encoder = encoder_factory() if encoder_factory is not None else None
+        self.actor = Actor(
+            envs,
+            hidden_layer_sizes=(hidden1, hidden2),
+            encoder=actor_encoder,
+        )
 
         CriticClass = IQN_Network if self.distributional else EV_Q_Network
-        critic_kwargs = dict(
-            input_dim=critic_input_dim,
-            n_action_dims=1,
-            n_action_bins=1,
-            hidden_layer_sizes=[hidden1, hidden2],
-            dueling=self.dueling,
-            popart=self.popart,
-        )
-        self.qf1 = CriticClass(**critic_kwargs)  # type:ignore
-        self.qf2 = CriticClass(**critic_kwargs)  # type:ignore
-        self.qf1_target = CriticClass(**critic_kwargs)  # type:ignore
-        self.qf2_target = CriticClass(**critic_kwargs)  # type:ignore
+        critic_kwargs = {
+            "input_dim": critic_input_dim,
+            "n_action_dims": 1,
+            "n_action_bins": 1,
+            "hidden_layer_sizes": [hidden1, hidden2],
+            "dueling": self.dueling,
+            "popart": self.popart,
+        }
+
+        def _critic_encoder_kwargs():
+            if encoder_factory is None:
+                return {}
+            obs_encoder = encoder_factory()
+            obs_act_encoder = ObsActEncoder(obs_encoder, obs_dim=obs_dim, act_dim=act_dim)
+            return {
+                "encoder": obs_act_encoder,
+                "encoder_out_dim": int(obs_act_encoder.output_dim),
+            }
+
+        qf1_kwargs = dict(critic_kwargs)
+        qf1_kwargs.update(_critic_encoder_kwargs())
+        qf2_kwargs = dict(critic_kwargs)
+        qf2_kwargs.update(_critic_encoder_kwargs())
+        qf1_target_kwargs = dict(critic_kwargs)
+        qf1_target_kwargs.update(_critic_encoder_kwargs())
+        qf2_target_kwargs = dict(critic_kwargs)
+        qf2_target_kwargs.update(_critic_encoder_kwargs())
+
+        self.qf1 = CriticClass(**qf1_kwargs)  # type:ignore
+        self.qf2 = CriticClass(**qf2_kwargs)  # type:ignore
+        self.qf1_target = CriticClass(**qf1_target_kwargs)  # type:ignore
+        self.qf2_target = CriticClass(**qf2_target_kwargs)  # type:ignore
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
 
@@ -261,12 +324,11 @@ class SACAgent(Agent):
 
     @torch.no_grad()
     def sample_action(self, obs, deterministic: bool = False):
+        actor_device = self.actor.device
         if isinstance(obs, np.ndarray):
-            obs_t = torch.as_tensor(
-                obs, dtype=torch.float32, device=self.actor.fc1.weight.device
-            )
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=actor_device)
         else:
-            obs_t = obs.to(device=self.actor.fc1.weight.device, dtype=torch.float32)
+            obs_t = obs.to(device=actor_device, dtype=torch.float32)
 
         if obs_t.ndim == 1:
             obs_t = obs_t.unsqueeze(0)
