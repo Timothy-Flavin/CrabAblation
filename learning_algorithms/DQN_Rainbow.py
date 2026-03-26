@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import random
 from typing import Callable, Optional
+import time
 
 # from torch.utils.tensorboard import SummaryWriter
 from learning_algorithms.MixedObservationEncoder import infer_encoder_out_dim
@@ -48,6 +49,7 @@ class RainbowDQN(Agent):
     ):
         super().__init__()
         self.popart = popart
+        self.update_timings = None
 
         def _encoder_kwargs():
             if encoder_factory is None:
@@ -239,6 +241,18 @@ class RainbowDQN(Agent):
         # NOTE: Do NOT call update_running_stats(next_obs, r) here, as it passes the ENTIRE replay buffer of size 10000+!
         # It is already correctly called on the single batch of step transitions in runner.py.
         # Sample a random minibatch
+        if self.update_timings is None:
+            update_timings = {
+                "update_rnd": 0.0,
+                "extrinsic_loss": 0.0,
+                "intrinsic_loss": 0.0,
+                "logging": 0.0,
+                "total": 0.0,
+            }
+            self.update_timings = update_timings
+        update_timings = self.update_timings
+        t__ = time.time()
+
         if batch_size is None:
             idx = torch.arange(0, len(r))
             batch_size = len(r)
@@ -246,6 +260,7 @@ class RainbowDQN(Agent):
             idx = torch.randint(low=0, high=step, size=(batch_size,))
         b_next_obs = next_obs[idx]
 
+        t_ = time.time()
         self.step += 1
         if self.step < self.burn_in_updates:
             # During burn-in, do not train RL networks; only RND and running stats
@@ -254,6 +269,7 @@ class RainbowDQN(Agent):
         else:
             rnd_errors, rnd_loss = self._update_RND(b_next_obs)
         b_obs = obs[idx]
+        update_timings["update_rnd"] += time.time() - t_
 
         # Normalize only the sliced batch to prevent O(N) slowdown over entire buffer
         b_r = self.ext_rms.normalize(r[idx], clip_range=self.ext_r_clamp).to(
@@ -267,23 +283,30 @@ class RainbowDQN(Agent):
             self.Beta = self.start_Beta * (
                 0.5 ** (self.step / self.beta_half_life_steps)
             )
-
+        t_ = time.time()
         b_r_int = self._int_reward(b_r, rnd_errors)
         extrinsic_loss, munchausen_reward, entropy_loss = self._rl_update_extrinsic(
             b_obs, b_actions, b_r, b_next_obs, b_term, batch_size
         )
+        update_timings["extrinsic_loss"] += time.time() - t_
+
+        t_ = time.time()
         intrinsic_loss = torch.tensor(0.0)
         if self.Beta > 0.0:
             assert isinstance(b_r_int, torch.Tensor)
             intrinsic_loss = self._rl_update_intrinsic(
                 b_obs, b_actions, b_r_int, b_next_obs, batch_size, b_term=b_term
             )
+        update_timings["intrinsic_loss"] += time.time() - t_
         if isinstance(entropy_loss, torch.Tensor):
             entropy_loss = float(entropy_loss.item())
+
+        t_ = time.time()
         with torch.no_grad():
             taus = self._sample_taus(b_obs.shape[0], self.n_quantiles, b_obs.device)
             Q_ext = self.ext_online(b_obs, taus).mean(dim=1)
             Q_int = self.int_online(b_obs, taus).mean(dim=1)
+        update_timings["logging"] += time.time() - t_
         # Store last auxiliary losses for logging (optional)
         self.last_losses = {
             "extrinsic": float(extrinsic_loss.item()),
@@ -311,6 +334,8 @@ class RainbowDQN(Agent):
                         )
             except Exception:
                 pass
+        update_timings["total"] += time.time() - t__
+        print(f"update timings: {update_timings}")
 
         return extrinsic_loss.item()
 
@@ -674,6 +699,7 @@ class EVRainbowDQN(Agent):
         Beta: float = 0.0,
         delayed: bool = True,
         ent_reg_coef: float = 0.0,
+        Beta_half_life_steps: Optional[int] = None,
         # Intrinsic/RND configs
         rnd_output_dim: int = 128,
         rnd_lr: float = 1e-3,
@@ -751,11 +777,16 @@ class EVRainbowDQN(Agent):
         self.Thompson = Thompson
         self.delayed_target = delayed
         self.Beta = Beta
+        self.start_Beta = Beta
         self.ent_reg_coef = ent_reg_coef
+        self.beta_half_life_steps = Beta_half_life_steps
         self.gamma = gamma
         self.n_action_dims = n_action_dims
         self.n_action_bins = n_action_bins
         self.n_actions = n_action_dims * n_action_bins
+
+        self.step = 0
+        self.update_timings = None
 
         self.ext_target.requires_grad_(False)
         self.ext_target.load_state_dict(self.ext_online.state_dict())
@@ -838,9 +869,31 @@ class EVRainbowDQN(Agent):
         ent = -(pi * logpi).sum(dim=-1)  # [B]
         return pi, logpi, ent
 
+    def _update_RND(self, b_next_obs, batch_norm=False):
+        with torch.no_grad():
+            norm_next_obs = self.obs_rms.normalize(b_next_obs.to(dtype=torch.float64))
+        rnd_errors = self.rnd(norm_next_obs.to(dtype=torch.float32))
+        rnd_loss = rnd_errors.mean()
+        self.rnd_optim.zero_grad()
+        rnd_loss.backward()
+        self.rnd_optim.step()
+        return rnd_errors, rnd_loss
+
     def update(
-        self, obs, a, r, next_obs, term, batch_size, step=0, extrinsic_only=False
+        self, obs, a, r, next_obs, term, batch_size=None, step=0, extrinsic_only=False
     ):
+        if self.update_timings is None:
+            self.update_timings = {
+                "update_rnd": 0.0,
+                "extrinsic_loss": 0.0,
+                "intrinsic_loss": 0.0,
+                "logging": 0.0,
+                "total": 0.0,
+            }
+        update_timings = self.update_timings
+        import time
+        t__ = time.time()
+
         # NOTE: update_running_stats is handled externally in runner.py per step batch to avoid O(N) buffer scaling
         # Get Batch items
         if batch_size is None:
@@ -849,24 +902,28 @@ class EVRainbowDQN(Agent):
         else:
             idx = torch.randint(low=0, high=step, size=(batch_size,))
 
+        b_next_obs = next_obs[idx]
+
+        t_ = time.time()
+        self.step += 1
+        if self.step < self.burn_in_updates:
+            rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=True)
+            return 0.0
+        else:
+            rnd_errors, rnd_loss = self._update_RND(b_next_obs)
+        update_timings["update_rnd"] += time.time() - t_
+
+        if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
+            self.Beta = self.start_Beta * (0.5 ** (self.step / self.beta_half_life_steps))
+
+        t_ = time.time()
         b_obs = obs[idx]
         # Normalize only the sliced batch
         b_r = self.ext_rms.normalize(r[idx], self.ext_r_clip).to(
             dtype=torch.float32, device=obs.device
         )
-        b_next_obs = next_obs[idx]
         b_term = term[idx]
         b_actions = a[idx]
-        # RND intrinsic reward
-        with torch.no_grad():
-            norm_next_obs = self.obs_rms.normalize(b_next_obs.to(dtype=torch.float64))
-
-        # Get rnd errors and step optimizer
-        rnd_errors = self.rnd(norm_next_obs.to(dtype=torch.float32))
-        rnd_loss = rnd_errors.mean()
-        self.rnd_optim.zero_grad()
-        rnd_loss.backward()
-        self.rnd_optim.step()
 
         # Collect intrinsic reward
         r_int = 0
@@ -952,8 +1009,13 @@ class EVRainbowDQN(Agent):
         if hasattr(self, "ext_online"):
             torch.nn.utils.clip_grad_norm_(self.ext_online.parameters(), max_norm=10.0)
         self.optim.step()
+        update_timings["extrinsic_loss"] += time.time() - t_
+        
         if extrinsic_only:
+            update_timings["total"] += time.time() - t__
             return float(extrinsic_loss.item())
+
+        t_ = time.time()
         # Intrinsic Q update
         int_q_now = self.int_online(b_obs)  # [B,D,Bins]
         int_q_selected = torch.gather(int_q_now, -1, action_idx_now).squeeze(-1)
@@ -984,6 +1046,9 @@ class EVRainbowDQN(Agent):
         if hasattr(self, "int_online"):
             torch.nn.utils.clip_grad_norm_(self.int_online.parameters(), max_norm=10.0)
         self.int_optim.step()
+        update_timings["intrinsic_loss"] += time.time() - t_
+        
+        t_ = time.time()
 
         # collecting values for tensorboard
         if isinstance(r_int, torch.Tensor):
@@ -1015,6 +1080,10 @@ class EVRainbowDQN(Agent):
                         )
             except Exception:
                 pass
+        
+        update_timings["logging"] += time.time() - t_
+        update_timings["total"] += time.time() - t__
+
         return float(extrinsic_loss.item())
 
     @torch.no_grad()
