@@ -50,7 +50,7 @@ def get_args():
     parser.add_argument("--run", type=int, default=1)
     parser.add_argument("--num_envs", type=int, default=4)
     parser.add_argument("--num_steps", type=int, default=128)
-    parser.add_argument("--total_steps", type=int, default=300000)
+    parser.add_argument("--total_steps", type=int, default=1000000)
     parser.add_argument(
         "--total_steps_override",
         type=int,
@@ -100,10 +100,10 @@ def get_args():
     args = parser.parse_args()
 
     if args.algo == "sac" and args.update_every == 4:
-        args.update_every = 8
+        args.update_every = 4
 
-    if args.env_name == "mujoco" and args.total_steps == 300000:
-        args.total_steps = 1000000
+    if args.env_name == "mujoco" and args.total_steps == 1000000:
+        args.total_steps = 2000000
     if (
         args.algo == "dqn"
         and args.env_name == "mujoco"
@@ -401,7 +401,7 @@ def build_buffer(args, vec_env, device):
     )
 
 
-def evaluate_agent(agent, args, device, step=0, n_steps=300000):
+def evaluate_agent(agent, args, device, step=0, n_steps=1000000):
     if args.env_name == "hide-and-seek-engine":
         vec_env = create_vec_env(args)
         try:
@@ -691,12 +691,14 @@ def rollout_offline_rl(
     ep = 0
 
     start_time = time.time()
-    
+
     writer = None
     if getattr(args, "run", None) is not None:
         results_dir = os.path.join("results", args.algo, args.env_name)
         os.makedirs(results_dir, exist_ok=True)
-        tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
+        tb_dir = os.path.join(
+            results_dir, f"tensorboard_run{args.run}_abl{args.ablation}"
+        )
         writer = SummaryWriter(log_dir=tb_dir)
         writer.add_scalar("run/started", 1, 0)
 
@@ -810,7 +812,9 @@ def rollout_offline_rl(
                     ep += 1
 
                     if writer:
-                        writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
+                        writer.add_scalar(
+                            "episode/reward", float(rhist[-1]), total_samples
+                        )
                         writer.add_scalar(
                             "episode/smooth_reward", float(smooth_r), total_samples
                         )
@@ -936,7 +940,9 @@ def rollout_offline_rl(
                     smooth_rhist.append(float(smooth_r))
                     ep += 1
                     if writer:
-                        writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
+                        writer.add_scalar(
+                            "episode/reward", float(rhist[-1]), total_samples
+                        )
                         writer.add_scalar(
                             "episode/smooth_reward", float(smooth_r), total_samples
                         )
@@ -954,7 +960,9 @@ def rollout_offline_rl(
                         )
                         eval_hist.append(float(evalr))
                         if writer:
-                            writer.add_scalar("eval/reward", float(evalr), total_samples)
+                            writer.add_scalar(
+                                "eval/reward", float(evalr), total_samples
+                            )
 
                     ep_len[env_i] = 0
                     r_ep[env_i] = 0.0

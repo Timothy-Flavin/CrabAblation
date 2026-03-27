@@ -25,9 +25,9 @@
     },
     "ablation_4": {
         "device": "cpu",
-        "num_envs": 16,
-        "steps_per_sec": 959.672271230338,
-        "updates_per_sec": 118.80926680567283
+        "num_envs": 1,
+        "steps_per_sec": 386.6333307313831,
+        "updates_per_sec": 95.42110602450536
     },
     "ablation_5": {
         "device": "cuda",

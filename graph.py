@@ -180,7 +180,7 @@ def main():
     parser.add_argument("--max_steps", type=int, default=None)
     args = parser.parse_args()
 
-    results_root = Path("results")
+    results_root = Path("all_results")
     if not results_root.exists():
         print("Error: 'results/' directory not found.")
         return

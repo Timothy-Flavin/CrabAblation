@@ -295,6 +295,18 @@
             "num_envs": 16,
             "steps_per_sec": 580.9470410498684,
             "updates_per_sec": 71.92235731847413
+        },
+        {
+            "device": "cpu",
+            "num_envs": 1,
+            "steps_per_sec": 386.6333307313831,
+            "updates_per_sec": 95.42110602450536
+        },
+        {
+            "device": "cuda",
+            "num_envs": 1,
+            "steps_per_sec": 172.12088362771368,
+            "updates_per_sec": 42.47943407931974
         }
     ],
     "ablation_5": [
