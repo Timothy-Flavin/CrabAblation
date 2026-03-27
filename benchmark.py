@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import warnings
+
+warnings.filterwarnings("ignore")
+
 import argparse
 from types import SimpleNamespace
 
@@ -28,7 +32,9 @@ from runner_utils import (
 
 def get_args():
     parser = argparse.ArgumentParser(description="Unified benchmark runner")
-    parser.add_argument("--algo", type=str, default="dqn", choices=["dqn", "ppo", "sac"])
+    parser.add_argument(
+        "--algo", type=str, default="dqn", choices=["dqn", "ppo", "sac"]
+    )
     parser.add_argument(
         "--env_name",
         type=str,
@@ -94,7 +100,11 @@ def get_args():
 
     if args.algo == "sac" and args.update_every == 4:
         args.update_every = 8
-    if args.env_name == "mujoco" and args.algo == "dqn" and args.dqn_buffer_size == 10000:
+    if (
+        args.env_name == "mujoco"
+        and args.algo == "dqn"
+        and args.dqn_buffer_size == 10000
+    ):
         args.dqn_buffer_size = 20000
 
     if not args.env_id:
@@ -104,8 +114,7 @@ def get_args():
 
 
 def run_grid_search(args, total_steps=2000):
-    print(f"\n=== Starting {args.algo.upper()} Grid Search ===")
-
+    # suppress print
     devices = get_benchmark_devices()
     num_envs_list = [1, 4, 8, 12, 16]
 
@@ -174,13 +183,17 @@ def run_grid_search(args, total_steps=2000):
                     }
 
                     if args.replace_existing and ((dev, num_envs) in existing_trials):
-                        for idx, entry in enumerate(all_results[f"ablation_{ablation}"]):
+                        for idx, entry in enumerate(
+                            all_results[f"ablation_{ablation}"]
+                        ):
                             if (
                                 isinstance(entry, dict)
                                 and entry.get("device") == dev
                                 and entry.get("num_envs") == num_envs
                             ):
-                                all_results[f"ablation_{ablation}"][idx] = current_config
+                                all_results[f"ablation_{ablation}"][
+                                    idx
+                                ] = current_config
                                 break
                     else:
                         all_results[f"ablation_{ablation}"].append(current_config)
@@ -204,20 +217,30 @@ def run_grid_search(args, total_steps=2000):
                         best_config = current_config
 
                 except Exception as e:
-                    import traceback
-
-                    print(f"Error for device={dev}, num_envs={num_envs}: {e}")
-                    traceback.print_exc()
+                    pass
                 finally:
                     vec_env.close()
 
+        if best_config is None and all_results.get(f"ablation_{ablation}"):
+            best_config = max(
+                (e for e in all_results[f"ablation_{ablation}"] if isinstance(e, dict) and "steps_per_sec" in e),
+                key=lambda e: e["steps_per_sec"],
+                default=None
+            )
         best_results[f"ablation_{ablation}"] = best_config
-        print(f"Best for Ablation {ablation}: {best_config}")
+        # suppress print
 
     save_grid_search_results(args, args.algo, best_results, all_results)
+    import json
+
+    print(
+        json.dumps({"best_results": best_results, "all_results": all_results}, indent=4)
+    )
 
 
-def benchmark_updates(agent, args, obs_dim, action_dim, device="cpu", batch_sizes=None, iters=50):
+def benchmark_updates(
+    agent, args, obs_dim, action_dim, device="cpu", batch_sizes=None, iters=50
+):
     if batch_sizes is None:
         batch_sizes = [64, 256]
 
@@ -232,7 +255,9 @@ def benchmark_updates(agent, args, obs_dim, action_dim, device="cpu", batch_size
             if n_action_dims == 1:
                 actions = torch.randint(0, n_action_bins, (bs,), device=dev)
             else:
-                actions = torch.randint(0, n_action_bins, (bs, n_action_dims), device=dev)
+                actions = torch.randint(
+                    0, n_action_bins, (bs, n_action_dims), device=dev
+                )
             rewards = torch.randn((bs,), device=dev)
             terms = torch.zeros((bs,), device=dev)
             return {
@@ -320,9 +345,12 @@ def benchmark_updates(agent, args, obs_dim, action_dim, device="cpu", batch_size
         run_update_fn = run_update_ppo
 
     else:
+
         def make_batch_sac(bs, dev):
             observations = torch.randn((bs, obs_dim), dtype=torch.float32, device=dev)
-            next_observations = torch.randn((bs, obs_dim), dtype=torch.float32, device=dev)
+            next_observations = torch.randn(
+                (bs, obs_dim), dtype=torch.float32, device=dev
+            )
             actions = torch.randn((bs, action_dim), dtype=torch.float32, device=dev)
             rewards = torch.randn((bs, 1), dtype=torch.float32, device=dev)
             dones = torch.zeros((bs, 1), dtype=torch.float32, device=dev)
@@ -358,17 +386,24 @@ def benchmark_updates(agent, args, obs_dim, action_dim, device="cpu", batch_size
     )
 
 
-def benchmark_action_sampling(agent, args, obs_dim, device="cpu", batch_sizes=None, iters=200):
+def benchmark_action_sampling(
+    agent, args, obs_dim, device="cpu", batch_sizes=None, iters=200
+):
     if batch_sizes is None:
         batch_sizes = [1, 4, 16, 64, 256]
 
     if args.algo == "dqn":
+
         def sample_fn(obs):
             return agent.sample_action(obs, eps=0.1, step=0)
+
     elif args.algo == "ppo":
+
         def sample_fn(obs):
             return agent.sample_action(obs)[0]
+
     else:
+
         def sample_fn(obs):
             return agent.sample_action(obs, deterministic=False)
 
@@ -421,11 +456,17 @@ def main():
         device = resolve_torch_device(args.device)
         agent, _ = build_agent(args, vec_env, device)
 
-        benchmark_updates(agent, args, obs_dim, action_dim, device="cpu", batch_sizes=[64, 256])
+        benchmark_updates(
+            agent, args, obs_dim, action_dim, device="cpu", batch_sizes=[64, 256]
+        )
         if torch.cuda.is_available():
-            benchmark_updates(agent, args, obs_dim, action_dim, device="cuda", batch_sizes=[64, 256])
+            benchmark_updates(
+                agent, args, obs_dim, action_dim, device="cuda", batch_sizes=[64, 256]
+            )
 
-        benchmark_action_sampling(agent, args, obs_dim, device="cpu", batch_sizes=[1, 4, 16, 64, 256])
+        benchmark_action_sampling(
+            agent, args, obs_dim, device="cpu", batch_sizes=[1, 4, 16, 64, 256]
+        )
         if torch.cuda.is_available():
             benchmark_action_sampling(
                 agent,

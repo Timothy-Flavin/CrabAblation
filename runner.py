@@ -146,10 +146,10 @@ def create_vec_env(args, num_envs: int | None = None):
         )
         args.num_envs = int(vec_env.num_envs)
         return vec_env
-
+    run = getattr(args, "run", 999) if getattr(args, "run", None) is not None else 999
     n_envs = int(num_envs if num_envs is not None else args.num_envs)
     env_fns = [
-        make_env_thunk(args.fully_obs, args.env_name, seed=args.run + i, idx=i)
+        make_env_thunk(args.fully_obs, args.env_name, seed=run + i, idx=i)
         for i in range(n_envs)
     ]
     return gym.vector.SyncVectorEnv(env_fns)
@@ -521,14 +521,19 @@ def rollout_online_rl(
     smooth_r = 0.0
 
     start_time = time.time()
-    results_dir = os.path.join("results", args.algo, args.env_name)
-    os.makedirs(results_dir, exist_ok=True)
-    tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
-    writer = SummaryWriter(log_dir=tb_dir)
-    writer.add_scalar("run/started", 1, 0)
 
-    if hasattr(agent, "attach_tensorboard"):
-        agent.attach_tensorboard(writer, prefix="agent")
+    writer = None
+    if getattr(args, "run", None) is not None:
+        results_dir = os.path.join("results", args.algo, args.env_name)
+        os.makedirs(results_dir, exist_ok=True)
+        tb_dir = os.path.join(
+            results_dir, f"tensorboard_run{args.run}_abl{args.ablation}"
+        )
+        writer = SummaryWriter(log_dir=tb_dir)
+        writer.add_scalar("run/started", 1, 0)
+
+        if hasattr(agent, "attach_tensorboard"):
+            agent.attach_tensorboard(writer, prefix="agent")
 
     obs_shape = vec_env.single_observation_space.shape
     act_shape = vec_env.single_action_space.shape
@@ -600,9 +605,10 @@ def rollout_online_rl(
                     )
                     rhist.append(float(r_ep[env_i]))
                     smooth_rhist.append(float(smooth_r))
-                    writer.add_scalar(
-                        "charts/episodic_return", float(r_ep[env_i]), global_step
-                    )
+                    if writer:
+                        writer.add_scalar(
+                            "charts/episodic_return", float(r_ep[env_i]), global_step
+                        )
                     r_ep[env_i] = 0.0
 
         if timed_out:
@@ -631,14 +637,16 @@ def rollout_online_rl(
                 n_steps=total_step_budget,
             )
             eval_hist.append(float(eval_r))
-            writer.add_scalar("charts/eval_return", float(eval_r), global_step)
+            if writer:
+                writer.add_scalar("charts/eval_return", float(eval_r), global_step)
 
     train_time = time.time() - start_time
     steps_per_sec = (global_step / train_time) if train_time > 0 else 0.0
     updates_per_sec = (updates_performed / train_time) if train_time > 0 else 0.0
 
-    writer.flush()
-    writer.close()
+    if writer:
+        writer.flush()
+        writer.close()
 
     return {
         "rhist": rhist,
@@ -683,14 +691,17 @@ def rollout_offline_rl(
     ep = 0
 
     start_time = time.time()
-    results_dir = os.path.join("results", args.algo, args.env_name)
-    os.makedirs(results_dir, exist_ok=True)
-    tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
-    writer = SummaryWriter(log_dir=tb_dir)
-    writer.add_scalar("run/started", 1, 0)
+    
+    writer = None
+    if getattr(args, "run", None) is not None:
+        results_dir = os.path.join("results", args.algo, args.env_name)
+        os.makedirs(results_dir, exist_ok=True)
+        tb_dir = os.path.join(results_dir, f"tensorboard_run{args.run}_abl{args.ablation}")
+        writer = SummaryWriter(log_dir=tb_dir)
+        writer.add_scalar("run/started", 1, 0)
 
-    if hasattr(agent, "attach_tensorboard"):
-        agent.attach_tensorboard(writer, prefix="agent")
+        if hasattr(agent, "attach_tensorboard"):
+            agent.attach_tensorboard(writer, prefix="agent")
 
     total_samples = 0
     updates_performed = 0
@@ -798,10 +809,11 @@ def rollout_offline_rl(
                     smooth_rhist.append(float(smooth_r))
                     ep += 1
 
-                    writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
-                    writer.add_scalar(
-                        "episode/smooth_reward", float(smooth_r), total_samples
-                    )
+                    if writer:
+                        writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
+                        writer.add_scalar(
+                            "episode/smooth_reward", float(smooth_r), total_samples
+                        )
 
                     t_ = time.time()
                     if ep % 50 == 0 and total_samples > total_step_budget // 2:
@@ -815,9 +827,10 @@ def rollout_offline_rl(
                                 n_steps=total_step_budget,
                             )
                         eval_hist.append(float(evalr / 5.0))
-                        writer.add_scalar(
-                            "eval/reward", float(eval_hist[-1]), total_samples
-                        )
+                        if writer:
+                            writer.add_scalar(
+                                "eval/reward", float(eval_hist[-1]), total_samples
+                            )
                     time_taken_modular["eval_agent"] += time.time() - t_
 
                     ep_len[env_i] = 0
@@ -922,10 +935,11 @@ def rollout_offline_rl(
                         smooth_r = float(0.05 * rhist[-1] + 0.95 * smooth_r)
                     smooth_rhist.append(float(smooth_r))
                     ep += 1
-                    writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
-                    writer.add_scalar(
-                        "episode/smooth_reward", float(smooth_r), total_samples
-                    )
+                    if writer:
+                        writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
+                        writer.add_scalar(
+                            "episode/smooth_reward", float(smooth_r), total_samples
+                        )
 
                     if (
                         ep % eval_every_episodes == 0
@@ -939,7 +953,8 @@ def rollout_offline_rl(
                             n_steps=total_step_budget,
                         )
                         eval_hist.append(float(evalr))
-                        writer.add_scalar("eval/reward", float(evalr), total_samples)
+                        if writer:
+                            writer.add_scalar("eval/reward", float(evalr), total_samples)
 
                     ep_len[env_i] = 0
                     r_ep[env_i] = 0.0
@@ -959,8 +974,9 @@ def rollout_offline_rl(
                     updates_performed += 1
                 steps_since_update -= args.update_every
 
-    writer.flush()
-    writer.close()
+    if writer:
+        writer.flush()
+        writer.close()
 
     train_time = time.time() - start_time
     steps_per_sec = (total_samples / train_time) if train_time > 0 else 0.0

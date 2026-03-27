@@ -131,10 +131,6 @@ def save_grid_search_results(args, algo_name, best_results, all_results):
     with open(all_filename, "w") as f:
         json.dump(all_results, f, indent=4)
 
-    print(
-        f"\nGrid search complete. Saved best configs to {best_filename} and all configs to {all_filename}"
-    )
-
 
 def load_grid_search_results(args, algo_name):
     best_filename, all_filename = get_grid_search_paths(args, algo_name)
