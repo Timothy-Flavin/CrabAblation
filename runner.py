@@ -569,6 +569,8 @@ def rollout_online_rl(
 
     for iteration in range(1, num_iterations + 1):
         for step in range(args.num_steps):
+            if global_step > 0 and global_step % 10000 == 0:
+                print(f"[PPO] Step {global_step}/{total_step_budget} (Iteration {iteration}/{num_iterations})")
             if (
                 max_wall_time_seconds is not None
                 and max_wall_time_seconds > 0
@@ -759,6 +761,8 @@ def rollout_offline_rl(
         buffer_ptr = 0
 
         while total_samples < total_step_budget:
+            if total_samples > 0 and total_samples % 10000 == 0:
+                print(f"[SAC] Step {total_samples}/{total_step_budget} (Episodes: {ep})")
             if (
                 max_wall_time_seconds is not None
                 and max_wall_time_seconds > 0
