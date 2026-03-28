@@ -329,6 +329,7 @@ class SACAgent(Agent):
     @torch.no_grad()
     def sample_action(self, obs, deterministic: bool = False):
         actor_device = self.actor.device
+        # Always cast obs to float32
         if isinstance(obs, np.ndarray):
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=actor_device)
         else:
