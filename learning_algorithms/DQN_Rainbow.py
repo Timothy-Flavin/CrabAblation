@@ -335,7 +335,7 @@ class RainbowDQN(Agent):
             except Exception:
                 pass
         update_timings["total"] += time.time() - t__
-        print(f"update timings: {update_timings}")
+        # print(f"update timings: {update_timings}")
 
         return extrinsic_loss.item()
 
@@ -892,6 +892,7 @@ class EVRainbowDQN(Agent):
             }
         update_timings = self.update_timings
         import time
+
         t__ = time.time()
 
         # NOTE: update_running_stats is handled externally in runner.py per step batch to avoid O(N) buffer scaling
@@ -914,7 +915,9 @@ class EVRainbowDQN(Agent):
         update_timings["update_rnd"] += time.time() - t_
 
         if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
-            self.Beta = self.start_Beta * (0.5 ** (self.step / self.beta_half_life_steps))
+            self.Beta = self.start_Beta * (
+                0.5 ** (self.step / self.beta_half_life_steps)
+            )
 
         t_ = time.time()
         b_obs = obs[idx]
@@ -1010,7 +1013,7 @@ class EVRainbowDQN(Agent):
             torch.nn.utils.clip_grad_norm_(self.ext_online.parameters(), max_norm=10.0)
         self.optim.step()
         update_timings["extrinsic_loss"] += time.time() - t_
-        
+
         if extrinsic_only:
             update_timings["total"] += time.time() - t__
             return float(extrinsic_loss.item())
@@ -1047,7 +1050,7 @@ class EVRainbowDQN(Agent):
             torch.nn.utils.clip_grad_norm_(self.int_online.parameters(), max_norm=10.0)
         self.int_optim.step()
         update_timings["intrinsic_loss"] += time.time() - t_
-        
+
         t_ = time.time()
 
         # collecting values for tensorboard
@@ -1080,7 +1083,7 @@ class EVRainbowDQN(Agent):
                         )
             except Exception:
                 pass
-        
+
         update_timings["logging"] += time.time() - t_
         update_timings["total"] += time.time() - t__
 

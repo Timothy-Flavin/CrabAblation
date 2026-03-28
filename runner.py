@@ -418,7 +418,13 @@ def evaluate_agent(agent, args, device, step=0, n_steps=1000000):
             done = np.zeros(int(vec_env.num_envs), dtype=bool)
             reward = np.zeros(int(vec_env.num_envs), dtype=np.float32)
 
-            while not bool(np.all(done)):
+            step_count = 0
+            import time
+            start_time = time.time()
+            max_eval_time = 300  # 5 minutes, though usually this doesn't hang unless it's very slow
+
+            while not bool(np.all(done)) and step_count < 2000 and (time.time() - start_time) < 120:
+                step_count += 1
                 with torch.no_grad():
                     if args.algo == "ppo":
                         tobs = torch.from_numpy(np.asarray(obs)).float().to(device)
@@ -458,7 +464,12 @@ def evaluate_agent(agent, args, device, step=0, n_steps=1000000):
         batched=False,
     )
 
-    while not done:
+    import time
+    start_time = time.time()
+    step_count = 0
+
+    while not done and step_count < 2000 and (time.time() - start_time) < 120:
+        step_count += 1
         with torch.no_grad():
             if args.algo == "ppo":
                 tobs = torch.from_numpy(np.asarray(obs)).float().unsqueeze(0).to(device)
@@ -518,6 +529,7 @@ def rollout_online_rl(
     eval_hist = []
 
     r_ep = np.zeros(args.num_envs)
+    ep_len = np.zeros(args.num_envs, dtype=int)
     smooth_r = 0.0
 
     start_time = time.time()
@@ -587,6 +599,8 @@ def rollout_online_rl(
             next_obs_np, reward, terminations, truncations, _ = vec_env.step(
                 step_action
             )
+            ep_len += 1
+            truncations = np.logical_or(truncations, ep_len >= 2000)
             next_done_np = np.logical_or(terminations, truncations)
             agent_rewards[step] = torch.as_tensor(reward, device=device).view(-1)
 
@@ -610,6 +624,7 @@ def rollout_online_rl(
                             "charts/episodic_return", float(r_ep[env_i]), global_step
                         )
                     r_ep[env_i] = 0.0
+                    ep_len[env_i] = 0
 
         if timed_out:
             break
@@ -770,6 +785,10 @@ def rollout_offline_rl(
             next_obs, r, term, trunc, _ = vec_env.step(step_action)
             time_taken_modular["env_step"] += time.time() - t_
 
+            for env_i in range(args.num_envs):
+                if ep_len[env_i] + 1 >= 2000:
+                    trunc[env_i] = True
+
             r_mult = r * 10.0
 
             if hasattr(agent, "update_running_stats"):
@@ -921,6 +940,10 @@ def rollout_offline_rl(
             next_obs, rewards, terminations, truncations, infos = vec_env.step(
                 actions_env
             )
+
+            for env_i in range(args.num_envs):
+                if ep_len[env_i] + 1 >= 2000:
+                    truncations[env_i] = True
 
             real_next_obs = next_obs.copy()
             for idx, trunc in enumerate(truncations):
