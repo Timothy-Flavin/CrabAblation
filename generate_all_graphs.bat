@@ -19,10 +19,9 @@ for %%A in (%ALGORITHMS%) do (
   for %%E in (%ENVIRONMENTS%) do (
     for %%X in (%XAXES%) do (
       if "%%X"=="steps" (
-        echo Generating: %%A %%E %%X (with max_steps)
+        echo Generating: %%A %%E %%X [with max_steps]
         python graph.py --env %%E --runs %RUNS% --weight %WEIGHT% --xaxis %%X --max_steps %MAX_STEPS%
-      )
-      if not "%%X"=="steps" (
+      ) else (
         echo Generating: %%A %%E %%X
         python graph.py --env %%E --runs %RUNS% --weight %WEIGHT% --xaxis %%X
       )
