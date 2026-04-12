@@ -25,11 +25,17 @@ New layout:
 RESULTS_DIR = Path("results")
 RESULTS_DIR.mkdir(exist_ok=True)
 
-# Map prefix tokens to runner folder
+# Map prefix tokens to (algo, env)
 PREFIX_TO_RUNNER = {
-    "dqn_mujoco": "mujoco",
-    "dqn_minigrid": "minigrid",
-    "dqn_cartpole": "cartpole",
+    "dqn_mujoco": ("dqn", "mujoco"),
+    "dqn_minigrid": ("dqn", "minigrid"),
+    "dqn_cartpole": ("dqn", "cartpole"),
+    "ppo_mujoco": ("ppo", "mujoco"),
+    "ppo_minigrid": ("ppo", "minigrid"),
+    "ppo_cartpole": ("ppo", "cartpole"),
+    "sac_mujoco": ("sac", "mujoco"),
+    "sac_minigrid": ("sac", "minigrid"),
+    "sac_cartpole": ("sac", "cartpole"),
 }
 
 # Recognize file base names we care about
@@ -38,10 +44,11 @@ BASE_NAMES = {
     "eval_scores",
     "loss_hist",
     "smooth_train_scores",
+    "train_time",
 }
 
-# Regex: dqn_<runner>_<basename>_<run>_<ablation>(.ext)?
-LEGACY_RE = re.compile(r"^(dqn_[a-zA-Z0-9]+)_([a-z_]+)_(\d+)_(\d+)(\..+)?$")
+# Regex: (algo)_(env)_(basename)_(run)_(ablation)(.ext)?
+LEGACY_RE = re.compile(r"^([a-zA-Z0-9]+)_([a-zA-Z0-9\-]+)_([a-z_]+)_(\d+)_(\d+)(\..+)?$")
 
 
 def plan_move(file: Path):
@@ -50,24 +57,30 @@ def plan_move(file: Path):
     m = LEGACY_RE.match(name)
     if not m:
         return None
-    prefix, base, run, ablation, ext = m.groups()
-    runner = PREFIX_TO_RUNNER.get(prefix)
-    if not runner:
-        # Try to infer from base if prefix unknown
+    algo, env, base, run, ablation, ext = m.groups()
+    
+    # Try using prefix map if it matched old bugs like dqn_mujoco for cartpole
+    prefix = f"{algo}_{env}"
+    mapping = PREFIX_TO_RUNNER.get(prefix)
+    
+    if mapping:
+        algo, env = mapping
+    else:
+        # Infer from base/name just in case there's something weird
         if "minigrid" in name:
-            runner = "minigrid"
+            env = "minigrid"
         elif "mujoco" in name:
-            runner = "mujoco"
+            env = "mujoco"
         elif "cartpole" in name:
-            runner = "cartpole"
-        else:
-            return None
+            env = "cartpole"
+    
     if base not in BASE_NAMES:
         return None
     if not ext:
         # default to png if missing extension (matplotlib default)
         ext = ".png"
-    dst_dir = RESULTS_DIR / runner
+        
+    dst_dir = RESULTS_DIR / algo / env
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst_name = f"{base}_{run}_{ablation}{ext}"
     return dst_dir / dst_name
