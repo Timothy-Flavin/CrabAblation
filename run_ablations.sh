@@ -3,8 +3,9 @@
 set -euo pipefail
 
 # Default parameters
-ALGOS=("dqn" "ppo" "sac")
-ENVS=("mujoco" "cartpole" "minigrid")
+ALGOS=("sac")
+ENVS=("cartpole" "mujoco" "minigrid" "hide-and-seek-engine") 
+#"mujoco" "cartpole" "minigrid"
 ABLATIONS=(0 1 2 3 4 5)
 RUNS=3
 DEVICE="cpu"
