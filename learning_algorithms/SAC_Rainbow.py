@@ -440,7 +440,7 @@ class SACAgent(Agent):
         norm_x64 = self.obs_rms.normalize(x64)
         if norm_x64.ndim == 1:
             norm_x64 = norm_x64.unsqueeze(0)
-        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
+        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze().detach()
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
 
     def update(self, data, global_step: int):

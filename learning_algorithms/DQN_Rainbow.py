@@ -354,7 +354,7 @@ class RainbowDQN(Agent):
         # Ensure batch dimension for RND
         if norm_x64.ndim == 1:
             norm_x64 = norm_x64.unsqueeze(0)
-        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
+        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze().detach()
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
         self.ext_rms.update(r.to(dtype=torch.float64))
 
@@ -420,7 +420,7 @@ class RainbowDQN(Agent):
         # Use existing running stats (updated per-environment step) to normalize inputs for RND
         if batch_norm:
             norm_next_obs_f32 = (next_obs - next_obs.mean(dim=0, keepdim=True)) / (
-                next_obs.std(dim=0, keepdim=True) + 1e-6
+                next_obs.std(dim=0, keepdim=True, unbiased=False) + 1e-6
             )
         elif self.norm_obs:
             with torch.no_grad():
@@ -1099,7 +1099,7 @@ class EVRainbowDQN(Agent):
             norm_x64 = x64
         if norm_x64.ndim == 1:
             norm_x64 = norm_x64.unsqueeze(0)
-        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
+        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze().detach()
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
         self.ext_rms.update(r.to(dtype=torch.float64))
 

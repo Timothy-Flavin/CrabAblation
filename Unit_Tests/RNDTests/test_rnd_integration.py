@@ -1,0 +1,338 @@
+import sys
+import os
+import random
+import torch
+import numpy as np
+import gymnasium as gym
+import matplotlib.pyplot as plt
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+from learning_algorithms.DQN_Rainbow import RainbowDQN
+
+# Simple Deterministic N-Chain Environment
+class NChainEnv(gym.Env):
+    def __init__(self, n=10):
+        super().__init__()
+        self.n = n
+        self.action_space = gym.spaces.Discrete(2)
+        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(n,), dtype=np.float32)
+        self.state = 0
+        self.max_steps = n + 10
+        self.steps = 0
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.state = 0
+        self.steps = 0
+        return self._get_obs(), {}
+
+    def _get_obs(self):
+        obs = np.zeros(self.n, dtype=np.float32)
+        obs[self.state] = 1.0
+        return obs
+
+    def step(self, action):
+        self.steps += 1
+        reward = 0.0
+        
+        if action == 0:  # Forward
+            if self.state < self.n - 1:
+                self.state += 1
+            if self.state == self.n - 1:
+                reward = 10.0 # Big reward at the end
+        else:  # Backward
+            self.state = 0
+            reward = 0.01 # Small reward distraction
+            
+        terminated = (self.state == self.n - 1)
+        truncated = (self.steps >= self.max_steps)
+        
+        return self._get_obs(), reward, terminated, truncated, {}
+
+def train_dqn(use_rnd=False):
+    env = NChainEnv(n=5)
+    agent = RainbowDQN(
+        input_dim=5, 
+        n_action_dims=1, 
+        n_action_bins=2, 
+        Beta=50.0 if use_rnd else 0.0,
+        lr=1e-3,
+        ext_r_clamp=10.0, # allow big reward for n-chain
+        burn_in_updates=0 # Start updating right away
+    )
+    
+    returns = []
+    global_step = 0
+    
+    # We will use extremely short horizons and wait for converge
+    for episode in range(150):
+        obs, _ = env.reset()
+        episode_return = 0
+        done = False
+        while not done:
+            global_step += 1
+            
+            with torch.no_grad():
+                action_tensor = agent.sample_action(
+                    torch.tensor(obs, dtype=torch.float32), 
+                    eps=0.1, 
+                    step=global_step, 
+                    n_steps=1000
+                )
+                action = int(action_tensor[0])
+            
+            next_obs, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            
+            # Since step logic updates the rms:
+            agent.update_running_stats(
+                torch.tensor(next_obs, dtype=torch.float64), 
+                torch.tensor([reward], dtype=torch.float64)
+            )
+            
+            # Update
+            agent.update(
+                torch.tensor(obs).unsqueeze(0), 
+                torch.tensor([[action]]), 
+                torch.tensor([reward]), 
+                torch.tensor(next_obs).unsqueeze(0), 
+                torch.tensor([terminated], dtype=torch.float32), 
+                batch_size=1,
+                step=1
+            )
+            
+            obs = next_obs
+            episode_return += reward
+            
+        returns.append(episode_return)
+        
+    return returns
+
+class MockBatch:
+    def __init__(self, obs, act, rew, next_obs, dones):
+        self.observations = obs
+        self.actions = act
+        self.rewards = rew
+        self.next_observations = next_obs
+        self.dones = dones
+
+from learning_algorithms.SAC_Rainbow import SACAgent
+
+class ContinuousNChainEnv(NChainEnv):
+    def __init__(self, n=10):
+        super().__init__(n)
+        self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        
+    def step(self, action):
+        a = 1 if float(action) > 0 else 0
+        return super().step(a)
+
+def train_sac(use_rnd=False):
+    env = ContinuousNChainEnv(n=5)
+    envs = gym.vector.SyncVectorEnv([lambda: env])
+    agent = SACAgent(
+        envs=envs,
+        beta_rnd=50.0 if use_rnd else 0.0,
+        policy_lr=1e-3,
+        q_lr=1e-3,
+        munchausen=False
+    )
+    
+    returns = []
+    global_step = 0
+    
+    for episode in range(150):
+        obs, _ = env.reset()
+        episode_return = 0
+        done = False
+        while not done:
+            global_step += 1
+            
+            with torch.no_grad():
+                # Get action from SAC
+                obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+                action_t, _, _ = agent.actor.get_action(obs_t)
+                action = action_t.item()
+                
+            next_obs, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            
+            agent.update_running_stats(
+                torch.tensor(next_obs, dtype=torch.float32).unsqueeze(0), 
+                torch.tensor([reward], dtype=torch.float32)
+            )
+            
+            # Form dummy batch
+            batch = MockBatch(
+                obs=torch.tensor(obs, dtype=torch.float32).unsqueeze(0),
+                act=torch.tensor([[action]], dtype=torch.float32),
+                rew=torch.tensor([reward], dtype=torch.float32),
+                next_obs=torch.tensor(next_obs, dtype=torch.float32).unsqueeze(0),
+                dones=torch.tensor([terminated], dtype=torch.float32)
+            )
+            
+            agent.update(batch, global_step=global_step)
+            
+            obs = next_obs
+            episode_return += reward
+                
+        returns.append(episode_return)
+        
+    return returns
+
+from learning_algorithms.PG_Rainbow import PPOAgent
+
+class MockEnvPPO:
+    def __init__(self, obs_shape, act_shape):
+        import types
+        self.single_observation_space = types.SimpleNamespace(shape=obs_shape)
+        self.single_action_space = types.SimpleNamespace(shape=act_shape, n=2)
+        self.num_envs = 1
+
+def train_ppo(use_rnd=False):
+    env = NChainEnv(n=5)
+    envs = MockEnvPPO((5,), ())
+    agent = PPOAgent(
+        envs=envs,
+        Beta=50.0 if use_rnd else 0.0,
+        learning_rate=1e-3,
+        num_envs=1,
+        ent_coef=0.1
+    )
+    
+    returns = []
+    
+    for episode in range(150):
+        obs, _ = env.reset()
+        episode_return = 0
+        done = False
+        
+        obs_b = []
+        act_b = []
+        logp_b = []
+        rew_b = []
+        val_b = []
+        int_val_b = []
+        done_b = []
+        
+        while not done:
+            with torch.no_grad():
+                obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+                action_t, logprob, _, ext_v, int_v = agent.get_action_and_values(obs_t)
+                action = int(action_t.squeeze())
+            
+            next_obs, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            
+            agent.update_running_stats(
+                torch.tensor(next_obs, dtype=torch.float32).unsqueeze(0), 
+                r=torch.tensor([reward], dtype=torch.float32)
+            )
+            
+            obs_b.append(obs_t)
+            act_b.append(action_t)
+            logp_b.append(logprob)
+            rew_b.append(torch.tensor([reward], dtype=torch.float32))
+            val_b.append(ext_v.flatten())
+            int_val_b.append(int_v.flatten())
+            done_b.append(torch.tensor([terminated], dtype=torch.float32))
+            
+            obs = next_obs
+            episode_return += reward
+            
+        returns.append(episode_return)
+        
+        agent.num_steps = len(obs_b)
+        agent.batch_size = len(obs_b)
+        agent.num_minibatches = 1
+        agent.minibatch_size = len(obs_b)
+        
+        agent.update(
+            torch.cat(obs_b).unsqueeze(1),
+            torch.cat(act_b).unsqueeze(1),
+            torch.cat(logp_b).unsqueeze(1),
+            torch.cat(rew_b).unsqueeze(1),
+            torch.cat(done_b).unsqueeze(1),
+            torch.cat(val_b).unsqueeze(1),
+            torch.cat(int_val_b).unsqueeze(1),
+            torch.tensor(next_obs, dtype=torch.float32).unsqueeze(0),
+            torch.tensor([done], dtype=torch.float32)
+        )
+        
+    return returns
+
+def smooth_ema(scalars, weight=0.9):
+    """
+    Computes an Exponential Moving Average.
+    weight: [0, 1). Higher weight = more smoothing.
+    """
+    if len(scalars) == 0:
+        return np.array(scalars)
+        
+    last = scalars[0]  # Initialize with the first data point
+    smoothed = np.empty_like(scalars, dtype=np.float32)
+    
+    for i, point in enumerate(scalars):
+        smoothed_val = last * weight + (1 - weight) * point
+        smoothed[i] = smoothed_val
+        last = smoothed_val
+        
+    return smoothed
+
+def run_multiple_seeds(train_func, use_rnd, n_seeds=5):
+    """
+    Executes a training function over a specified number of seeds 
+    and returns the averaged return array.
+    """
+    all_returns = []
+    for seed in range(n_seeds):
+        # Enforce reproducibility per seed
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        
+        returns = train_func(use_rnd=use_rnd)
+        all_returns.append(returns)
+        
+    # Stack and calculate the mean across the seed axis
+    return np.mean(all_returns, axis=0)
+
+def run_integration():
+    n_seeds = 20
+    
+    print(f"Testing DQN without RND over {n_seeds} seeds...")
+    no_rnd_dqn = run_multiple_seeds(train_dqn, use_rnd=False, n_seeds=n_seeds)
+    print(f"Testing DQN with RND over {n_seeds} seeds...")
+    rnd_dqn = run_multiple_seeds(train_dqn, use_rnd=True, n_seeds=n_seeds)
+    
+    print(f"Testing SAC without RND over {n_seeds} seeds...")
+    no_rnd_sac = run_multiple_seeds(train_sac, use_rnd=False, n_seeds=n_seeds)
+    print(f"Testing SAC with RND over {n_seeds} seeds...")
+    rnd_sac = run_multiple_seeds(train_sac, use_rnd=True, n_seeds=n_seeds)
+    
+    print(f"Testing PPO without RND over {n_seeds} seeds...")
+    no_rnd_ppo = run_multiple_seeds(train_ppo, use_rnd=False, n_seeds=n_seeds)
+    print(f"Testing PPO with RND over {n_seeds} seeds...")
+    rnd_ppo = run_multiple_seeds(train_ppo, use_rnd=True, n_seeds=n_seeds)
+    
+    w = 0.9 
+
+    plt.plot(smooth_ema(no_rnd_dqn, weight=w), label="DQN No RND")
+    plt.plot(smooth_ema(rnd_dqn, weight=w), label="DQN With RND")
+    plt.plot(smooth_ema(no_rnd_sac, weight=w), label="SAC No RND")
+    plt.plot(smooth_ema(rnd_sac, weight=w), label="SAC With RND")
+    plt.plot(smooth_ema(no_rnd_ppo, weight=w), label="PPO No RND")
+    plt.plot(smooth_ema(rnd_ppo, weight=w), label="PPO With RND")
+        
+    plt.legend()
+    plt.xlabel("Episode")
+    plt.ylabel("Average Return")
+    
+    # Ensure directory exists
+    os.makedirs("Unit_Tests/RNDTests", exist_ok=True)
+    plt.savefig("Unit_Tests/RNDTests/nchain_integration.png")
+    print("Plot saved to Unit_Tests/RNDTests/nchain_integration.png")
+
+if __name__ == "__main__":
+    run_integration()

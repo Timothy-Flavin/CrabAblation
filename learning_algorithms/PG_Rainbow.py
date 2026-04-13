@@ -323,7 +323,7 @@ class PPOAgent(Agent):
         self.obs_rms.update(x64)
 
         norm_x64 = self.obs_rms.normalize(x64)
-        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
+        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze().detach()
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
         if r is not None:
             self.ext_rms.update(r.reshape(-1).to(dtype=torch.float64))
@@ -521,7 +521,7 @@ class PPOAgent(Agent):
                 mb_advantages = b_combined_advantages[mb_inds]
                 if self.norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (
-                        mb_advantages.std() + 1e-8
+                        mb_advantages.std(unbiased=False) + 1e-8
                     )
 
                 # Policy loss

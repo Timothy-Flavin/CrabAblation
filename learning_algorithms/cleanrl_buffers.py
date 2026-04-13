@@ -25,6 +25,7 @@ from collections.abc import Generator
 from typing import Any, NamedTuple
 
 import numpy as np
+import torch
 import torch as th
 from gymnasium import spaces
 
@@ -352,6 +353,11 @@ class ReplayBuffer(BaseBuffer):
                     f"replay buffer {total_memory_usage:.2f}GB > {mem_available:.2f}GB"
                 )
 
+    def _to_numpy(self, x):
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu().numpy()
+        return np.array(x)
+
     def add(
         self,
         obs: np.ndarray,
@@ -371,16 +377,16 @@ class ReplayBuffer(BaseBuffer):
         action = action.reshape((self.n_envs, self.action_dim))
 
         # Copy to avoid modification by reference
-        self.observations[self.pos] = np.array(obs)
+        self.observations[self.pos] = self._to_numpy(obs)
 
         if self.optimize_memory_usage:
-            self.observations[(self.pos + 1) % self.buffer_size] = np.array(next_obs)
+            self.observations[(self.pos + 1) % self.buffer_size] = self._to_numpy(next_obs)
         else:
-            self.next_observations[self.pos] = np.array(next_obs)
+            self.next_observations[self.pos] = self._to_numpy(next_obs)
 
-        self.actions[self.pos] = np.array(action)
-        self.rewards[self.pos] = np.array(reward)
-        self.dones[self.pos] = np.array(done)
+        self.actions[self.pos] = self._to_numpy(action)
+        self.rewards[self.pos] = self._to_numpy(reward)
+        self.dones[self.pos] = self._to_numpy(done)
 
         if self.handle_timeout_termination:
             self.timeouts[self.pos] = np.array(
