@@ -474,10 +474,18 @@ class RainbowDQN(Agent):
             ).mean(
                 dim=1
             )  # [B,D,Bins]
+            
+            if self.Beta > 0.0:
+                int_taus = self._sample_taus(batch_size, self.n_quantiles, device)
+                int_next_q = self.int_online(b_next_obs, int_taus).mean(dim=1)
+                q_comb = online_next_q_norm + self.Beta * int_next_q
+            else:
+                q_comb = online_next_q_norm
+
             if self.soft or self.munchausen:
                 # Soft reward for future policy entropy
                 logpi_next = torch.clamp(
-                    torch.log_softmax(online_next_q_norm / self.tau, dim=-1), min=-1e8
+                    torch.log_softmax(q_comb / self.tau, dim=-1), min=-1e8
                 )
                 if torch.isnan(logpi_next).any():
                     print("NaN detected in logpi_next!")
@@ -497,7 +505,7 @@ class RainbowDQN(Agent):
                 # 1. Calculate Mean Q-values for selection (average over quantiles/tau dim 1)
                 # shape: [B, D, Bins]
                 # Double DQN Logic: Use Online Network for selection
-                target_actions = online_next_q_norm.argmax(dim=-1)  # [B, D]
+                target_actions = q_comb.argmax(dim=-1)  # [B, D]
 
                 # 3. Gather the quantiles corresponding to the best action
                 # Expand indices to match target_quantiles_all shape: [B, Nt, D, 1]
@@ -628,9 +636,15 @@ class RainbowDQN(Agent):
             # target_q_means = int_target_all.mean(dim=1)
             # online_q_means = int_quantiles.mean(dim=1)
             online_q_means = self.int_online(b_next_obs, int_taus).mean(dim=1)
+            if self.Beta > 0.0:
+                ext_taus = self._sample_taus(batch_size, self.n_quantiles, b_next_obs.device)
+                ext_next_q = self.ext_online.forward(b_next_obs, ext_taus, normalized=True).mean(dim=1)
+                q_comb = ext_next_q + self.Beta * online_q_means
+            else:
+                q_comb = online_q_means
             # 2. Select best action based on expected value
             # shape: [B, D]
-            target_actions = online_q_means.argmax(dim=-1)
+            target_actions = q_comb.argmax(dim=-1)
             # 3. Gather the quantiles corresponding to the best action
             # Expand indices to match target_quantiles_all shape: [B, Nt, D, 1]
             action_idx = (

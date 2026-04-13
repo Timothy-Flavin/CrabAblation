@@ -136,7 +136,10 @@ def train_sac(use_rnd=False):
         beta_rnd=50.0 if use_rnd else 0.0,
         policy_lr=1e-3,
         q_lr=1e-3,
-        munchausen=False
+        munchausen=False,
+        alpha=0.0,
+        autotune=False,
+        popart=True
     )
     
     returns = []
@@ -283,7 +286,7 @@ def smooth_ema(scalars, weight=0.9):
 def run_multiple_seeds(train_func, use_rnd, n_seeds=5):
     """
     Executes a training function over a specified number of seeds 
-    and returns the averaged return array.
+    and returns the averaged return array and the standard error of the mean (SEM).
     """
     all_returns = []
     for seed in range(n_seeds):
@@ -295,35 +298,60 @@ def run_multiple_seeds(train_func, use_rnd, n_seeds=5):
         returns = train_func(use_rnd=use_rnd)
         all_returns.append(returns)
         
-    # Stack and calculate the mean across the seed axis
-    return np.mean(all_returns, axis=0)
+    returns_array = np.array(all_returns)
+    
+    # Calculate the mean and SEM across the seed axis
+    mean_returns = np.mean(returns_array, axis=0)
+    sem_returns = np.std(returns_array, axis=0) / np.sqrt(n_seeds)
+    
+    return mean_returns, sem_returns
+
+def plot_with_shaded_error(mean, sem, label, weight=0.9):
+    """
+    Plots the smoothed mean and a shaded region for the smoothed SEM.
+    """
+    smoothed_mean = smooth_ema(mean, weight=weight)
+    smoothed_sem = smooth_ema(sem, weight=weight)
+    episodes = np.arange(len(mean))
+    
+    # Plot the mean line and capture the color assigned by matplotlib
+    line = plt.plot(episodes, smoothed_mean, label=label)[0]
+    
+    # Fill the region between (mean - sem) and (mean + sem)
+    plt.fill_between(
+        episodes, 
+        smoothed_mean - smoothed_sem, 
+        smoothed_mean + smoothed_sem, 
+        color=line.get_color(), 
+        alpha=0.2
+    )
 
 def run_integration():
-    n_seeds = 20
+    n_seeds = 30
     
     print(f"Testing DQN without RND over {n_seeds} seeds...")
-    no_rnd_dqn = run_multiple_seeds(train_dqn, use_rnd=False, n_seeds=n_seeds)
+    no_rnd_dqn_mean, no_rnd_dqn_sem = run_multiple_seeds(train_dqn, use_rnd=False, n_seeds=n_seeds)
     print(f"Testing DQN with RND over {n_seeds} seeds...")
-    rnd_dqn = run_multiple_seeds(train_dqn, use_rnd=True, n_seeds=n_seeds)
+    rnd_dqn_mean, rnd_dqn_sem = run_multiple_seeds(train_dqn, use_rnd=True, n_seeds=n_seeds)
     
     print(f"Testing SAC without RND over {n_seeds} seeds...")
-    no_rnd_sac = run_multiple_seeds(train_sac, use_rnd=False, n_seeds=n_seeds)
+    no_rnd_sac_mean, no_rnd_sac_sem = run_multiple_seeds(train_sac, use_rnd=False, n_seeds=n_seeds)
     print(f"Testing SAC with RND over {n_seeds} seeds...")
-    rnd_sac = run_multiple_seeds(train_sac, use_rnd=True, n_seeds=n_seeds)
+    rnd_sac_mean, rnd_sac_sem = run_multiple_seeds(train_sac, use_rnd=True, n_seeds=n_seeds)
     
     print(f"Testing PPO without RND over {n_seeds} seeds...")
-    no_rnd_ppo = run_multiple_seeds(train_ppo, use_rnd=False, n_seeds=n_seeds)
+    no_rnd_ppo_mean, no_rnd_ppo_sem = run_multiple_seeds(train_ppo, use_rnd=False, n_seeds=n_seeds)
     print(f"Testing PPO with RND over {n_seeds} seeds...")
-    rnd_ppo = run_multiple_seeds(train_ppo, use_rnd=True, n_seeds=n_seeds)
+    rnd_ppo_mean, rnd_ppo_sem = run_multiple_seeds(train_ppo, use_rnd=True, n_seeds=n_seeds)
     
     w = 0.9 
 
-    plt.plot(smooth_ema(no_rnd_dqn, weight=w), label="DQN No RND")
-    plt.plot(smooth_ema(rnd_dqn, weight=w), label="DQN With RND")
-    plt.plot(smooth_ema(no_rnd_sac, weight=w), label="SAC No RND")
-    plt.plot(smooth_ema(rnd_sac, weight=w), label="SAC With RND")
-    plt.plot(smooth_ema(no_rnd_ppo, weight=w), label="PPO No RND")
-    plt.plot(smooth_ema(rnd_ppo, weight=w), label="PPO With RND")
+    plot_with_shaded_error(no_rnd_dqn_mean, no_rnd_dqn_sem, "DQN No RND", weight=w)
+    plot_with_shaded_error(rnd_dqn_mean, rnd_dqn_sem, "DQN With RND", weight=w)
+    plot_with_shaded_error(no_rnd_sac_mean, no_rnd_sac_sem, "SAC No RND", weight=w)
+    plot_with_shaded_error(rnd_sac_mean, rnd_sac_sem, "SAC With RND", weight=w)
+    plot_with_shaded_error(no_rnd_ppo_mean, no_rnd_ppo_sem, "PPO No RND", weight=w)
+    plot_with_shaded_error(rnd_ppo_mean, rnd_ppo_sem, "PPO With RND", weight=w)
         
     plt.legend()
     plt.xlabel("Episode")
@@ -333,6 +361,5 @@ def run_integration():
     os.makedirs("Unit_Tests/RNDTests", exist_ok=True)
     plt.savefig("Unit_Tests/RNDTests/nchain_integration.png")
     print("Plot saved to Unit_Tests/RNDTests/nchain_integration.png")
-
 if __name__ == "__main__":
     run_integration()

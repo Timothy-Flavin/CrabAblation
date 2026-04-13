@@ -78,7 +78,7 @@ class Args:
     """if True, use IQN critics; else use expected-value critics"""
     dueling: bool = False
     """if True, enable dueling critic heads"""
-    popart: bool = False
+    popart: bool = True
     """if True, use PopArt-scaled critic outputs"""
     delayed_critics: bool = True
     """if True, use delayed target critics; else use online critics as targets"""
@@ -217,7 +217,7 @@ class SACAgent(Agent):
         entropy_coef_zero: bool = False,
         distributional: bool = False,
         dueling: bool = False,
-        popart: bool = False,
+        popart: bool = True,
         delayed_critics: bool = True,
         hidden_layer_sizes: tuple[int, int] = (128, 128),
         n_quantiles: int = 32,
