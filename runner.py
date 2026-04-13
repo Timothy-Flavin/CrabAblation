@@ -77,7 +77,7 @@ def get_args():
     parser.add_argument("--rnd_burn_in", type=int, default=1000)
 
     # SAC knobs
-    parser.add_argument("--buffer_size", type=int, default=int(1e6))
+    parser.add_argument("--buffer_size", type=int, default=20000)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--batch_size", type=int, default=256)
@@ -96,6 +96,8 @@ def get_args():
         default=3,
         help="Discretization bins per Box dimension for discrete mixed-action wrapper.",
     )
+
+    args = parser.parse_args()
 
     if args.algo == "sac" and args.update_every == 4:
         args.update_every = 4
@@ -136,12 +138,9 @@ def _maybe_load_best_params(args):
 def create_vec_env(args, num_envs: int | None = None):
     env_id = getattr(args, "env_id", args.env_name)
     if env_id == "hide-and-seek-engine" or args.env_name == "hide-and-seek-engine":
-        action_mode = "continuous" if args.algo == "sac" else "discrete"
-
         vec_env = make_hide_and_seek_vec_env(
             num_envs=int(num_envs if num_envs is not None else args.num_envs),
-            action_mode=action_mode,
-            bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
+            device="cpu",
         )
         args.num_envs = int(vec_env.num_envs)
         return vec_env
@@ -787,7 +786,7 @@ def rollout_offline_rl(
             eps_current = max(
                 1.0 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05
             )
-            tobs = torch.from_numpy(obs).to(device).float()
+            tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
             t_ = time.time()
             actions = agent.sample_action(
                 tobs,
@@ -810,7 +809,7 @@ def rollout_offline_rl(
 
             if hasattr(agent, "update_running_stats"):
                 agent.update_running_stats(
-                    torch.from_numpy(next_obs).to(device).float(),
+                    torch.as_tensor(next_obs, dtype=torch.float32, device=device),
                     torch.as_tensor(r_mult, dtype=torch.float32, device=device),
                 )
 
@@ -826,9 +825,9 @@ def rollout_offline_rl(
                         np.asarray(actions_arr[env_i]).reshape(-1)[0]
                     )
 
-                buff_obs[idx].copy_(torch.from_numpy(obs[env_i]).to(device).float())
+                buff_obs[idx].copy_(torch.as_tensor(obs[env_i], dtype=torch.float32, device=device))
                 buff_next_obs[idx].copy_(
-                    torch.from_numpy(next_obs[env_i]).to(device).float()
+                    torch.as_tensor(next_obs[env_i], dtype=torch.float32, device=device)
                 )
                 buff_term[idx] = float(term[env_i] or trunc[env_i])
                 buff_r[idx] = float(r_mult[env_i])
@@ -962,7 +961,7 @@ def rollout_offline_rl(
                 if ep_len[env_i] + 1 >= 2000:
                     truncations[env_i] = True
 
-            real_next_obs = next_obs.copy()
+            real_next_obs = next_obs.clone() if isinstance(next_obs, torch.Tensor) else next_obs.copy()
             for idx, trunc in enumerate(truncations):
                 if trunc and "final_observation" in infos:
                     real_next_obs[idx] = infos["final_observation"][idx]
@@ -1008,10 +1007,9 @@ def rollout_offline_rl(
                     r_ep[env_i] = 0.0
 
             if hasattr(agent, "update_running_stats"):
-                agent.update_running_stats(
-                    torch.from_numpy(next_obs).to(device).float(),
-                    torch.as_tensor(rewards, dtype=torch.float32, device=device),
-                )
+                next_obs_t = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
+                rewards_t = torch.as_tensor(rewards, dtype=torch.float32, device=device)
+                agent.update_running_stats(next_obs_t, rewards_t)
 
             obs = next_obs
             total_samples += args.num_envs

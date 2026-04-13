@@ -81,7 +81,7 @@ def get_args():
     parser.add_argument("--rnd_burn_in", type=int, default=10)
 
     # SAC knobs
-    parser.add_argument("--buffer_size", type=int, default=int(1e6))
+    parser.add_argument("--buffer_size", type=int, default=20000)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--batch_size", type=int, default=256)

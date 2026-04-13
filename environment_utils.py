@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import gymnasium as gym
 import numpy as np
+import torch
 
 try:
     import minigrid  # noqa: F401
@@ -14,8 +15,8 @@ def get_env_benchmark_spec(env_name: str):
     """Return shared benchmark model/action configuration by environment family."""
     if env_name == "hide-and-seek-engine":
         return {
-            "n_action_dims": 1,
-            "n_action_bins": 36,
+            "n_action_dims": 6,
+            "n_action_bins": 3,
             "hidden_layer_sizes": [256, 256],
         }
     if env_name == "mujoco":
@@ -413,162 +414,102 @@ def _normalize_parallel_reset_output(reset_out):
     return reset_out, {}
 
 
-class PettingZooParallelVecAdapter:
-    """Adapter exposing a PettingZoo parallel env with a vec-env-like API."""
-
-    def __init__(
-        self, parallel_env, action_mode: str = "discrete", bins_per_dim: int = 3
-    ):
-        self.env = parallel_env
-        self.agent_ids = list(getattr(self.env, "possible_agents", []))
-        if not self.agent_ids:
-            self.agent_ids = list(getattr(self.env, "agents", []))
-        if not self.agent_ids:
-            raise ValueError(
-                "Parallel environment must expose possible_agents or agents"
-            )
-
-        self.num_envs = len(self.agent_ids)
-        self.action_mode = action_mode
-        self.bins_per_dim = int(max(1, bins_per_dim))
-
-        first_agent = self.agent_ids[0]
-        self.raw_observation_space = self.env.observation_space(first_agent)
-        self.raw_action_space = self.env.action_space(first_agent)
-
-        self.spatial_shape, self.vector_dim = extract_mixed_observation_shapes(
-            self.raw_observation_space
+class SARBatchedGridVecAdapter:
+    def __init__(self, num_envs, device="cpu"):
+        from hide_and_seek_engine.env_wrapper import SARBatchedGridEnv
+        level_dir = "./test_level"
+        
+        self.env = SARBatchedGridEnv(
+            num_envs=num_envs,
+            map_png=f"{level_dir}/level.png",
+            tiles_json=f"{level_dir}/tiles.json",
+            agents_json=f"{level_dir}/agents.json",
+            survivors_json=f"{level_dir}/survivors.json",
+            mode="centralized",   # Critical update: Handle as global agent MDP
+            requires_state=False,
         )
-        self.flat_obs_dim = int(np.prod(self.spatial_shape)) + int(self.vector_dim)
-        self.single_observation_space = gym.spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(self.flat_obs_dim,),
-            dtype=np.float32,
-        )
+        
+        self.num_envs = num_envs
+        self.device = device
+        self.n_agents = self.env.config.n_agents
+        
+        # Formulate proxy space sizes for neural network initialization
+        dummy_obs, _ = self.env.reset()
+        
+        dummy_obs_spatial = dummy_obs["spatial"].shape
+        dummy_obs_internal = dummy_obs["internal"].shape
+        
+        # Flattened spatial + flattened internal (matching MixedObservationEncoder specs)
+        c, h, w = dummy_obs_spatial[1:] # [num_envs, channels, height, width]
+        self.spatial_shape = (c, h, w)
+        self.vector_dim = dummy_obs_internal[1] * dummy_obs_internal[2] # agent_count * 6
+        
+        flat_total = int(np.prod(self.spatial_shape)) + self.vector_dim
+        
+        self.single_observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(flat_total,), dtype=np.float32)
+        # Treated like MuJoCo continuous actions: Move only, N agents * 2 continuous actions
+        self.single_action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.n_agents * 2,), dtype=np.float32)
 
-        if self.action_mode == "continuous":
-            box_space, discrete_space, _ = _mixed_action_space_parts(
-                self.raw_action_space
-            )
-            low = np.concatenate(
-                [
-                    np.asarray(box_space.low, dtype=np.float32).reshape(-1),
-                    -np.ones((discrete_space.n,), dtype=np.float32),
-                ]
-            )
-            high = np.concatenate(
-                [
-                    np.asarray(box_space.high, dtype=np.float32).reshape(-1),
-                    np.ones((discrete_space.n,), dtype=np.float32),
-                ]
-            )
-            self.single_action_space = gym.spaces.Box(
-                low=low,
-                high=high,
-                dtype=np.float32,
-            )
-            self._raw_action_transform = ActionTransformHandler(
-                "hide-and-seek-engine",
-                "sac",
-                self.raw_action_space,
-                bins_per_dim=self.bins_per_dim,
-                batched=False,
-            )
-        elif self.action_mode == "discrete":
-            n_actions = mixed_discrete_action_size(
-                self.raw_action_space, bins_per_dim=self.bins_per_dim
-            )
-            self.single_action_space = gym.spaces.Discrete(n_actions)
-            self._raw_action_transform = ActionTransformHandler(
-                "hide-and-seek-engine",
-                "dqn",
-                self.raw_action_space,
-                bins_per_dim=self.bins_per_dim,
-                batched=False,
-            )
-        else:
-            raise ValueError(f"Unsupported action_mode: {self.action_mode}")
-
-        self._zero_obs = np.zeros((self.flat_obs_dim,), dtype=np.float32)
-
-    def _flatten_obs_for_agent(self, obs_dict, agent_id):
-        raw_obs = obs_dict.get(agent_id)
-        if raw_obs is None:
-            return self._zero_obs.copy()
-        return flatten_mixed_observation(raw_obs, self.spatial_shape, self.vector_dim)
+    def _flatten_obs(self, obs_dict):
+        # Already returns pinned tensors, just move to device and flatten
+        spatial = obs_dict["spatial"].to(self.device).reshape(self.num_envs, -1)
+        internal = obs_dict["internal"].to(self.device).reshape(self.num_envs, -1)
+        return torch.cat([spatial, internal], dim=-1)
 
     def reset(self, **kwargs):
-        obs_dict, info_dict = _normalize_parallel_reset_output(self.env.reset(**kwargs))
-        obs_batch = np.stack(
-            [self._flatten_obs_for_agent(obs_dict, aid) for aid in self.agent_ids],
-            axis=0,
-        )
-        return obs_batch, info_dict
+        obs, _ = self.env.reset()
+        return self._flatten_obs(obs), {}
 
     def step(self, actions):
-        actions_arr = np.asarray(actions)
-        if actions_arr.ndim == 0:
-            actions_arr = actions_arr.reshape(1)
-        action_dict = {}
-        for i, aid in enumerate(self.agent_ids):
-            action_dict[aid] = self._raw_action_transform.transform_action(
-                actions_arr[i]
-            )
+        # Convert incoming continuous flat actions [num_envs, n_agents * 2] back to 2D
+        if not isinstance(actions, torch.Tensor):
+            actions = torch.as_tensor(actions, dtype=torch.float32, device=self.device)
+            
+        move_actions = actions.view(self.num_envs, self.n_agents, 2).cpu().numpy()
+        
+        # We nullify the radio usage by setting it to the transmit-own-ID No-Op as specified by the updated engine rules
+        # "Transmitting an agent's own ID acts as the no-op" -> but here we just pass 0 or a generic dummy
+        # Or even better, a tensor of their own IDs so it's a true no-op.
+        # "Transmitting an agent's own ID acts as the no-op (no transmission)."
+        radio_actions = np.arange(self.n_agents, dtype=np.int32)
+        radio_actions = np.broadcast_to(radio_actions, (self.num_envs, self.n_agents)).copy()
+        
+        obs, rewards, terminated, truncated, _ = self.env.step(move_actions, radio_actions)
 
-        obs_dict, rew_dict, term_dict, trunc_dict, info_dict = self.env.step(
-            action_dict
-        )
+        # Treat as single agent: summing the rewards of all sub-agents
+        if isinstance(rewards, torch.Tensor):
+            rewards = rewards.sum(dim=-1)
+        else:
+            rewards = np.sum(rewards, axis=-1)
+        
+        # Verify terminations/truncations are per-environment
+        if isinstance(terminated, torch.Tensor):
+            if terminated.ndim > 1:
+                terminated = terminated.any(dim=-1)
+        else:
+            if terminated.ndim > 1:
+                terminated = np.any(terminated, axis=-1)
+                
+        if isinstance(truncated, torch.Tensor):
+            if truncated.ndim > 1:
+                truncated = truncated.any(dim=-1)
+        else:
+            if truncated.ndim > 1:
+                truncated = np.any(truncated, axis=-1)
 
-        obs_batch = np.stack(
-            [self._flatten_obs_for_agent(obs_dict, aid) for aid in self.agent_ids],
-            axis=0,
-        )
-        rewards = np.asarray([float(rew_dict.get(aid, 0.0)) for aid in self.agent_ids])
-        terminations = np.asarray(
-            [bool(term_dict.get(aid, False)) for aid in self.agent_ids], dtype=bool
-        )
-        truncations = np.asarray(
-            [bool(trunc_dict.get(aid, False)) for aid in self.agent_ids], dtype=bool
-        )
+        # Map environment scalar returns to tensors
+        rewards_t = torch.as_tensor(rewards, dtype=torch.float32, device=self.device)
+        term_t = torch.as_tensor(terminated, dtype=torch.bool, device=self.device)
+        trunc_t = torch.as_tensor(truncated, dtype=torch.bool, device=self.device)
 
-        if bool(np.all(np.logical_or(terminations, truncations))):
-            final_observation = obs_batch.copy()
-            reset_obs, reset_info = self.reset()
-            infos = {
-                "final_observation": final_observation,
-                "final_info": info_dict,
-                "reset_info": reset_info,
-            }
-            return reset_obs, rewards, terminations, truncations, infos
-
-        return obs_batch, rewards, terminations, truncations, info_dict
+        # Return next_obs as tensor, but scalars as numpy arrays for runner.py compatibility
+        return self._flatten_obs(obs), rewards_t.cpu().numpy(), term_t.cpu().numpy(), trunc_t.cpu().numpy(), {}
 
     def close(self):
-        self.env.close()
+        pass
 
-
-def _load_hide_and_seek_parallel_env():
-    import os
-    from hide_and_seek_engine.env_wrapper import SARParallelPettingZooEnv
-
-    level_dir = "./test_level"
-
-    return SARParallelPettingZooEnv(
-        map_png=os.path.join(level_dir, "level.png"),
-        tiles_json=os.path.join(level_dir, "tiles.json"),
-        agents_json=os.path.join(level_dir, "agents.json"),
-        survivors_json=os.path.join(level_dir, "survivors.json"),
-    )
-
-
-def make_hide_and_seek_vec_env(action_mode: str = "discrete", bins_per_dim: int = 3):
-    parallel_env = _load_hide_and_seek_parallel_env()
-    return PettingZooParallelVecAdapter(
-        parallel_env,
-        action_mode=action_mode,
-        bins_per_dim=bins_per_dim,
-    )
+def make_hide_and_seek_vec_env(num_envs: int, device="cpu", **kwargs):
+    return SARBatchedGridVecAdapter(num_envs, device=device)
 
 
 SUPPORTED_ENVIRONMENTS = (
@@ -627,13 +568,14 @@ class ActionTransformHandler:
         if self.env_name == "hide-and-seek-engine":
             if self.algo in ("dqn", "ppo"):
                 if isinstance(self.action_space, gym.spaces.Discrete):
-                    # Vec adapter consumes integer ids and does hybrid conversion internally.
                     return self._dummy
-                return self._discrete_to_hybrid_hide_and_seek
+                # If continuous box from PPO, just pass through / discrete to continuous
+                if self.algo == "ppo" and isinstance(self.action_space, gym.spaces.Box):
+                    return self._dummy # PPO produces identical box tensor shape
+                return self._discrete_to_continuous_mujoco # DQN needs discrete wrapping mapped to Box
             if self.algo == "sac":
                 if isinstance(self.action_space, gym.spaces.Box):
-                    # Vec adapter consumes continuous vectors and does hybrid conversion internally.
-                    return self._continuous_passthrough
+                    return self._dummy
                 return self._continuous_to_hybrid_hide_and_seek
 
         raise ValueError(
