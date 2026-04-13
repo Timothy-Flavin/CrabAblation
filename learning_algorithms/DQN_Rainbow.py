@@ -375,39 +375,38 @@ class RainbowDQN(Agent):
         with torch.no_grad():
             taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
             ext_q = self.ext_online(obs_b, taus).mean(dim=1)  # [B,D,Bins]
-            if self.Beta > 0.0:
-                int_taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
-                int_q = self.int_online(obs_b, int_taus).mean(dim=1)  # [B,D,Bins]
-                q_comb = ext_q + self.Beta * int_q
-            else:
-                q_comb = ext_q
 
             if self.Thompson:
                 eps_val = 1e-6
                 rand_vals = torch.clamp(
-                    torch.rand_like(q_comb), min=eps_val, max=1.0 - eps_val
+                    torch.rand_like(ext_q), min=eps_val, max=1.0 - eps_val
                 )
                 g = -torch.log(-torch.log(rand_vals))
-                q_comb = q_comb + g
+                ext_q = ext_q + g
 
             if self.soft or self.munchausen:
-                logits = q_comb / self.tau
+                logits = ext_q / self.tau
                 actions = torch.distributions.Categorical(
                     logits=logits
                 ).sample()  # [B,D]
             else:
-                actions = torch.argmax(q_comb, dim=-1)  # [B,D]
+                actions = torch.argmax(ext_q, dim=-1)  # [B,D]
                 rand_vals = torch.rand(batch_size, device=obs_b.device)
                 explore_mask = (rand_vals < min_eps) | (rand_vals < eps)
                 if explore_mask.any():
-                    random_actions = torch.randint(
-                        0,
-                        self.n_action_bins,
-                        (batch_size, self.n_action_dims),
-                        device=obs_b.device,
-                    )
+                    if self.Beta > 0.0:
+                        int_taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
+                        int_q = self.int_online(obs_b, int_taus).mean(dim=1)  # [B,D,Bins]
+                        explore_actions = torch.argmax(int_q, dim=-1)
+                    else:
+                        explore_actions = torch.randint(
+                            0,
+                            self.n_action_bins,
+                            (batch_size, self.n_action_dims),
+                            device=obs_b.device,
+                        )
                     actions = torch.where(
-                        explore_mask.unsqueeze(1), random_actions, actions
+                        explore_mask.unsqueeze(1), explore_actions, actions
                     )
 
             if is_batched:
@@ -474,18 +473,11 @@ class RainbowDQN(Agent):
             ).mean(
                 dim=1
             )  # [B,D,Bins]
-            
-            if self.Beta > 0.0:
-                int_taus = self._sample_taus(batch_size, self.n_quantiles, device)
-                int_next_q = self.int_online(b_next_obs, int_taus).mean(dim=1)
-                q_comb = online_next_q_norm + self.Beta * int_next_q
-            else:
-                q_comb = online_next_q_norm
 
             if self.soft or self.munchausen:
                 # Soft reward for future policy entropy
                 logpi_next = torch.clamp(
-                    torch.log_softmax(q_comb / self.tau, dim=-1), min=-1e8
+                    torch.log_softmax(online_next_q_norm / self.tau, dim=-1), min=-1e8
                 )
                 if torch.isnan(logpi_next).any():
                     print("NaN detected in logpi_next!")
@@ -505,7 +497,7 @@ class RainbowDQN(Agent):
                 # 1. Calculate Mean Q-values for selection (average over quantiles/tau dim 1)
                 # shape: [B, D, Bins]
                 # Double DQN Logic: Use Online Network for selection
-                target_actions = q_comb.argmax(dim=-1)  # [B, D]
+                target_actions = online_next_q_norm.argmax(dim=-1)  # [B, D]
 
                 # 3. Gather the quantiles corresponding to the best action
                 # Expand indices to match target_quantiles_all shape: [B, Nt, D, 1]
@@ -636,15 +628,9 @@ class RainbowDQN(Agent):
             # target_q_means = int_target_all.mean(dim=1)
             # online_q_means = int_quantiles.mean(dim=1)
             online_q_means = self.int_online(b_next_obs, int_taus).mean(dim=1)
-            if self.Beta > 0.0:
-                ext_taus = self._sample_taus(batch_size, self.n_quantiles, b_next_obs.device)
-                ext_next_q = self.ext_online.forward(b_next_obs, ext_taus, normalized=True).mean(dim=1)
-                q_comb = ext_next_q + self.Beta * online_q_means
-            else:
-                q_comb = online_q_means
             # 2. Select best action based on expected value
             # shape: [B, D]
-            target_actions = q_comb.argmax(dim=-1)
+            target_actions = online_q_means.argmax(dim=-1)
             # 3. Gather the quantiles corresponding to the best action
             # Expand indices to match target_quantiles_all shape: [B, Nt, D, 1]
             action_idx = (
