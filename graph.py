@@ -94,7 +94,7 @@ def collect_for_algo(
         if xaxis == "episodes":
             x_train, x_eval, x_label = (
                 np.arange(t_mean.size),
-                np.arange(e_mean.size),
+                np.linspace(0, t_mean.size, num=e_mean.size),
                 "Episode",
             )
         elif xaxis == "steps":

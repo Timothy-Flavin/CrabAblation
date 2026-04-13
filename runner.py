@@ -49,7 +49,7 @@ def get_args():
     parser.add_argument("--fully_obs", action="store_true")
     parser.add_argument("--run", type=int, default=1)
     parser.add_argument("--num_envs", type=int, default=4)
-    parser.add_argument("--num_steps", type=int, default=128)
+    parser.add_argument("--num_steps", type=int, default=2048)
     parser.add_argument("--total_steps", type=int, default=1000000)
     parser.add_argument(
         "--total_steps_override",
@@ -186,7 +186,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     cfg = {
         "munchausen": True,
         "soft": True,
-        "Beta": 0.7 if args.ablation != 4 else 0.1,
+        "Beta": 0.7, # if args.ablation != 4 else 0.1
         "dueling": True,
         "distributional": True,
         "ent_reg_coef": 0.05,
@@ -297,6 +297,9 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
     hidden_layer_sizes = tuple(
         get_env_benchmark_spec(args.env_name)["hidden_layer_sizes"]
     )
+    # num_minibatches scales with num_envs so that minibatch_size = num_steps
+    # stays constant as num_envs changes. This keeps updates-per-individual-step
+    # constant: update_epochs * num_minibatches / (num_steps * num_envs) = update_epochs / num_steps.
     agent = PPOAgent(
         vec_env,
         clip_coef=cfg["clip_coef"],
@@ -305,6 +308,7 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
         Beta=cfg["Beta"],
         num_envs=int(vec_env.num_envs),
         num_steps=args.num_steps,
+        num_minibatches=4,
         hidden_layer_sizes=hidden_layer_sizes,
         use_gae=cfg["use_gae"],
         encoder_factory=encoder_factory,
@@ -319,10 +323,16 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         "dueling": True,
         "popart": True,
         "delayed_critics": True,
+        "munchausen": True,   # ablation 1 removes this
+        "Beta": 0.01,         # ablation 3 sets this to 0.0
     }
 
-    if args.ablation == 2:
+    if args.ablation == 1:
+        cfg["munchausen"] = False
+    elif args.ablation == 2:
         cfg["entropy_coef_zero"] = True
+    elif args.ablation == 3:
+        cfg["Beta"] = 0.0
     elif args.ablation == 4:
         cfg["distributional"] = False
         cfg["dueling"] = False
@@ -351,6 +361,8 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         n_quantiles=args.n_quantiles,
         n_target_quantiles=args.n_target_quantiles,
         encoder_factory=encoder_factory,
+        munchausen=cfg["munchausen"],
+        beta_rnd=cfg["Beta"],
     )
     return agent, cfg
 
@@ -994,14 +1006,25 @@ def rollout_offline_rl(
                     ep_len[env_i] = 0
                     r_ep[env_i] = 0.0
 
+            if hasattr(agent, "update_running_stats"):
+                agent.update_running_stats(
+                    torch.from_numpy(next_obs).to(device).float(),
+                    torch.as_tensor(rewards, dtype=torch.float32, device=device),
+                )
+
             obs = next_obs
             total_samples += args.num_envs
             steps_since_update += args.num_envs
 
+            # buffer.size() returns timestep positions (not individual transitions).
+            # We need batch_size individual transitions, which requires
+            # ceil(batch_size / n_envs) timesteps.
+            _n_envs_buf = int(getattr(buffer, "n_envs", args.num_envs))
+            _min_buf_timesteps = max(1, args.batch_size // _n_envs_buf)
             while steps_since_update >= args.update_every:
                 if (
                     total_samples > args.learning_starts
-                    and buffer.size() >= args.batch_size
+                    and buffer.size() >= _min_buf_timesteps
                 ):
                     data = buffer.sample(args.batch_size)
                     loss = agent.update(data, global_step=total_samples)
@@ -1038,6 +1061,8 @@ def main():
     print(f"Args: {args}")
 
     vec_env = create_vec_env(args)
+    if args.algo == "ppo":
+        args.num_steps = max(1, args.num_steps // args.num_envs)
     try:
         agent, _ = build_agent(args, vec_env, device)
         buffer = build_buffer(args, vec_env, device)
