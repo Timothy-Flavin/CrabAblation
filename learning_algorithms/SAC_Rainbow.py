@@ -18,6 +18,7 @@ from learning_algorithms.MixedObservationEncoder import infer_encoder_out_dim
 from learning_algorithms.cleanrl_buffers import ReplayBuffer
 from learning_algorithms.agent import Agent
 from learning_algorithms.RainbowNetworks import EV_Q_Network, IQN_Network
+from learning_algorithms.RandomDistilation import RNDModel, RunningMeanStd
 from environment_utils import make_env_thunk
 
 
@@ -222,6 +223,13 @@ class SACAgent(Agent):
         n_quantiles: int = 32,
         n_target_quantiles: int = 32,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
+        munchausen: bool = True,
+        beta_rnd: float = 0.01,
+        munchausen_alpha: float = 0.9,
+        munchausen_tau: float = 0.03,
+        l_clip: float = -10.0,
+        rnd_output_dim: int = 128,
+        rnd_lr: float = 1e-3,
     ):
         super().__init__()
         self.gamma = gamma
@@ -307,6 +315,19 @@ class SACAgent(Agent):
 
         self.step = 0
 
+        # Munchausen KL penalty (ablation 1 removes this)
+        self.munchausen = munchausen
+        self.munchausen_alpha = munchausen_alpha
+        self.munchausen_tau = munchausen_tau
+        self.l_clip = l_clip
+
+        # RND intrinsic reward (ablation 3 removes this via Beta=0.0)
+        self.Beta = beta_rnd
+        self.rnd = RNDModel(obs_dim, rnd_output_dim).float()
+        self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
+        self.obs_rms = RunningMeanStd(shape=(obs_dim,))
+        self.int_rms = RunningMeanStd(shape=())
+
     def to(self, device):
         device = torch.device(device)
         self.actor.to(device)
@@ -324,6 +345,11 @@ class SACAgent(Agent):
             self.alpha = self.log_alpha.exp().item()
             q_lr = self.q_optimizer.param_groups[0]["lr"]
             self.a_optimizer = optim.Adam([self.log_alpha], lr=q_lr)
+        self.rnd.to(device)
+        self.obs_rms.to(device)
+        self.int_rms.to(device)
+        rnd_lr = self.rnd_optim.param_groups[0]["lr"]
+        self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         return self
 
     @torch.no_grad()
@@ -406,9 +432,62 @@ class SACAgent(Agent):
         q = critic(critic_input, taus, normalized=normalized)
         return q.view(q.shape[0], q.shape[1])
 
+    @torch.no_grad()
+    def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
+        """Update observation and intrinsic reward running stats with a single env step."""
+        x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
+        self.obs_rms.update(x64)
+        norm_x64 = self.obs_rms.normalize(x64)
+        if norm_x64.ndim == 1:
+            norm_x64 = norm_x64.unsqueeze(0)
+        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze()
+        self.int_rms.update(rnd_err.to(dtype=torch.float64))
+
     def update(self, data, global_step: int):
         target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
         target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
+
+        # === RND intrinsic reward augmentation ===
+        augmented_rewards = data.rewards.flatten()
+        rnd_loss_val = 0.0
+        if self.Beta > 0.0:
+            with torch.no_grad():
+                norm_next_obs = self.obs_rms.normalize(
+                    data.next_observations.to(dtype=torch.float64)
+                ).to(dtype=torch.float32)
+            rnd_errors = self.rnd(norm_next_obs)
+            rnd_loss = rnd_errors.mean()
+            self.rnd_optim.zero_grad()
+            rnd_loss.backward()
+            self.rnd_optim.step()
+            rnd_loss_val = float(rnd_loss.item())
+            with torch.no_grad():
+                int_r = self.int_rms.normalize(
+                    rnd_errors.detach().to(dtype=torch.float64)
+                ).float()
+                int_r = torch.clamp(int_r, -5.0, 5.0)
+            augmented_rewards = augmented_rewards + self.Beta * int_r
+
+        # === Munchausen KL reward shaping ===
+        m_r_val = 0.0
+        if self.munchausen:
+            with torch.no_grad():
+                mean, log_std = self.actor(data.observations)
+                std = log_std.exp()
+                normal = torch.distributions.Normal(mean, std)
+                a_norm = (data.actions - self.actor.action_bias) / self.actor.action_scale
+                a_norm = torch.clamp(a_norm, -0.9999, 0.9999)
+                x_pretanh = torch.atanh(a_norm)
+                log_prob = normal.log_prob(x_pretanh)
+                log_prob -= torch.log(
+                    self.actor.action_scale * (1 - a_norm.pow(2)) + 1e-6
+                )
+                log_pi_replay = log_prob.sum(1)
+                m_r = self.munchausen_alpha * self.munchausen_tau * torch.clamp(
+                    log_pi_replay, min=self.l_clip
+                )
+                m_r_val = float(m_r.mean().item())
+            augmented_rewards = augmented_rewards + m_r
 
         with torch.no_grad():
             next_state_actions, next_state_log_pi, _ = self.actor.get_action(
@@ -433,7 +512,7 @@ class SACAgent(Agent):
                 min_qf_next_quantiles = torch.min(
                     qf1_next_quantiles, qf2_next_quantiles
                 )
-                next_q_quantiles = data.rewards.flatten().unsqueeze(1) + (
+                next_q_quantiles = augmented_rewards.unsqueeze(1) + (
                     1 - data.dones.flatten()
                 ).unsqueeze(1) * self.gamma * (
                     min_qf_next_quantiles - self.alpha * next_state_log_pi
@@ -446,7 +525,7 @@ class SACAgent(Agent):
                     target_qf2, next_critic_input, normalized=False
                 )
                 min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
-                next_q_value = data.rewards.flatten() + (
+                next_q_value = augmented_rewards + (
                     1 - data.dones.flatten()
                 ) * self.gamma * (
                     min_qf_next_target - self.alpha * next_state_log_pi.view(-1)
@@ -591,6 +670,9 @@ class SACAgent(Agent):
             "popart": float(self.popart),
             "dueling": float(self.dueling),
             "delayed_critics": float(self.delayed_critics),
+            "rnd_loss": rnd_loss_val,
+            "munchausen_r": m_r_val,
+            "Beta": float(self.Beta),
         }
 
         if self.tb_writer is not None and global_step % 100 == 0:

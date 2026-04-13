@@ -133,7 +133,7 @@ def make_env_thunk(
             env = FastObsWrapper(env)
         elif env_name == "cartpole":
             resolved_env_id = env_id if env_id is not None else "CartPole-v1"
-            env = gym.make(resolved_env_id)
+            env = gym.make(resolved_env_id, max_episode_steps=500)
         elif env_name == "mujoco":
             resolved_env_id = env_id if env_id is not None else "HalfCheetah-v5"
             if capture_video and idx == 0 and run_name is not None:
