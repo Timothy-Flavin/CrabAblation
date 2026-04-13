@@ -374,7 +374,7 @@ class RainbowDQN(Agent):
 
         with torch.no_grad():
             taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
-            ext_q = self.ext_online(obs_b, taus).mean(dim=1)  # [B,D,Bins]
+            ext_q = self.ext_online(obs_b, taus, normalized=False).mean(dim=1)  # [B,D,Bins]
 
             if self.Thompson:
                 eps_val = 1e-6
@@ -392,21 +392,27 @@ class RainbowDQN(Agent):
             else:
                 actions = torch.argmax(ext_q, dim=-1)  # [B,D]
                 rand_vals = torch.rand(batch_size, device=obs_b.device)
+                
+                # We can also add episodic deep exploration for epsilon if needed.
+                # Right now, acting greedily with respect to the combined Q is standard multi-policy exploration.
                 explore_mask = (rand_vals < min_eps) | (rand_vals < eps)
                 if explore_mask.any():
+                    explore_actions = torch.randint(
+                        0,
+                        self.n_action_bins,
+                        (batch_size, self.n_action_dims),
+                        device=obs_b.device,
+                    )
+                    # 50% probability to use intrinsic network for directional exploration
                     if self.Beta > 0.0:
                         int_taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
-                        int_q = self.int_online(obs_b, int_taus).mean(dim=1)  # [B,D,Bins]
-                        explore_actions = torch.argmax(int_q, dim=-1)
-                    else:
-                        explore_actions = torch.randint(
-                            0,
-                            self.n_action_bins,
-                            (batch_size, self.n_action_dims),
-                            device=obs_b.device,
-                        )
+                        int_q = self.int_online(obs_b, int_taus, normalized=False).mean(dim=1)
+                        int_actions = torch.argmax(int_q, dim=-1)
+                        intrinsic_mask = torch.rand(batch_size, device=obs_b.device) < 0.1
+                        explore_actions = torch.where(intrinsic_mask.unsqueeze(1) if int_actions.ndim > 1 else intrinsic_mask, int_actions, explore_actions)
+                    
                     actions = torch.where(
-                        explore_mask.unsqueeze(1), explore_actions, actions
+                        explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask, explore_actions, actions
                     )
 
             if is_batched:
@@ -937,7 +943,7 @@ class EVRainbowDQN(Agent):
                 )
                 r_int = norm_int.to(dtype=torch.float32)
         # TODO: dont merge reward channels
-        b_r_total = b_r + self.Beta * r_int
+        b_r_total = b_r  # Only extrinsic reward here! Off-policy networks should be completely separated
 
         # Current and next Q-values
         q_now = self.ext_online(b_obs)  # [B,D,Bins]
@@ -1117,40 +1123,39 @@ class EVRainbowDQN(Agent):
         batch_size = obs_b.size(0)
 
         with torch.no_grad():
-            q_ext = self.ext_online(obs_b)  # [B,D,Bins]
-            if self.Beta > 0.0:
-                if random.random() < self.Beta:
-                    q_comb = self.int_online(
-                        obs.unsqueeze(0) if obs.ndim == 1 else obs
-                    ).squeeze(0)
-                else:
-                    q_comb = q_ext
-
-            else:
-                q_comb = q_ext
-
-            eps_curr = 1 - step / n_steps
+            q_ext = self.ext_online(obs_b)  # [B,n_actions]
+            
             if self.soft or self.munchausen:
-                logits = q_comb / self.tau
+                logits = q_ext / self.tau
                 actions = torch.distributions.Categorical(logits=logits).sample()
                 if verbose:
                     print(f"Logits: {logits.cpu().numpy()}")
             else:
-                actions = torch.argmax(q_comb, dim=-1)
+                actions = torch.argmax(q_ext, dim=-1)
                 rand_vals = torch.rand(batch_size, device=obs_b.device)
-                explore_mask = rand_vals < eps_curr
+                
+                # Decay explore mask
+                # eps is passed accurately from training loop, but fallback to eps_curr if needed
+                explore_mask = (rand_vals < min_ent) | (rand_vals < eps)
                 if explore_mask.any():
-                    random_actions = torch.randint(
+                    explore_actions = torch.randint(
                         0,
                         self.n_action_bins,
                         (batch_size, self.n_action_dims),
                         device=obs_b.device,
                     )
+                    # 50% probability to use intrinsic network for directional exploration
+                    if self.Beta > 0.0:
+                        int_q = self.int_online(obs_b)
+                        int_actions = torch.argmax(int_q, dim=-1)
+                        intrinsic_mask = torch.rand(batch_size, device=obs_b.device) < 0.5
+                        explore_actions = torch.where(intrinsic_mask.unsqueeze(1) if int_actions.ndim > 1 else intrinsic_mask, int_actions, explore_actions)
+                    
                     actions = torch.where(
-                        explore_mask.unsqueeze(1), random_actions, actions
+                        explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask, explore_actions, actions
                     )
                 if verbose:
-                    print(f"Q-values combined: {q_comb.cpu().numpy()}")
+                    print(f"Q-values ext: {q_ext.cpu().numpy()}")
 
             if is_batched:
                 return actions.tolist()

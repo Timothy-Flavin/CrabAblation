@@ -295,8 +295,19 @@ class SACAgent(Agent):
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
 
+        # Dual critics for intrinsic reward
+        self.qf1_int = CriticClass(**qf1_kwargs)
+        self.qf2_int = CriticClass(**qf2_kwargs)
+        self.qf1_target_int = CriticClass(**qf1_target_kwargs)
+        self.qf2_target_int = CriticClass(**qf2_target_kwargs)
+        self.qf1_target_int.load_state_dict(self.qf1_int.state_dict())
+        self.qf2_target_int.load_state_dict(self.qf2_int.state_dict())
+
         self.q_optimizer = optim.Adam(
             list(self.qf1.parameters()) + list(self.qf2.parameters()), lr=q_lr
+        )
+        self.q_int_optimizer = optim.Adam(
+            list(self.qf1_int.parameters()) + list(self.qf2_int.parameters()), lr=q_lr
         )
         self.actor_optimizer = optim.Adam(list(self.actor.parameters()), lr=policy_lr)
 
@@ -335,6 +346,11 @@ class SACAgent(Agent):
         self.qf2.to(device)
         self.qf1_target.to(device)
         self.qf2_target.to(device)
+        self.qf1_int.to(device)
+        self.qf2_int.to(device)
+        self.qf1_target_int.to(device)
+        self.qf2_target_int.to(device)
+
         if self.autotune and self.log_alpha is not None:
             self.log_alpha = nn.Parameter(self.log_alpha.detach().to(device))
             self.target_entropy = torch.tensor(
@@ -393,6 +409,18 @@ class SACAgent(Agent):
             target_param.data.copy_(
                 self.tau * param.data + (1 - self.tau) * target_param.data
             )
+        for param, target_param in zip(
+            self.qf1_int.parameters(), self.qf1_target_int.parameters()
+        ):
+            target_param.data.copy_(
+                self.tau * param.data + (1 - self.tau) * target_param.data
+            )
+        for param, target_param in zip(
+            self.qf2_int.parameters(), self.qf2_target_int.parameters()
+        ):
+            target_param.data.copy_(
+                self.tau * param.data + (1 - self.tau) * target_param.data
+            )
 
     def _sample_taus(self, batch_size: int, n: int, device: torch.device):
         return torch.rand(batch_size, n, device=device)
@@ -447,9 +475,14 @@ class SACAgent(Agent):
         target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
         target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
 
+        target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
+        target_qf2_int = self.qf2_target_int if self.delayed_critics else self.qf2_int
+
         # === RND intrinsic reward augmentation ===
         augmented_rewards = data.rewards.flatten()
+        
         rnd_loss_val = 0.0
+        int_r = None
         if self.Beta > 0.0:
             with torch.no_grad():
                 norm_next_obs = self.obs_rms.normalize(
@@ -466,7 +499,8 @@ class SACAgent(Agent):
                     rnd_errors.detach().to(dtype=torch.float64)
                 ).float()
                 int_r = torch.clamp(int_r, -5.0, 5.0)
-            augmented_rewards = augmented_rewards + self.Beta * int_r
+        else:
+            int_r = torch.zeros(data.rewards.shape[0], dtype=torch.float32, device=data.rewards.device)
 
         # === Munchausen KL reward shaping ===
         m_r_val = 0.0
@@ -503,6 +537,8 @@ class SACAgent(Agent):
                     self.n_target_quantiles,
                     next_critic_input.device,
                 )
+                
+                # Extrinsic Target
                 qf1_next_quantiles = self._critic_quantiles(
                     target_qf1, next_critic_input, target_taus, normalized=False
                 )
@@ -517,7 +553,25 @@ class SACAgent(Agent):
                 ).unsqueeze(1) * self.gamma * (
                     min_qf_next_quantiles - self.alpha * next_state_log_pi
                 )
+                
+                # Intrinsic Target (No entropy subtraction according to instructions, possibly 0.99 gamma instead of extrinsic gamma, but we'll use self.gamma for simplicity unless specified otherwise)
+                qf1_next_quantiles_int = self._critic_quantiles(
+                    target_qf1_int, next_critic_input, target_taus, normalized=False
+                )
+                qf2_next_quantiles_int = self._critic_quantiles(
+                    target_qf2_int, next_critic_input, target_taus, normalized=False
+                )
+                min_qf_next_quantiles_int = torch.min(
+                    qf1_next_quantiles_int, qf2_next_quantiles_int
+                )
+                next_q_quantiles_int = int_r.unsqueeze(1) + (
+                    1 - data.dones.flatten()
+                ).unsqueeze(1) * 0.99 * (
+                    min_qf_next_quantiles_int
+                )
+                
             else:
+                # Extrinsic Target
                 qf1_next_target = self._critic_scalar_value(
                     target_qf1, next_critic_input, normalized=False
                 )
@@ -530,12 +584,27 @@ class SACAgent(Agent):
                 ) * self.gamma * (
                     min_qf_next_target - self.alpha * next_state_log_pi.view(-1)
                 )
+                
+                # Intrinsic Target
+                qf1_next_target_int = self._critic_scalar_value(
+                    target_qf1_int, next_critic_input, normalized=False
+                )
+                qf2_next_target_int = self._critic_scalar_value(
+                    target_qf2_int, next_critic_input, normalized=False
+                )
+                min_qf_next_target_int = torch.min(qf1_next_target_int, qf2_next_target_int)
+                next_q_value_int = int_r + (
+                    1 - data.dones.flatten()
+                ) * 0.99 * (
+                    min_qf_next_target_int
+                )
 
         critic_input = self._critic_input(data.observations, data.actions)
         if self.distributional:
             taus = self._sample_taus(
                 critic_input.shape[0], self.n_quantiles, critic_input.device
             )
+            
             if self.popart:
                 self.qf1.output_layer.update_stats(next_q_quantiles)  # type:ignore
                 self.qf2.output_layer.update_stats(next_q_quantiles)  # type:ignore
@@ -551,6 +620,22 @@ class SACAgent(Agent):
                 qf2_quantiles = self._critic_quantiles(
                     self.qf2, critic_input, taus, normalized=True
                 )
+                
+                # Intrinsic popart
+                self.qf1_int.output_layer.update_stats(next_q_quantiles_int)  # type:ignore
+                self.qf2_int.output_layer.update_stats(next_q_quantiles_int)  # type:ignore
+                target_quantiles_1_int = self.qf1_int.output_layer.normalize(
+                    next_q_quantiles_int  # type:ignore
+                )
+                target_quantiles_2_int = self.qf2_int.output_layer.normalize(
+                    next_q_quantiles_int  # type:ignore
+                )
+                qf1_quantiles_int = self._critic_quantiles(
+                    self.qf1_int, critic_input, taus, normalized=True
+                )
+                qf2_quantiles_int = self._critic_quantiles(
+                    self.qf2_int, critic_input, taus, normalized=True
+                )
             else:
                 target_quantiles_1 = next_q_quantiles  # type:ignore
                 target_quantiles_2 = next_q_quantiles  # type:ignore
@@ -560,14 +645,33 @@ class SACAgent(Agent):
                 qf2_quantiles = self._critic_quantiles(
                     self.qf2, critic_input, taus, normalized=False
                 )
+                
+                target_quantiles_1_int = next_q_quantiles_int  # type:ignore
+                target_quantiles_2_int = next_q_quantiles_int  # type:ignore
+                qf1_quantiles_int = self._critic_quantiles(
+                    self.qf1_int, critic_input, taus, normalized=False
+                )
+                qf2_quantiles_int = self._critic_quantiles(
+                    self.qf2_int, critic_input, taus, normalized=False
+                )
+                
             qf1_loss = self._quantile_huber_loss(
                 qf1_quantiles, target_quantiles_1.detach(), taus.detach()
             )
             qf2_loss = self._quantile_huber_loss(
                 qf2_quantiles, target_quantiles_2.detach(), taus.detach()
             )
+            
+            qf1_int_loss = self._quantile_huber_loss(
+                qf1_quantiles_int, target_quantiles_1_int.detach(), taus.detach()
+            )
+            qf2_int_loss = self._quantile_huber_loss(
+                qf2_quantiles_int, target_quantiles_2_int.detach(), taus.detach()
+            )
+            
             qf1_a_values = qf1_quantiles.mean(dim=1)
             qf2_a_values = qf2_quantiles.mean(dim=1)
+            
         else:
             if self.popart:
                 target_for_stats = next_q_value.unsqueeze(1)  # type:ignore
@@ -585,8 +689,27 @@ class SACAgent(Agent):
                 qf2_a_values = self._critic_scalar_value(
                     self.qf2, critic_input, normalized=True
                 )
-                qf1_loss = F.mse_loss(qf1_a_values, next_q_value_norm_1)
-                qf2_loss = F.mse_loss(qf2_a_values, next_q_value_norm_2)
+                qf1_loss = torch.nn.functional.mse_loss(qf1_a_values, next_q_value_norm_1)
+                qf2_loss = torch.nn.functional.mse_loss(qf2_a_values, next_q_value_norm_2)
+                
+                # Intrinsic Popart
+                target_for_stats_int = next_q_value_int.unsqueeze(1)  # type:ignore
+                self.qf1_int.output_layer.update_stats(target_for_stats_int)
+                self.qf2_int.output_layer.update_stats(target_for_stats_int)
+                next_q_value_norm_1_int = self.qf1_int.output_layer.normalize(
+                    target_for_stats_int
+                ).view(-1)
+                next_q_value_norm_2_int = self.qf2_int.output_layer.normalize(
+                    target_for_stats_int
+                ).view(-1)
+                qf1_a_values_int = self._critic_scalar_value(
+                    self.qf1_int, critic_input, normalized=True
+                )
+                qf2_a_values_int = self._critic_scalar_value(
+                    self.qf2_int, critic_input, normalized=True
+                )
+                qf1_int_loss = torch.nn.functional.mse_loss(qf1_a_values_int, next_q_value_norm_1_int)
+                qf2_int_loss = torch.nn.functional.mse_loss(qf2_a_values_int, next_q_value_norm_2_int)
             else:
                 qf1_a_values = self._critic_scalar_value(
                     self.qf1, critic_input, normalized=False
@@ -594,14 +717,29 @@ class SACAgent(Agent):
                 qf2_a_values = self._critic_scalar_value(
                     self.qf2, critic_input, normalized=False
                 )
-                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)  # type:ignore
-                qf2_loss = F.mse_loss(qf2_a_values, next_q_value)  # type:ignore
+                qf1_loss = torch.nn.functional.mse_loss(qf1_a_values, next_q_value)  # type:ignore
+                qf2_loss = torch.nn.functional.mse_loss(qf2_a_values, next_q_value)  # type:ignore
+                
+                # Intrinsic Non-Popart
+                qf1_a_values_int = self._critic_scalar_value(
+                    self.qf1_int, critic_input, normalized=False
+                )
+                qf2_a_values_int = self._critic_scalar_value(
+                    self.qf2_int, critic_input, normalized=False
+                )
+                qf1_int_loss = torch.nn.functional.mse_loss(qf1_a_values_int, next_q_value_int)  # type:ignore
+                qf2_int_loss = torch.nn.functional.mse_loss(qf2_a_values_int, next_q_value_int)  # type:ignore
 
         qf_loss = qf1_loss + qf2_loss
 
         self.q_optimizer.zero_grad()
         qf_loss.backward()
         self.q_optimizer.step()
+        
+        qf_int_loss = qf1_int_loss + qf2_int_loss
+        self.q_int_optimizer.zero_grad()
+        qf_int_loss.backward()
+        self.q_int_optimizer.step()
 
         actor_loss = None
         alpha_loss = None
@@ -622,6 +760,13 @@ class SACAgent(Agent):
                     qf2_pi = self._critic_quantiles(
                         self.qf2, pi_critic_input, pi_taus, normalized=False
                     ).mean(dim=1, keepdim=True)
+                    
+                    qf1_pi_int = self._critic_quantiles(
+                        self.qf1_int, pi_critic_input, pi_taus, normalized=False
+                    ).mean(dim=1, keepdim=True)
+                    qf2_pi_int = self._critic_quantiles(
+                        self.qf2_int, pi_critic_input, pi_taus, normalized=False
+                    ).mean(dim=1, keepdim=True)
                 else:
                     qf1_pi = self._critic_scalar_value(
                         self.qf1, pi_critic_input, normalized=False
@@ -629,8 +774,18 @@ class SACAgent(Agent):
                     qf2_pi = self._critic_scalar_value(
                         self.qf2, pi_critic_input, normalized=False
                     ).unsqueeze(1)
+                    
+                    qf1_pi_int = self._critic_scalar_value(
+                        self.qf1_int, pi_critic_input, normalized=False
+                    ).unsqueeze(1)
+                    qf2_pi_int = self._critic_scalar_value(
+                        self.qf2_int, pi_critic_input, normalized=False
+                    ).unsqueeze(1)
+                    
                 min_qf_pi = torch.min(qf1_pi, qf2_pi)
-                actor_loss = ((self.alpha * log_pi) - min_qf_pi).mean()
+                min_qf_pi_int = torch.min(qf1_pi_int, qf2_pi_int)
+                
+                actor_loss = ((self.alpha * log_pi) - (min_qf_pi + self.Beta * min_qf_pi_int)).mean()
 
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -658,6 +813,8 @@ class SACAgent(Agent):
 
         self.step = global_step
         self.last_losses = {
+            "min_qf_pi": float(min_qf_pi.mean().item()) if 'min_qf_pi' in locals() else 0.0,
+            "min_qf_pi_int": float(min_qf_pi_int.mean().item()) if 'min_qf_pi_int' in locals() else 0.0,
             "qf1_values": float(qf1_a_values.mean().item()),
             "qf2_values": float(qf2_a_values.mean().item()),
             "qf1_loss": float(qf1_loss.item()),
