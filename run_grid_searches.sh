@@ -23,9 +23,9 @@ python benchmark.py --algo dqn --grid_search --device_name "$COMPUTER_NAME" --en
 python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name mujoco
 python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name mujoco
 
-echo "Running grid search for hide-and-seek-engine..."
-python benchmark.py --algo dqn --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
-python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
-python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
+# echo "Running grid search for hide-and-seek-engine..."
+# python benchmark.py --algo dqn --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
+# python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
+# python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
 
 echo "All grid searches completed!"

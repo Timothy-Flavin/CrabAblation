@@ -97,8 +97,6 @@ def get_args():
         help="Discretization bins per Box dimension for discrete mixed-action wrapper.",
     )
 
-    args = parser.parse_args()
-
     if args.algo == "sac" and args.update_every == 4:
         args.update_every = 4
 
@@ -141,6 +139,7 @@ def create_vec_env(args, num_envs: int | None = None):
         action_mode = "continuous" if args.algo == "sac" else "discrete"
 
         vec_env = make_hide_and_seek_vec_env(
+            num_envs=int(num_envs if num_envs is not None else args.num_envs),
             action_mode=action_mode,
             bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
         )
@@ -300,6 +299,7 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
     # num_minibatches scales with num_envs so that minibatch_size = num_steps
     # stays constant as num_envs changes. This keeps updates-per-individual-step
     # constant: update_epochs * num_minibatches / (num_steps * num_envs) = update_epochs / num_steps.
+    rollout_steps = max(1, args.num_steps // int(vec_env.num_envs))
     agent = PPOAgent(
         vec_env,
         clip_coef=cfg["clip_coef"],
@@ -307,7 +307,7 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
         distributional=cfg["distributional"],
         Beta=cfg["Beta"],
         num_envs=int(vec_env.num_envs),
-        num_steps=args.num_steps,
+        num_steps=rollout_steps,
         num_minibatches=4,
         hidden_layer_sizes=hidden_layer_sizes,
         use_gae=cfg["use_gae"],
@@ -533,7 +533,8 @@ def rollout_online_rl(
     )
 
     total_step_budget = _compute_rollout_budget(args, total_steps_override)
-    num_iterations = max(1, total_step_budget // (args.num_envs * args.num_steps))
+    rollout_steps = max(1, args.num_steps // args.num_envs)
+    num_iterations = max(1, total_step_budget // (args.num_envs * rollout_steps))
 
     rhist = []
     smooth_rhist = []
@@ -562,13 +563,13 @@ def rollout_online_rl(
     obs_shape = vec_env.single_observation_space.shape
     act_shape = vec_env.single_action_space.shape
 
-    agent_obs = torch.zeros((args.num_steps, args.num_envs) + obs_shape).to(device)
-    agent_actions = torch.zeros((args.num_steps, args.num_envs) + act_shape).to(device)
-    agent_logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    agent_rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    agent_dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    agent_ext_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    agent_int_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    agent_obs = torch.zeros((rollout_steps, args.num_envs) + obs_shape).to(device)
+    agent_actions = torch.zeros((rollout_steps, args.num_envs) + act_shape).to(device)
+    agent_logprobs = torch.zeros((rollout_steps, args.num_envs)).to(device)
+    agent_rewards = torch.zeros((rollout_steps, args.num_envs)).to(device)
+    agent_dones = torch.zeros((rollout_steps, args.num_envs)).to(device)
+    agent_ext_values = torch.zeros((rollout_steps, args.num_envs)).to(device)
+    agent_int_values = torch.zeros((rollout_steps, args.num_envs)).to(device)
 
     global_step = 0
     next_obs = torch.as_tensor(obs_raw, dtype=torch.float32, device=device)
@@ -580,7 +581,7 @@ def rollout_online_rl(
         max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
 
     for iteration in range(1, num_iterations + 1):
-        for step in range(args.num_steps):
+        for step in range(rollout_steps):
             if global_step > 0 and global_step % 10000 == 0:
                 print(f"[PPO] Step {global_step}/{total_step_budget} (Iteration {iteration}/{num_iterations})")
             if (
@@ -1062,7 +1063,7 @@ def main():
 
     vec_env = create_vec_env(args)
     if args.algo == "ppo":
-        args.num_steps = max(1, args.num_steps // args.num_envs)
+        pass
     try:
         agent, _ = build_agent(args, vec_env, device)
         buffer = build_buffer(args, vec_env, device)
