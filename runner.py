@@ -49,7 +49,7 @@ def get_args():
     parser.add_argument("--fully_obs", action="store_true")
     parser.add_argument("--run", type=int, default=1)
     parser.add_argument("--num_envs", type=int, default=4)
-    parser.add_argument("--num_steps", type=int, default=128)
+    parser.add_argument("--num_steps", type=int, default=2048)
     parser.add_argument("--total_steps", type=int, default=1000000)
     parser.add_argument(
         "--total_steps_override",
