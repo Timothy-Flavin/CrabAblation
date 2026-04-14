@@ -299,11 +299,11 @@ class EVRainbowDQN(RainbowBase):
         # Get target
         with torch.no_grad():
             q_ext_norm = self.ext_online(b_obs, normalized=True)  # [B,D,Bins]
-            if self.Beta>0.0:
-                q_int_norm = self.int_online(b_obs, normalized=True)  # [B,D,Bins]
-                q_mixed_now = self.Beta * q_int_norm + (1-self.Beta)*q_ext_norm
-            else:
-                q_mixed_now = q_ext_norm
+            # if self.Beta>0.0:
+            #     q_int_norm = self.int_online(b_obs, normalized=True)  # [B,D,Bins]
+            #     q_mixed_now = self.Beta * q_int_norm + (1-self.Beta)*q_ext_norm
+            # else:
+            #     q_mixed_now = q_ext_norm
             
             b_actions_idx = a[idx]
             if b_actions_idx.ndim == 1:
@@ -313,21 +313,21 @@ class EVRainbowDQN(RainbowBase):
             b_actions_idx = b_act_view.unsqueeze(-1)
             
             q_next_online_norm = self.ext_online(b_next_obs, normalized=True)
-            if self.Beta > 0.0:
-                q_next_int_online_norm = self.int_online(b_next_obs, normalized=True)
-                if self.delayed_target:
-                    q_next_int_target_norm = self.int_target(b_next_obs, normalized=True)       
-                else: 
-                    q_next_int_target_norm = q_next_int_online_norm 
-                q_next_online_mixed = (1.0 - self.Beta) * q_next_online_norm + self.Beta * q_next_int_online_norm
-            else:
-                q_next_online_mixed = q_next_online_norm
+            # if self.Beta > 0.0:
+            #     q_next_int_online_norm = self.int_online(b_next_obs, normalized=True)
+            #     if self.delayed_target:
+            #         q_next_int_target_norm = self.int_target(b_next_obs, normalized=True)       
+            #     else: 
+            #         q_next_int_target_norm = q_next_int_online_norm 
+            #     #q_next_online_mixed = (1.0 - self.Beta) * q_next_online_norm + self.Beta * q_next_int_online_norm
+            # else:
+            #     #q_next_online_mixed = q_next_online_norm
 
             q_next_target_raw = self.ext_target(b_next_obs, normalized=False) if self.delayed_target else self.ext_online(b_next_obs, normalized=False)   
             if self.munchausen:
                 if logpi_now is None:
                     logpi_now = torch.clamp(
-                        torch.log_softmax(q_mixed_now / self.tau, dim=-1), min=-1e8
+                        torch.log_softmax(q_ext_norm / self.tau, dim=-1), min=-1e8
                     )
 
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(-1)  # [B,D]
@@ -338,12 +338,12 @@ class EVRainbowDQN(RainbowBase):
 
             if self.munchausen or self.soft:
                 logpi_next = torch.clamp(
-                    torch.log_softmax(q_next_online_mixed / self.tau, dim=-1), min=-1e8
+                    torch.log_softmax(q_next_online_norm / self.tau, dim=-1), min=-1e8
                 )
                 pi_next = torch.exp(logpi_next)
                 next_head_vals = (pi_next * (current_sigma * self.alpha * logpi_next + q_next_target_raw)).sum(-1)
             else:
-                target_actions_next = q_next_online_mixed.argmax(dim=-1, keepdim=True).detach()
+                target_actions_next = q_next_online_norm.argmax(dim=-1, keepdim=True).detach()
                 next_head_vals = torch.gather(q_next_target_raw, -1, target_actions_next).squeeze(-1)
 
             assert isinstance(next_head_vals, torch.Tensor)
@@ -359,13 +359,13 @@ class EVRainbowDQN(RainbowBase):
         q_selected_norm = torch.gather(q_ext_now_norm, -1, b_actions_idx).squeeze(-1) # [B, D]
         extrinsic_loss = torch.nn.functional.mse_loss(q_selected_norm, td_target_norm)
         
-        if self.Beta>0.0:
-            q_mixed_now = self.Beta * q_int_norm.detach() + (1-self.Beta)*q_ext_now_norm
-        else:
-            q_mixed_now = q_ext_now_norm
+        # if self.Beta>0.0:
+        #     q_mixed_now = self.Beta * q_int_norm.detach() + (1-self.Beta)*q_ext_now_norm
+        # else:
+        #     q_mixed_now = q_ext_now_norm
         if self.ent_reg_coef > 0.0:
             logpi_now = torch.clamp(
-                torch.log_softmax(q_mixed_now / self.tau, dim=-1), min=-1e8
+                torch.log_softmax(q_ext_now_norm / self.tau, dim=-1), min=-1e8
             )
             if torch.isnan(logpi_now).any():
                 print("NaN detected in logpi_now!")
@@ -388,10 +388,11 @@ class EVRainbowDQN(RainbowBase):
 
         # Intrinsic Q update
         with torch.no_grad():
+            next_int_actions = self.int_online(b_next_obs, normalized=True).argmax(-1,keepdim=True).detach()
             int_q_next = (self.int_target if self.delayed_target else self.int_online)(
                 b_next_obs, normalized=False
             )
-            int_q_next_target = torch.gather(int_q_next, -1, target_actions_next).squeeze(-1)
+            int_q_next_target = torch.gather(int_q_next, -1, next_int_actions).squeeze(-1)
             r_int_only = (
                 b_r_int if isinstance(b_r_int, torch.Tensor) else torch.zeros_like(b_r_ext)
             )
@@ -721,13 +722,13 @@ class IQNRainbowDQN(RainbowBase):
             target_quantiles_all = t_net.forward(b_next_obs, target_taus, normalized=False)
 
             q_ext_norm_now = self.ext_online.forward(b_obs, taus, normalized=True).mean(dim=1)
-            if self.Beta > 0.0:
-                q_int_norm_now = self.int_online.forward(b_obs, taus, normalized=True).mean(dim=1)
-                q_mixed_now = (1.0 - self.Beta) * q_ext_norm_now + self.Beta * q_int_norm_now.detach()
-            else:
-                q_mixed_now = q_ext_norm_now
+            # if self.Beta > 0.0:
+            #     q_int_norm_now = self.int_online.forward(b_obs, taus, normalized=True).mean(dim=1)
+            #     q_mixed_now = (1.0 - self.Beta) * q_ext_norm_now + self.Beta * q_int_norm_now.detach()
+            # else:
+            #     q_mixed_now = q_ext_norm_now
 
-            logpi_now = torch.clamp(torch.log_softmax(q_mixed_now / self.tau, dim=-1), min=-1e8)
+            logpi_now = torch.clamp(torch.log_softmax(q_ext_norm_now / self.tau, dim=-1), min=-1e8)
 
             m_r = 0.0
             if self.munchausen or self.soft:
