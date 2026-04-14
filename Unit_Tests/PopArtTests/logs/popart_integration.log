@@ -1,0 +1,19 @@
+INFO:root:Starting DQN PopArt Integration Test
+INFO:root:DQN Convergence steps -> Large: 1, Small: 2
+INFO:root:Starting PPO PopArt Integration Test
+INFO:root:Starting SAC PopArt Integration Test
+INFO:root:SAC PopArt Sigma updated from 1.0 to 562.7467041015625
+INFO:root:SAC Convergence steps -> Large: 50, Small: 2
+INFO:root:Starting DQN PopArt Integration Test
+INFO:root:DQN Convergence steps -> Large: 1, Small: 2
+INFO:root:Starting PPO PopArt Integration Test
+INFO:root:Starting SAC PopArt Integration Test
+INFO:root:SAC PopArt Sigma updated from 1.0 to 562.7467041015625
+INFO:root:SAC Convergence steps -> Large: 50, Small: 2
+INFO:root:Starting DQN PopArt Integration Test
+INFO:root:DQN Convergence steps -> Large: 1, Small: 2
+INFO:root:Starting PPO PopArt Integration Test
+INFO:root:PPO Convergence steps -> Large: 4, Small: 9
+INFO:root:Starting SAC PopArt Integration Test
+INFO:root:SAC PopArt Sigma updated from 1.0 to 562.7467041015625
+INFO:root:SAC Convergence steps -> Large: 50, Small: 2

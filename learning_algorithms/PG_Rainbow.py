@@ -15,6 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from learning_algorithms.MixedObservationEncoder import infer_encoder_out_dim
 from learning_algorithms.RainbowNetworks import IQN_Network
+from learning_algorithms.PopArtLayer import PopArtLayer
 from learning_algorithms.RandomDistilation import RNDModel, RunningMeanStd
 from learning_algorithms.agent import Agent
 import tyro
@@ -126,6 +127,7 @@ class PPOAgent(Agent):
         hidden_layer_sizes: tuple[int, int] = (64, 64),
         anneal_lr=False,
         distributional: bool = False,
+        popart: bool = True,
         Beta: float = 0.0,
         beta_half_life_steps=None,
         rnd_output_dim: int = 128,
@@ -150,6 +152,7 @@ class PPOAgent(Agent):
         self.num_minibatches = num_minibatches
 
         self.distributional = distributional
+        self.popart = popart
         self.Beta = Beta
         self.start_Beta = Beta
         self.beta_half_life_steps = beta_half_life_steps
@@ -216,6 +219,7 @@ class PPOAgent(Agent):
                 n_action_bins=1,
                 hidden_layer_sizes=[hidden1, hidden2],
                 dueling=False,
+                popart=self.popart,
                 **ext_critic_kwargs,
             )
             self.int_critic = IQN_Network(
@@ -224,60 +228,90 @@ class PPOAgent(Agent):
                 n_action_bins=1,
                 hidden_layer_sizes=[hidden1, hidden2],
                 dueling=False,
+                popart=self.popart,
                 **int_critic_kwargs,
             )
-            self.n_quantiles = 32
         else:
             if encoder_factory is None:
-                self.ext_critic = nn.Sequential(
+                self.ext_critic_base = nn.Sequential(
                     layer_init(nn.Linear(input_dim, hidden1)),
                     nn.Tanh(),
                     layer_init(nn.Linear(hidden1, hidden2)),
                     nn.Tanh(),
-                    layer_init(nn.Linear(hidden2, 1), std=1.0),
                 )
-                self.int_critic = nn.Sequential(
+                self.int_critic_base = nn.Sequential(
                     layer_init(nn.Linear(input_dim, hidden1)),
                     nn.Tanh(),
                     layer_init(nn.Linear(hidden1, hidden2)),
                     nn.Tanh(),
-                    layer_init(nn.Linear(hidden2, 1), std=1.0),
                 )
             else:
                 ext_encoder = encoder_factory()
                 int_encoder = encoder_factory()
                 ext_out_dim = infer_encoder_out_dim(ext_encoder, int(input_dim))
                 int_out_dim = infer_encoder_out_dim(int_encoder, int(input_dim))
-                self.ext_critic = nn.Sequential(
-                    ext_encoder,
-                    layer_init(nn.Linear(ext_out_dim, 1), std=1.0),
-                )
-                self.int_critic = nn.Sequential(
-                    int_encoder,
-                    layer_init(nn.Linear(int_out_dim, 1), std=1.0),
-                )
+                self.ext_critic_base = ext_encoder
+                self.int_critic_base = int_encoder
+
+            if self.popart:
+                self.ext_critic_head = PopArtLayer(hidden2 if encoder_factory is None else ext_out_dim, 1)
+                self.int_critic_head = PopArtLayer(hidden2 if encoder_factory is None else int_out_dim, 1)
+            else:
+                self.ext_critic_head = layer_init(nn.Linear(hidden2 if encoder_factory is None else ext_out_dim, 1), std=1.0)
+                self.int_critic_head = layer_init(nn.Linear(hidden2 if encoder_factory is None else int_out_dim, 1), std=1.0)
+
+            # Helper functions to act like a single module for your get_actions method
+            def ext_critic_forward(x, normalized=False):
+                base_out = self.ext_critic_base(x)
+                if self.popart:
+                    return self.ext_critic_head(base_out, normalized=normalized)
+                return self.ext_critic_head(base_out)
+
+            def int_critic_forward(x, normalized=False):
+                base_out = self.int_critic_base(x)
+                if self.popart:
+                    return self.int_critic_head(base_out, normalized=normalized)
+                return self.int_critic_head(base_out)
+
+            self.ext_critic = ext_critic_forward
+            self.int_critic = int_critic_forward
 
         self.rnd = RNDModel(input_dim, rnd_output_dim)
         self.obs_rms = RunningMeanStd(shape=self.obs_shape)
         self.int_rms = RunningMeanStd(shape=())
         self.ext_rms = RunningMeanStd(shape=())
 
-        self.optimizer = optim.Adam(
-            list(self.actor.parameters()) + list(self.ext_critic.parameters()),
-            lr=learning_rate,
-            eps=1e-5,
-        )
-        self.int_optim = optim.Adam(
-            self.int_critic.parameters(), lr=intrinsic_lr, eps=1e-5
-        )
+        if self.distributional:
+            self.optimizer = optim.Adam(
+                list(self.actor.parameters()) + list(self.ext_critic.parameters()),
+                lr=learning_rate, eps=1e-5,
+            )
+            self.int_optim = optim.Adam(
+                self.int_critic.parameters(), lr=intrinsic_lr, eps=1e-5
+            )
+        else:
+            self.optimizer = optim.Adam(
+                list(self.actor.parameters()) + list(self.ext_critic_base.parameters()) + list(self.ext_critic_head.parameters()),
+                lr=learning_rate, eps=1e-5,
+            )
+            self.int_optim = optim.Adam(
+                list(self.int_critic_base.parameters()) + list(self.int_critic_head.parameters()), 
+                lr=intrinsic_lr, eps=1e-5
+            )
         self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
 
         self.step = 0
 
     def to(self, device):
         self.actor.to(device)
-        self.ext_critic.to(device)
-        self.int_critic.to(device)
+        if self.distributional:
+            self.ext_critic.to(device)
+            self.int_critic.to(device)
+        else:
+            self.ext_critic_base.to(device)
+            self.ext_critic_head.to(device)
+            self.int_critic_base.to(device)
+            self.int_critic_head.to(device)
         self.rnd.to(device)
         self.obs_rms.to(device)
         self.int_rms.to(device)
@@ -391,7 +425,7 @@ class PPOAgent(Agent):
 
         with torch.no_grad():
             int_rewards_flat = rnd_errors.detach()
-            norm_int_rewards_flat = self.int_rms.normalize(
+            norm_int_rewards_flat = self.int_rms.scale(
                 int_rewards_flat.to(torch.float64)
             ).to(torch.float32)
             int_rewards = norm_int_rewards_flat.view(
@@ -533,61 +567,89 @@ class PPOAgent(Agent):
 
                 # Value loss (Extrinsic)
                 if self.distributional:
+                    # IQN PopArt updates
+                    if self.popart:
+                        self.ext_critic.output_layer.update_stats(b_ext_returns[mb_inds])
+                        norm_ext_returns = self.ext_critic.output_layer.normalize(b_ext_returns[mb_inds])
+                    else:
+                        norm_ext_returns = b_ext_returns[mb_inds]
+
                     ext_taus = torch.rand(len(mb_inds), self.n_quantiles, device=device)
-                    ext_quantiles = self.ext_critic(b_obs[mb_inds], ext_taus).view(
-                        len(mb_inds), self.n_quantiles
-                    )
-                    v_loss_ext = self._quantile_huber_loss(
-                        ext_quantiles, b_ext_returns[mb_inds], ext_taus
-                    )
+                    ext_quantiles_norm = self.ext_critic(b_obs[mb_inds], ext_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
+                    v_loss_ext = self._quantile_huber_loss(ext_quantiles_norm, norm_ext_returns, ext_taus)
                 else:
-                    new_ext_value = new_ext_value.view(-1)
+                    if self.popart:
+                        # 1. Update PopArt statistics with raw targets
+                        self.ext_critic_head.update_stats(b_ext_returns[mb_inds].unsqueeze(1))
+                        # 2. Normalize the targets using the updated stats
+                        norm_ext_returns = self.ext_critic_head.normalize(b_ext_returns[mb_inds].unsqueeze(1)).view(-1)
+                        # 3. Get new normalized predictions
+                        norm_ext_value = self.ext_critic(b_obs[mb_inds], normalized=True).view(-1)
+                    else:
+                        norm_ext_returns = b_ext_returns[mb_inds]
+                        norm_ext_value = new_ext_value.view(-1)
+
                     if self.clip_vloss:
-                        v_loss_unclipped = (new_ext_value - b_ext_returns[mb_inds]) ** 2
-                        v_clipped = b_ext_values[mb_inds] + torch.clamp(
-                            new_ext_value - b_ext_values[mb_inds],
+                        if self.popart:
+                            # 4. Normalize the historical rollout values using CURRENT stats for accurate clipping
+                            norm_old_ext_values = self.ext_critic_head.normalize(b_ext_values[mb_inds].unsqueeze(1)).view(-1)
+                        else:
+                            norm_old_ext_values = b_ext_values[mb_inds]
+
+                        v_clipped = norm_old_ext_values + torch.clamp(
+                            norm_ext_value - norm_old_ext_values,
                             -self.clip_coef,
                             self.clip_coef,
                         )
-                        v_loss_clipped = (v_clipped - b_ext_returns[mb_inds]) ** 2
+                        v_loss_unclipped = (norm_ext_value - norm_ext_returns) ** 2
+                        v_loss_clipped = (v_clipped - norm_ext_returns) ** 2
                         v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
                         v_loss_ext = 0.5 * v_loss_max.mean()
                     else:
-                        v_loss_ext = (
-                            0.5 * ((new_ext_value - b_ext_returns[mb_inds]) ** 2).mean()
-                        )
+                        v_loss_ext = 0.5 * ((norm_ext_value - norm_ext_returns) ** 2).mean()
 
                 # Value loss (Intrinsic)
                 if self.distributional:
+                    # IQN PopArt updates
+                    if self.popart:
+                        self.int_critic.output_layer.update_stats(b_int_returns[mb_inds])
+                        norm_int_returns = self.int_critic.output_layer.normalize(b_int_returns[mb_inds])
+                    else:
+                        norm_int_returns = b_int_returns[mb_inds]
+
                     int_taus = torch.rand(len(mb_inds), self.n_quantiles, device=device)
-                    int_quantiles = self.int_critic(b_obs[mb_inds], int_taus).view(
-                        len(mb_inds), self.n_quantiles
-                    )
-                    v_loss_int = self._quantile_huber_loss(
-                        int_quantiles, b_int_returns[mb_inds], int_taus
-                    )
+                    int_quantiles_norm = self.int_critic(b_obs[mb_inds], int_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
+                    v_loss_int = self._quantile_huber_loss(int_quantiles_norm, norm_int_returns, int_taus)
                 else:
-                    new_int_value = new_int_value.view(-1)
+                    if self.popart:
+                        # 1. Update PopArt statistics with raw targets
+                        self.int_critic_head.update_stats(b_int_returns[mb_inds].unsqueeze(1))
+                        # 2. Normalize the targets using the updated stats
+                        norm_int_returns = self.int_critic_head.normalize(b_int_returns[mb_inds].unsqueeze(1)).view(-1)
+                        # 3. Get new normalized predictions
+                        norm_int_value = self.int_critic(b_obs[mb_inds], normalized=True).view(-1)
+                    else:
+                        norm_int_returns = b_int_returns[mb_inds]
+                        norm_int_value = new_int_value.view(-1)
+
                     if self.clip_vloss:
-                        v_loss_int_unclipped = (
-                            new_int_value - b_int_returns[mb_inds]
-                        ) ** 2
-                        v_int_clipped = b_int_values[mb_inds] + torch.clamp(
-                            new_int_value - b_int_values[mb_inds],
+                        if self.popart:
+                            # 4. Normalize the historical rollout values using CURRENT stats for accurate clipping
+                            norm_old_int_values = self.int_critic_head.normalize(b_int_values[mb_inds].unsqueeze(1)).view(-1)
+                        else:
+                            norm_old_int_values = b_int_values[mb_inds]
+
+                        v_clipped_int = norm_old_int_values + torch.clamp(
+                            norm_int_value - norm_old_int_values,
                             -self.clip_coef,
                             self.clip_coef,
                         )
-                        v_loss_int_clipped = (
-                            v_int_clipped - b_int_returns[mb_inds]
-                        ) ** 2
-                        v_loss_int_max = torch.max(
-                            v_loss_int_unclipped, v_loss_int_clipped
-                        )
+                        v_loss_int_unclipped = (norm_int_value - norm_int_returns) ** 2
+                        v_loss_int_clipped = (v_clipped_int - norm_int_returns) ** 2
+                        v_loss_int_max = torch.max(v_loss_int_unclipped, v_loss_int_clipped)
                         v_loss_int = 0.5 * v_loss_int_max.mean()
                     else:
-                        v_loss_int = (
-                            0.5 * ((new_int_value - b_int_returns[mb_inds]) ** 2).mean()
-                        )
+                        v_loss_int = 0.5 * ((norm_int_value - norm_int_returns) ** 2).mean()
 
                 entropy_loss = entropy.mean()
 
@@ -597,16 +659,24 @@ class PPOAgent(Agent):
 
                 self.optimizer.zero_grad()
                 loss.backward()
+                if self.distributional:
+                    ext_params = list(self.ext_critic.parameters())
+                else:
+                    ext_params = list(self.ext_critic_base.parameters()) + list(self.ext_critic_head.parameters())
                 nn.utils.clip_grad_norm_(
-                    list(self.actor.parameters()) + list(self.ext_critic.parameters()),
+                    list(self.actor.parameters()) + ext_params,
                     self.max_grad_norm,
                 )
                 self.optimizer.step()
 
                 self.int_optim.zero_grad()
                 v_loss_int.backward()
+                if self.distributional:
+                    int_params = list(self.int_critic.parameters())
+                else:
+                    int_params = list(self.int_critic_base.parameters()) + list(self.int_critic_head.parameters())
                 nn.utils.clip_grad_norm_(
-                    self.int_critic.parameters(), self.max_grad_norm
+                    int_params, self.max_grad_norm
                 )
                 self.int_optim.step()
 
