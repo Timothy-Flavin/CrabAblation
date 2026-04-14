@@ -5,11 +5,11 @@ import torch
 import numpy as np
 import gymnasium as gym
 import matplotlib.pyplot as plt
-
+import argparse
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from learning_algorithms.DQN_Rainbow import RainbowDQN
-
+rng = np.random.default_rng()
 # Simple Deterministic N-Chain Environment
 class NChainEnv(gym.Env):
     def __init__(self, n=10):
@@ -28,7 +28,7 @@ class NChainEnv(gym.Env):
         return self._get_obs(), {}
 
     def _get_obs(self):
-        obs = np.zeros(self.n, dtype=np.float32)
+        obs = (rng.random(size=self.n,dtype=np.float32)-0.5)/5
         obs[self.state] = 1.0
         return obs
 
@@ -51,22 +51,23 @@ class NChainEnv(gym.Env):
         return self._get_obs(), reward, terminated, truncated, {}
 
 def train_dqn(use_rnd=False):
-    env = NChainEnv(n=5)
+    env = NChainEnv(n=7)
     agent = RainbowDQN(
-        input_dim=5, 
+        input_dim=7, 
         n_action_dims=1, 
         n_action_bins=2, 
-        Beta=1.0 if use_rnd else 0.0,
+        Beta=20.0 if use_rnd else 0.0,
         lr=1e-3,
         ext_r_clamp=10.0, # allow big reward for n-chain
-        burn_in_updates=0 # Start updating right away
+        burn_in_updates=0, # Start updating right away
+        Beta_half_life_steps=2500
     )
     
     returns = []
     global_step = 0
     
     # We will use extremely short horizons and wait for converge
-    for episode in range(150):
+    for episode in range(1000):
         obs, _ = env.reset()
         episode_return = 0
         done = False
@@ -76,9 +77,9 @@ def train_dqn(use_rnd=False):
             with torch.no_grad():
                 action_tensor = agent.sample_action(
                     torch.tensor(obs, dtype=torch.float32), 
-                    eps=0.1, 
+                    eps=0.25-episode/4000, 
                     step=global_step, 
-                    n_steps=1000
+                    n_steps=global_step
                 )
                 action = int(action_tensor[0])
             
@@ -101,12 +102,14 @@ def train_dqn(use_rnd=False):
                 batch_size=1,
                 step=1
             )
+            agent.update_target()
             
             obs = next_obs
             episode_return += reward
             
         returns.append(episode_return)
         
+    print(f"Final list of returns for train_dqn(use_rnd={use_rnd}): {returns[-20:]}")
     return returns
 
 class MockBatch:
@@ -129,23 +132,24 @@ class ContinuousNChainEnv(NChainEnv):
         return super().step(a)
 
 def train_sac(use_rnd=False):
-    env = ContinuousNChainEnv(n=5)
+    env = ContinuousNChainEnv(n=7)
     envs = gym.vector.SyncVectorEnv([lambda: env])
     agent = SACAgent(
         envs=envs,
-        beta_rnd=1.0 if use_rnd else 0.0,
+        beta_rnd=20.0 if use_rnd else 0.0,
         policy_lr=1e-3,
         q_lr=1e-3,
         munchausen=False,
         alpha=0.0,
         autotune=False,
-        popart=True
+        popart=True,
+        beta_half_life_steps=2500
     )
     
     returns = []
     global_step = 0
     
-    for episode in range(150):
+    for episode in range(1000):
         obs, _ = env.reset()
         episode_return = 0
         done = False
@@ -194,8 +198,8 @@ class MockEnvPPO:
         self.num_envs = 1
 
 def train_ppo(use_rnd=False):
-    env = NChainEnv(n=5)
-    envs = MockEnvPPO((5,), ())
+    env = NChainEnv(n=7)
+    envs = MockEnvPPO((7,), ())
     agent = PPOAgent(
         envs=envs,
         Beta=50.0 if use_rnd else 0.0,
@@ -206,7 +210,7 @@ def train_ppo(use_rnd=False):
     
     returns = []
     
-    for episode in range(150):
+    for episode in range(1000):
         obs, _ = env.reset()
         episode_return = 0
         done = False
@@ -326,40 +330,68 @@ def plot_with_shaded_error(mean, sem, label, weight=0.9):
         alpha=0.2
     )
 
-def run_integration():
-    n_seeds = 30
-    
-    print(f"Testing DQN without RND over {n_seeds} seeds...")
-    no_rnd_dqn_mean, no_rnd_dqn_sem = run_multiple_seeds(train_dqn, use_rnd=False, n_seeds=n_seeds)
-    print(f"Testing DQN with RND over {n_seeds} seeds...")
-    rnd_dqn_mean, rnd_dqn_sem = run_multiple_seeds(train_dqn, use_rnd=True, n_seeds=n_seeds)
-    
-    print(f"Testing SAC without RND over {n_seeds} seeds...")
-    no_rnd_sac_mean, no_rnd_sac_sem = run_multiple_seeds(train_sac, use_rnd=False, n_seeds=n_seeds)
-    print(f"Testing SAC with RND over {n_seeds} seeds...")
-    rnd_sac_mean, rnd_sac_sem = run_multiple_seeds(train_sac, use_rnd=True, n_seeds=n_seeds)
-    
-    print(f"Testing PPO without RND over {n_seeds} seeds...")
-    no_rnd_ppo_mean, no_rnd_ppo_sem = run_multiple_seeds(train_ppo, use_rnd=False, n_seeds=n_seeds)
-    print(f"Testing PPO with RND over {n_seeds} seeds...")
-    rnd_ppo_mean, rnd_ppo_sem = run_multiple_seeds(train_ppo, use_rnd=True, n_seeds=n_seeds)
-    
+def run_integration(algo="all", n_seeds=10):
     w = 0.9 
+    os.makedirs("Unit_Tests/RNDTests", exist_ok=True)
+    
+    # Initialize a fresh figure to prevent overlapping if called sequentially
+    plt.figure()
 
-    plot_with_shaded_error(no_rnd_dqn_mean, no_rnd_dqn_sem, "DQN No RND", weight=w)
-    plot_with_shaded_error(rnd_dqn_mean, rnd_dqn_sem, "DQN With RND", weight=w)
-    plot_with_shaded_error(no_rnd_sac_mean, no_rnd_sac_sem, "SAC No RND", weight=w)
-    plot_with_shaded_error(rnd_sac_mean, rnd_sac_sem, "SAC With RND", weight=w)
-    plot_with_shaded_error(no_rnd_ppo_mean, no_rnd_ppo_sem, "PPO No RND", weight=w)
-    plot_with_shaded_error(rnd_ppo_mean, rnd_ppo_sem, "PPO With RND", weight=w)
+    if algo in ["dqn", "all"]:
+        print(f"Testing DQN without RND over {n_seeds} seeds...")
+        no_rnd_dqn_mean, no_rnd_dqn_sem = run_multiple_seeds(train_dqn, use_rnd=False, n_seeds=n_seeds)
+        print(f"Testing DQN with RND over {n_seeds} seeds...")
+        rnd_dqn_mean, rnd_dqn_sem = run_multiple_seeds(train_dqn, use_rnd=True, n_seeds=n_seeds)
         
+        plot_with_shaded_error(no_rnd_dqn_mean, no_rnd_dqn_sem, "DQN No RND", weight=w)
+        plot_with_shaded_error(rnd_dqn_mean, rnd_dqn_sem, "DQN With RND", weight=w)
+
+    if algo in ["sac", "all"]:
+        print(f"Testing SAC without RND over {n_seeds} seeds...")
+        no_rnd_sac_mean, no_rnd_sac_sem = run_multiple_seeds(train_sac, use_rnd=False, n_seeds=n_seeds)
+        print(f"Testing SAC with RND over {n_seeds} seeds...")
+        rnd_sac_mean, rnd_sac_sem = run_multiple_seeds(train_sac, use_rnd=True, n_seeds=n_seeds)
+        
+        plot_with_shaded_error(no_rnd_sac_mean, no_rnd_sac_sem, "SAC No RND", weight=w)
+        plot_with_shaded_error(rnd_sac_mean, rnd_sac_sem, "SAC With RND", weight=w)
+
+    if algo in ["ppo", "all"]:
+        print(f"Testing PPO without RND over {n_seeds} seeds...")
+        no_rnd_ppo_mean, no_rnd_ppo_sem = run_multiple_seeds(train_ppo, use_rnd=False, n_seeds=n_seeds)
+        print(f"Testing PPO with RND over {n_seeds} seeds...")
+        rnd_ppo_mean, rnd_ppo_sem = run_multiple_seeds(train_ppo, use_rnd=True, n_seeds=n_seeds)
+        
+        plot_with_shaded_error(no_rnd_ppo_mean, no_rnd_ppo_sem, "PPO No RND", weight=w)
+        plot_with_shaded_error(rnd_ppo_mean, rnd_ppo_sem, "PPO With RND", weight=w)
+
     plt.legend()
     plt.xlabel("Episode")
     plt.ylabel("Average Return")
+    plt.title(f"RND Integration Test - {algo.upper()}")
     
-    # Ensure directory exists
-    os.makedirs("Unit_Tests/RNDTests", exist_ok=True)
-    plt.savefig("Unit_Tests/RNDTests/nchain_integration.png")
-    print("Plot saved to Unit_Tests/RNDTests/nchain_integration.png")
+    save_path = f"Unit_Tests/RNDTests/nchain_integration_{algo}.png"
+    plt.savefig(save_path)
+    print(f"Plot saved to {save_path}")
+    
+    # Close the figure to free memory
+    plt.close()
+
 if __name__ == "__main__":
-    run_integration()
+    parser = argparse.ArgumentParser(description="Run RND Integration Unit Tests")
+    parser.add_argument(
+        "--algo", 
+        type=str, 
+        default="all", 
+        choices=["dqn", "sac", "ppo", "all"], 
+        help="Specify which algorithm to test (dqn, sac, ppo, or all)"
+    )
+    parser.add_argument(
+        "--seeds", 
+        type=int, 
+        default=20, 
+        help="Number of random seeds to average over"
+    )
+    
+    args = parser.parse_args()
+    
+    run_integration(algo=args.algo, n_seeds=args.seeds)

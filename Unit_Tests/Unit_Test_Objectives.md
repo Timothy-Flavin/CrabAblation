@@ -9,6 +9,7 @@ You need mathematically exact, highly isolated unit tests that run deterministic
 * [x] **Off-Policy Dynamic Recalculation Verification (DQN/SAC):** Assert that $r_{int}$ is *not* stored in the replay buffer. Verify that during the gradient step, the sampled batch of states is passed through the RND networks to compute a fresh $r_{int}$ dynamically. This prevents the Q-networks from chasing stale, inflated intrinsic rewards while maintaining a cleanly serial execution pipeline.
 * [x] **On-Policy Observation Normalization (PPO):** Verify that the running mean and variance trackers normalize state observations strictly *before* they are passed to the RND predictor network.
 * [] **RND integration on nchain:** Verify that the Rainbow agents learn nchain faster with RND by running an integration test. Save extrinsic reward over time for each PPO,SAC,DQN with and without RND. 
+  - Status: DQN fails with and without RND, SAC does slightly better with RND but plateus while no RND SAC eventually passes it up in performance.
 
 ### 2. PopArt (Adaptive Target Rescaling)
 **Objective:** Verify that updating the scale and shift statistics does not alter the unnormalized value estimates, preventing policy disruption. PopArt is notoriously easy to implement incorrectly.

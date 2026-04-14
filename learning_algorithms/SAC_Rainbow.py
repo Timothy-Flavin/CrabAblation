@@ -230,6 +230,7 @@ class SACAgent(Agent):
         l_clip: float = -10.0,
         rnd_output_dim: int = 128,
         rnd_lr: float = 1e-3,
+        beta_half_life_steps: Optional[int] = None,
     ):
         super().__init__()
         self.gamma = gamma
@@ -334,6 +335,8 @@ class SACAgent(Agent):
 
         # RND intrinsic reward (ablation 3 removes this via Beta=0.0)
         self.Beta = beta_rnd
+        self.start_Beta = beta_rnd
+        self.beta_half_life_steps = beta_half_life_steps
         self.rnd = RNDModel(obs_dim, rnd_output_dim).float()
         self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.obs_rms = RunningMeanStd(shape=(obs_dim,))
@@ -463,6 +466,8 @@ class SACAgent(Agent):
     @torch.no_grad()
     def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
         """Update observation and intrinsic reward running stats with a single env step."""
+        if self.Beta <= 0.0 and not getattr(self, 'always_update_rnd', False):
+            return
         x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
         self.obs_rms.update(x64)
         norm_x64 = self.obs_rms.normalize(x64)
@@ -472,6 +477,11 @@ class SACAgent(Agent):
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
 
     def update(self, data, global_step: int):
+        if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
+            self.Beta = self.start_Beta * (
+                0.5 ** (global_step / self.beta_half_life_steps)
+            )
+
         target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
         target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
 
@@ -483,7 +493,7 @@ class SACAgent(Agent):
         
         rnd_loss_val = 0.0
         int_r = None
-        if self.Beta > 0.0:
+        if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
             with torch.no_grad():
                 norm_next_obs = self.obs_rms.normalize(
                     data.next_observations.to(dtype=torch.float64)
@@ -495,7 +505,7 @@ class SACAgent(Agent):
             self.rnd_optim.step()
             rnd_loss_val = float(rnd_loss.item())
             with torch.no_grad():
-                int_r = self.int_rms.normalize(
+                int_r = self.int_rms.normalize_scale(
                     rnd_errors.detach().to(dtype=torch.float64)
                 ).float()
                 int_r = torch.clamp(int_r, -5.0, 5.0)
@@ -564,9 +574,7 @@ class SACAgent(Agent):
                 min_qf_next_quantiles_int = torch.min(
                     qf1_next_quantiles_int, qf2_next_quantiles_int
                 )
-                next_q_quantiles_int = int_r.unsqueeze(1) + (
-                    1 - data.dones.flatten()
-                ).unsqueeze(1) * 0.99 * (
+                next_q_quantiles_int = int_r.unsqueeze(1) + 0.99 * (
                     min_qf_next_quantiles_int
                 )
                 
@@ -593,9 +601,7 @@ class SACAgent(Agent):
                     target_qf2_int, next_critic_input, normalized=False
                 )
                 min_qf_next_target_int = torch.min(qf1_next_target_int, qf2_next_target_int)
-                next_q_value_int = int_r + (
-                    1 - data.dones.flatten()
-                ) * 0.99 * (
+                next_q_value_int = int_r + 0.99 * (
                     min_qf_next_target_int
                 )
 
@@ -755,37 +761,37 @@ class SACAgent(Agent):
                         pi_critic_input.device,
                     )
                     qf1_pi = self._critic_quantiles(
-                        self.qf1, pi_critic_input, pi_taus, normalized=False
+                        self.qf1, pi_critic_input, pi_taus, normalized=True
                     ).mean(dim=1, keepdim=True)
                     qf2_pi = self._critic_quantiles(
-                        self.qf2, pi_critic_input, pi_taus, normalized=False
+                        self.qf2, pi_critic_input, pi_taus, normalized=True
                     ).mean(dim=1, keepdim=True)
                     
                     qf1_pi_int = self._critic_quantiles(
-                        self.qf1_int, pi_critic_input, pi_taus, normalized=False
+                        self.qf1_int, pi_critic_input, pi_taus, normalized=True
                     ).mean(dim=1, keepdim=True)
                     qf2_pi_int = self._critic_quantiles(
-                        self.qf2_int, pi_critic_input, pi_taus, normalized=False
+                        self.qf2_int, pi_critic_input, pi_taus, normalized=True
                     ).mean(dim=1, keepdim=True)
                 else:
                     qf1_pi = self._critic_scalar_value(
-                        self.qf1, pi_critic_input, normalized=False
+                        self.qf1, pi_critic_input, normalized=True
                     ).unsqueeze(1)
                     qf2_pi = self._critic_scalar_value(
-                        self.qf2, pi_critic_input, normalized=False
+                        self.qf2, pi_critic_input, normalized=True
                     ).unsqueeze(1)
                     
                     qf1_pi_int = self._critic_scalar_value(
-                        self.qf1_int, pi_critic_input, normalized=False
+                        self.qf1_int, pi_critic_input, normalized=True
                     ).unsqueeze(1)
                     qf2_pi_int = self._critic_scalar_value(
-                        self.qf2_int, pi_critic_input, normalized=False
+                        self.qf2_int, pi_critic_input, normalized=True
                     ).unsqueeze(1)
                     
                 min_qf_pi = torch.min(qf1_pi, qf2_pi)
                 min_qf_pi_int = torch.min(qf1_pi_int, qf2_pi_int)
                 
-                actor_loss = ((self.alpha * log_pi) - (min_qf_pi + self.Beta * min_qf_pi_int)).mean()
+                actor_loss = ((self.alpha * log_pi) - ((1.0 - self.Beta) * min_qf_pi + self.Beta * min_qf_pi_int)).mean()
 
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()

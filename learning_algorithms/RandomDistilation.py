@@ -206,6 +206,22 @@ class RunningMeanStd(nn.Module):
         # Clip the result to be within [-clip_range, clip_range]
         return torch.clamp(normalized_x, -clip_range, clip_range)
 
+
+    def normalize_scale(self, x, clip_range=10.0):
+        if self.count == 0:
+            return x
+        x = x.to(self.mean.device)
+        normalized_x = x / (self.std.detach() + 1e-8)
+        return torch.clamp(normalized_x, -clip_range, clip_range)
+
+
+    def normalize_scale(self, x, clip_range=10.0):
+        if self.count == 0:
+            return x
+        x = x.to(self.mean.device)
+        normalized_x = x / (self.std.detach() + 1e-8)
+        return torch.clamp(normalized_x, -clip_range, clip_range)
+
     def scale(self, x, clip_range=10.0):
         """
         scales an input 'x' using the running statistics.
