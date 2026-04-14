@@ -45,19 +45,15 @@ class PopArtDuelingIQNLayer(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # Init Value Head
-        nn.init.kaiming_uniform_(self.value_head.weight, a=math.sqrt(5))
+        # Init Value Head to zeros
+        nn.init.zeros_(self.value_head.weight)
         if self.value_head.bias is not None:
-            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.value_head.weight)
-            bound = 1 / math.sqrt(fan_in)
-            nn.init.uniform_(self.value_head.bias, -bound, bound)
+            nn.init.zeros_(self.value_head.bias)
 
-        # Init Adv Head
-        nn.init.kaiming_uniform_(self.adv_head.weight, a=math.sqrt(5))
+        # Init Adv Head to zeros
+        nn.init.zeros_(self.adv_head.weight)
         if self.adv_head.bias is not None:
-            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.adv_head.weight)
-            bound = 1 / math.sqrt(fan_in)
-            nn.init.uniform_(self.adv_head.bias, -bound, bound)
+            nn.init.zeros_(self.adv_head.bias)
 
     def forward(self, x, normalized=False):
         """

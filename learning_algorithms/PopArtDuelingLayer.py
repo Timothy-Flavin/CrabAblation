@@ -23,6 +23,18 @@ class PopArtDuelingHead(nn.Module):
         self.register_buffer("nu", torch.ones(1))  # E[x^2]
         self.register_buffer("sigma", torch.ones(1))
 
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        # Init Value and Adv Heads to zeros so unnormalized output is exactly mu at start
+        nn.init.zeros_(self.fc_V.weight)
+        if self.fc_V.bias is not None:
+            nn.init.zeros_(self.fc_V.bias)
+            
+        nn.init.zeros_(self.fc_A.weight)
+        if self.fc_A.bias is not None:
+            nn.init.zeros_(self.fc_A.bias)
+
     def forward(self, x, normalized=False):
         # 1. Forward pass through heads (Normalized Space)
         v_norm = self.fc_V(x)

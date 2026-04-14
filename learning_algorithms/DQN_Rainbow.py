@@ -891,9 +891,22 @@ class EVRainbowDQN(Agent):
         return pi, logpi, ent
 
     def _update_RND(self, b_next_obs, batch_norm=False):
-        with torch.no_grad():
-            norm_next_obs = self.obs_rms.normalize(b_next_obs.to(dtype=torch.float64))
-        rnd_errors = self.rnd(norm_next_obs.to(dtype=torch.float32))
+
+        with torch.no_grad():        
+            # 1) Intrinsic reward via RND (train predictor to reduce novelty on visited states)
+            # Use existing running stats (updated per-environment step) to normalize inputs for RND
+            if batch_norm:
+                norm_next_obs_f32 = (next_obs - next_obs.mean(dim=0, keepdim=True)) / (
+                    next_obs.std(dim=0, keepdim=True, unbiased=False) + 1e-6
+                )
+            elif self.norm_obs:
+                with torch.no_grad():
+                    norm_next_obs = self.obs_rms.normalize(next_obs.to(dtype=torch.float64))
+                norm_next_obs_f32 = norm_next_obs.to(dtype=torch.float32)
+            else:
+                norm_next_obs_f32 = next_obs.to(dtype=torch.float32)
+
+        rnd_errors = self.rnd(norm_next_obs_f32)
         rnd_loss = rnd_errors.mean()
         self.rnd_optim.zero_grad()
         rnd_loss.backward()
@@ -903,6 +916,7 @@ class EVRainbowDQN(Agent):
     def update(
         self, obs, a, r, next_obs, term, batch_size=None, step=0, extrinsic_only=False
     ):
+        # Set up wall clock time for optimization later
         if self.update_timings is None:
             self.update_timings = {
                 "update_rnd": 0.0,
@@ -912,112 +926,101 @@ class EVRainbowDQN(Agent):
                 "total": 0.0,
             }
         update_timings = self.update_timings
-        import time
-
         t__ = time.time()
 
-        # NOTE: update_running_stats is handled externally in runner.py per step batch to avoid O(N) buffer scaling
-        # Get Batch items
+        # Running stats on r_ext, r_int, and obs are updated externally 
+        # before this update function is called
+        self.step += 1
         if batch_size is None:
             idx = torch.arange(0, len(r))
             batch_size = len(r)
         else:
             idx = torch.randint(low=0, high=step, size=(batch_size,))
-
         b_next_obs = next_obs[idx]
-
-        t_ = time.time()
-        self.step += 1
-        if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
-            if self.step < self.burn_in_updates:
-                rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=False)
-                return 0.0
-            else:
-                rnd_errors, rnd_loss = self._update_RND(b_next_obs)
-        else:
-            if hasattr(self, "rnd_optim"):
-                self.rnd_optim.zero_grad()
-            rnd_errors = torch.zeros(batch_size, device=obs.device)
-            rnd_loss = torch.tensor(0.0, device=obs.device)
-            if self.step < self.burn_in_updates:
-                return 0.0
-        
-        update_timings["update_rnd"] += time.time() - t_
-
-        if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
-            self.Beta = self.start_Beta * (
-                0.5 ** (self.step / self.beta_half_life_steps)
-            )
-
         t_ = time.time()
         b_obs = obs[idx]
-        # Normalize only the sliced batch
-        b_r = self.ext_rms.normalize(r[idx], self.ext_r_clip).to(
-            dtype=torch.float32, device=obs.device
-        )
+        # Rewards scaled for popart
+        b_r_ext = r[idx]
         b_term = term[idx]
-        b_actions = a[idx]
 
-        # Collect intrinsic reward
-        r_int = 0
-        if self.Beta > 0.0:
+        # If in burn in period, just update RND if Beta > 0.0
+        # Use batch norm because obs.rms has not had time to burn in yet
+        t_ = time.time()
+        if self.step < self.burn_in_updates:
+            if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
+                rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=True)
+                return 0.0
+            return 0.0
+        update_timings["update_rnd"] += time.time() - t_
+        # If we are not in burn in, get the rnd errors and int reward 
+        # or zeros if beta < 0.0
+        if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
+            rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=False)
+            if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
+                self.Beta = self.start_Beta * (
+                    0.5 ** (self.step / self.beta_half_life_steps)
+                )
             with torch.no_grad():
                 norm_int = self.int_rms.scale(
                     rnd_errors.detach().to(dtype=torch.float64)
                 )
-                r_int = norm_int.to(dtype=torch.float32)
-        # TODO: dont merge reward channels
-        b_r_total = b_r  # Only extrinsic reward here! Off-policy networks should be completely separated
+                b_r_int = norm_int.to(dtype=torch.float32)
+        else:
+            rnd_errors, rnd_loss, b_r_int = torch.zeros_like(b_r_ext), 0, 0
 
-        # Current and next Q-values
-        q_now = self.ext_online(b_obs)  # [B,D,Bins]
+        
+        # Policy is based on Beta Q int and Q ext, so log probs
+        # and entropy need to be based on those too
         logpi_now = None
         pi_now = None
         entropy_loss = 0
+        current_sigma = self.ext_online.output_layer.sigma.detach()
 
-        # Grab entropy loss here if we need to so that we can reuse
-        # logpi and pi or calculate then later without grad if ent
-        # reg is not being used
-        if self.ent_reg_coef > 0.0:
-            logpi_now = torch.clamp(
-                torch.log_softmax(q_now / self.tau, dim=-1), min=-1e8
-            )
-            if torch.isnan(logpi_now).any():
-                print("NaN detected in logpi_now!")
-            pi_now = torch.exp(logpi_now)
-            entropy_loss = (pi_now * logpi_now).sum(dim=-1).mean()
 
+        # Get target
         with torch.no_grad():
-            if b_actions.ndim == 1:
-                b_act_view = b_actions.view(-1, 1)
+            q_ext_norm = self.ext_online(b_obs, normalized=True)  # [B,D,Bins]
+            if self.Beta>0.0:
+                q_int_norm = self.int_online(b_obs, normalized=True)  # [B,D,Bins]
+                q_mixed_now = self.Beta * q_int_norm + (1-self.Beta)*q_ext_norm
             else:
-                b_act_view = b_actions  # [B,D]
-            action_idx_now = b_act_view.unsqueeze(-1)
+                q_mixed_now = q_ext_norm
+            # Get the historical actions as an index to select q values
+            b_actions_idx = a[idx]
+            if b_actions_idx.ndim == 1:
+                b_act_view = b_actions_idx.view(-1, 1)
+            else:
+                b_act_view = b_actions_idx  # [B,D]
+            b_actions_idx = b_act_view.unsqueeze(-1)
             
+            # 
             q_next_online_norm = self.ext_online(b_next_obs, normalized=True)
             if self.Beta > 0.0:
                 q_next_int_online_norm = self.int_online(b_next_obs, normalized=True)
+                if self.delayed_target:
+                    q_next_int_target_norm = self.int_target(b_next_obs, normalized=True)       
+                else: 
+                    q_next_int_target_norm = q_next_int_online_norm 
                 q_next_online_mixed = (1.0 - self.Beta) * q_next_online_norm + self.Beta * q_next_int_online_norm
             else:
                 q_next_online_mixed = q_next_online_norm
-                
-            q_next = (self.ext_target if self.delayed_target else self.ext_online)(
-                b_next_obs, normalized=False
-            )  # [B,D,Bins]
+
+            q_next_target_raw = self.ext_target(b_next_obs, normalized=False) if self.delayed_target else self.ext_online(b_next_obs, normalized=False)   
             if self.munchausen:
                 # only need this right now for ln(pi(a)) for munchausen loss
                 if logpi_now is None:
                     logpi_now = torch.clamp(
-                        torch.log_softmax(q_now / self.tau, dim=-1), min=-1e8
+                        torch.log_softmax(q_mixed_now / self.tau, dim=-1), min=-1e8
                     )
 
-                selected_logpi = torch.gather(logpi_now, -1, action_idx_now).squeeze(
+                selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(
                     -1
                 )  # [B,D]
                 r_kl = torch.clamp(selected_logpi, min=self.l_clip)
                 if r_kl.ndim > 1:
                     r_kl = r_kl.sum(-1)
-                b_r_total += self.alpha * self.tau * r_kl
+                b_r_ext += current_sigma * self.alpha * self.tau * r_kl 
+                # un normalize munchausen reward into the raw batch reward scale
 
             if self.munchausen or self.soft:
                 # Need next probs for next entropy if soft
@@ -1025,25 +1028,41 @@ class EVRainbowDQN(Agent):
                     torch.log_softmax(q_next_online_mixed / self.tau, dim=-1), min=-1e8
                 )
                 pi_next = torch.exp(logpi_next)
-                next_head_vals = (pi_next * (self.alpha * logpi_next + q_next)).sum(-1)
+                next_head_vals = (pi_next * (current_sigma * self.alpha * logpi_next + q_next_target_raw)).sum(-1)
             else:
-                target_actions_next = q_next_online_mixed.argmax(dim=-1, keepdim=True)
-                next_head_vals = torch.gather(q_next, -1, target_actions_next).squeeze(-1)
+                target_actions_next = q_next_online_mixed.argmax(dim=-1, keepdim=True).detach()
+                next_head_vals = torch.gather(q_next_target_raw, -1, target_actions_next).squeeze(-1)
 
             assert isinstance(next_head_vals, torch.Tensor)
-            # Sum over action heads to perform vdn
-            if next_head_vals.ndim > 1:
-                next_head_vals = next_head_vals.sum(-1)
-            td_target = b_r_total + self.gamma * (1 - b_term) * next_head_vals
+            # Use independent target for each action head
+            online_ext_target = b_r_ext + self.gamma * (1 - b_term).view(-1, 1) * next_head_vals
 
-        q_selected = torch.gather(q_now, -1, action_idx_now).squeeze(
-            -1
-        )  # joint value as sum
-        # if multiple actions sum for vdn
-        if q_selected.ndim > 1:
-            q_selected = q_selected.sum(-1)
 
-        extrinsic_loss = torch.nn.functional.smooth_l1_loss(q_selected, td_target)
+
+        target_for_stats_ext = online_ext_target.detach() # maintain [B, D]
+        self.ext_online.output_layer.update_stats(target_for_stats_ext)
+        if self.delayed_target:
+            self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
+            self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
+        td_target_norm = self.ext_online.output_layer.normalize(target_for_stats_ext)
+        q_ext_now_norm = self.ext_online(b_obs, normalized=True)
+        q_selected_norm = torch.gather(q_ext_now_norm, -1, b_actions_idx).squeeze(-1) # [B, D]
+        extrinsic_loss = torch.nn.functional.mse_loss(q_selected_norm, td_target_norm)
+        
+
+        # Grab entropy loss here after popart inplace to do entropy loss 
+        if self.Beta>0.0:
+            q_mixed_now = self.Beta * q_int_norm.detach() + (1-self.Beta)*q_ext_now_norm
+        else:
+            q_mixed_now = q_ext_now_norm
+        if self.ent_reg_coef > 0.0:
+            logpi_now = torch.clamp(
+                torch.log_softmax(q_mixed_now / self.tau, dim=-1), min=-1e8
+            )
+            if torch.isnan(logpi_now).any():
+                print("NaN detected in logpi_now!")
+            pi_now = torch.exp(logpi_now)
+            entropy_loss = (pi_now * logpi_now).sum(dim=-1).mean()
         extrinsic_loss = extrinsic_loss + self.ent_reg_coef * entropy_loss
         self.optim.zero_grad()
         extrinsic_loss.backward()
@@ -1057,33 +1076,32 @@ class EVRainbowDQN(Agent):
             return float(extrinsic_loss.item())
 
         t_ = time.time()
-        # Intrinsic Q update
-        int_q_now = self.int_online(b_obs)  # [B,D,Bins]
-        int_q_selected = torch.gather(int_q_now, -1, action_idx_now).squeeze(-1)
-        if int_q_selected.ndim > 1:
-            int_q_selected = int_q_selected.sum(-1)
 
+        # Intrinsic Q update
         with torch.no_grad():
             int_q_next = (self.int_target if self.delayed_target else self.int_online)(
                 b_next_obs, normalized=False
             )
-            
-            if self.soft or self.munchausen:
-                int_q_next_target = (pi_next * int_q_next).sum(-1)
-            else:
-                int_q_next_target = torch.gather(int_q_next, -1, target_actions_next).squeeze(-1)
-
-            # sum for vdn q
-            if int_q_next_target.ndim > 1:
-                int_q_next_target = int_q_next_target.sum(-1)
+            int_q_next_target = torch.gather(int_q_next, -1, target_actions_next).squeeze(-1)
             r_int_only = (
-                r_int if isinstance(r_int, torch.Tensor) else torch.zeros_like(b_r)
+                b_r_int if isinstance(b_r_int, torch.Tensor) else torch.zeros_like(b_r_ext)
             )
             int_td_target = r_int_only + self.gamma * int_q_next_target
 
-        intrinsic_loss = torch.nn.functional.smooth_l1_loss(
-            int_q_selected, int_td_target
+        target_for_stats_int = int_td_target.detach()
+        self.int_online.output_layer.update_stats(target_for_stats_int)
+        if self.delayed_target:
+            self.int_target.output_layer.sigma.copy_(self.int_online.output_layer.sigma)
+            self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
+        
+        int_td_target_norm = self.int_online.output_layer.normalize(target_for_stats_int)
+        int_q_now_norm = self.int_online(b_obs, normalized=True)
+        int_q_selected_norm = torch.gather(int_q_now_norm, -1, b_actions_idx).squeeze(-1)
+            
+        intrinsic_loss = torch.nn.functional.mse_loss(
+            int_q_selected_norm, int_td_target_norm
         )
+
         self.int_optim.zero_grad()
         intrinsic_loss.backward()
         if hasattr(self, "int_online"):
@@ -1094,8 +1112,8 @@ class EVRainbowDQN(Agent):
         t_ = time.time()
 
         # collecting values for tensorboard
-        if isinstance(r_int, torch.Tensor):
-            r_int_log = float(r_int.mean().item())
+        if isinstance(b_r_int, torch.Tensor):
+            r_int_log = float(b_r_int.mean().item())
         else:
             r_int_log = 0.0
 
@@ -1110,8 +1128,8 @@ class EVRainbowDQN(Agent):
             "rnd": float(rnd_loss.item()),
             "avg_r_int": r_int_log,
             "entropy_reg": entropy_val,
-            "batch_nonzero_r_frac": float((b_r != 0).float().mean().item()),
-            "target_mean": float(td_target.mean().item()),
+            "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
+            "target_mean": float(target_for_stats_ext.mean().item()),
             "entropy_loss": entropy_val,
         }
         if self.tb_writer is not None:
