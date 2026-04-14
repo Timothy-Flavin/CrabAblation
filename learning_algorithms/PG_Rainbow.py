@@ -391,7 +391,7 @@ class PPOAgent(Agent):
 
         with torch.no_grad():
             int_rewards_flat = rnd_errors.detach()
-            norm_int_rewards_flat = self.int_rms.normalize(
+            norm_int_rewards_flat = self.int_rms.scale(
                 int_rewards_flat.to(torch.float64)
             ).to(torch.float32)
             int_rewards = norm_int_rewards_flat.view(
@@ -443,7 +443,7 @@ class PPOAgent(Agent):
 
                 delta_int = (
                     int_rewards[t]
-                    + self.gamma * next_int_values * nextnonterminal
+                    + self.gamma * next_int_values
                     - int_values[t]
                 )
 
@@ -459,7 +459,6 @@ class PPOAgent(Agent):
                         delta_int
                         + self.gamma
                         * self.gae_lambda
-                        * nextnonterminal
                         * lastgaelam_int
                     )
                 else:

@@ -265,7 +265,7 @@ class RainbowDQN(Agent):
         if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
             if self.step < self.burn_in_updates:
                 # During burn-in, do not train RL networks; only RND and running stats
-                rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=True)
+                rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=False)
                 return 0.0
             else:
                 rnd_errors, rnd_loss = self._update_RND(b_next_obs)
@@ -427,7 +427,7 @@ class RainbowDQN(Agent):
             else:
                 return actions.squeeze(0).tolist()
 
-    def _update_RND(self, next_obs: torch.Tensor, batch_norm=True):
+    def _update_RND(self, next_obs: torch.Tensor, batch_norm=False):
         # 1) Intrinsic reward via RND (train predictor to reduce novelty on visited states)
         # Use existing running stats (updated per-environment step) to normalize inputs for RND
         if batch_norm:
@@ -452,7 +452,7 @@ class RainbowDQN(Agent):
     def _int_reward(self, b_r: torch.Tensor, rnd_errors: torch.Tensor):
         # Normalize intrinsic reward magnitude using running stats (updated per step)
         with torch.no_grad():
-            norm_rnd_err = self.int_rms.normalize_scale(rnd_errors.to(dtype=torch.float64))
+            norm_rnd_err = self.int_rms.scale(rnd_errors.to(dtype=torch.float64))
             # Clamp to avoid extreme intrinsic rewards destabilizing training
             if self.int_r_clamp is not None and self.int_r_clamp > 0.0:
                 norm_rnd_err = torch.clamp(
@@ -930,7 +930,7 @@ class EVRainbowDQN(Agent):
         self.step += 1
         if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
             if self.step < self.burn_in_updates:
-                rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=True)
+                rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=False)
                 return 0.0
             else:
                 rnd_errors, rnd_loss = self._update_RND(b_next_obs)
@@ -962,7 +962,7 @@ class EVRainbowDQN(Agent):
         r_int = 0
         if self.Beta > 0.0:
             with torch.no_grad():
-                norm_int = self.int_rms.normalize(
+                norm_int = self.int_rms.scale(
                     rnd_errors.detach().to(dtype=torch.float64)
                 )
                 r_int = norm_int.to(dtype=torch.float32)

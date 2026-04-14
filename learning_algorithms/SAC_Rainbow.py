@@ -505,7 +505,7 @@ class SACAgent(Agent):
             self.rnd_optim.step()
             rnd_loss_val = float(rnd_loss.item())
             with torch.no_grad():
-                int_r = self.int_rms.normalize_scale(
+                int_r = self.int_rms.scale(
                     rnd_errors.detach().to(dtype=torch.float64)
                 ).float()
                 int_r = torch.clamp(int_r, -5.0, 5.0)
@@ -574,7 +574,7 @@ class SACAgent(Agent):
                 min_qf_next_quantiles_int = torch.min(
                     qf1_next_quantiles_int, qf2_next_quantiles_int
                 )
-                next_q_quantiles_int = int_r.unsqueeze(1) + 0.99 * (
+                next_q_quantiles_int = int_r.unsqueeze(1) + self.gamma * (
                     min_qf_next_quantiles_int
                 )
                 
@@ -601,7 +601,7 @@ class SACAgent(Agent):
                     target_qf2_int, next_critic_input, normalized=False
                 )
                 min_qf_next_target_int = torch.min(qf1_next_target_int, qf2_next_target_int)
-                next_q_value_int = int_r + 0.99 * (
+                next_q_value_int = int_r + self.gamma * (
                     min_qf_next_target_int
                 )
 
@@ -677,6 +677,9 @@ class SACAgent(Agent):
             
             qf1_a_values = qf1_quantiles.mean(dim=1)
             qf2_a_values = qf2_quantiles.mean(dim=1)
+            
+            qf1_a_values_int = qf1_quantiles_int.mean(dim=1)
+            qf2_a_values_int = qf2_quantiles_int.mean(dim=1)
             
         else:
             if self.popart:
@@ -952,10 +955,17 @@ if __name__ == "__main__":
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
+        if "final_observation" in infos:
+            for idx, trunc in enumerate(truncations):
+                if trunc and infos["_final_observation"][idx]:
+                    real_next_obs[idx] = infos["final_observation"][idx]
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)  # type:ignore
+
+        # update running stats
+        agent.update_running_stats(
+            torch.tensor(real_next_obs, dtype=torch.float32), 
+            torch.tensor(rewards, dtype=torch.float32)
+        )
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
