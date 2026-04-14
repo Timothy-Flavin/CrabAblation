@@ -1,19 +1,9 @@
-INFO:root:Starting DQN PopArt Integration Test
-INFO:root:DQN Convergence steps -> Large: 1, Small: 2
-INFO:root:Starting PPO PopArt Integration Test
-INFO:root:Starting SAC PopArt Integration Test
-INFO:root:SAC PopArt Sigma updated from 1.0 to 562.7467041015625
-INFO:root:SAC Convergence steps -> Large: 50, Small: 2
-INFO:root:Starting DQN PopArt Integration Test
-INFO:root:DQN Convergence steps -> Large: 1, Small: 2
-INFO:root:Starting PPO PopArt Integration Test
-INFO:root:Starting SAC PopArt Integration Test
-INFO:root:SAC PopArt Sigma updated from 1.0 to 562.7467041015625
-INFO:root:SAC Convergence steps -> Large: 50, Small: 2
-INFO:root:Starting DQN PopArt Integration Test
-INFO:root:DQN Convergence steps -> Large: 1, Small: 2
-INFO:root:Starting PPO PopArt Integration Test
-INFO:root:PPO Convergence steps -> Large: 4, Small: 9
-INFO:root:Starting SAC PopArt Integration Test
-INFO:root:SAC PopArt Sigma updated from 1.0 to 562.7467041015625
-INFO:root:SAC Convergence steps -> Large: 50, Small: 2
+INFO:root:Starting DQN PopArt Integration Test (25 Seeds)
+INFO:root:DQN PopArt Sigma updated from 1.0 to 0.0010000000474974513
+INFO:root:DQN Convergence steps -> Large: 111.16 +- 86.79, Small: 169.76 +- 65.27
+INFO:root:Starting PPO PopArt Integration Test (25 Seeds)
+INFO:root:PPO PopArt Sigma updated from 1.0 to 1299.507568359375
+INFO:root:PPO Convergence steps -> Large: 5.08 +- 1.26, Small: 36.36 +- 28.33
+INFO:root:Starting SAC PopArt Integration Test (25 Seeds)
+INFO:root:SAC PopArt Sigma updated from 1.0 to 866.2863159179688
+INFO:root:SAC Convergence steps -> Large: 117.44 +- 41.48, Small: 5.52 +- 3.63
