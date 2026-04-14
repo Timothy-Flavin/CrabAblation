@@ -8,7 +8,7 @@ You need mathematically exact, highly isolated unit tests that run deterministic
 * [x] **Visitation Decay Test:** Assert that $r_{int}$ for a specific state decays to near-zero upon repeated visitations.
 * [x] **Off-Policy Dynamic Recalculation Verification (DQN/SAC):** Assert that $r_{int}$ is *not* stored in the replay buffer. Verify that during the gradient step, the sampled batch of states is passed through the RND networks to compute a fresh $r_{int}$ dynamically. This prevents the Q-networks from chasing stale, inflated intrinsic rewards while maintaining a cleanly serial execution pipeline.
 * [x] **On-Policy Observation Normalization (PPO):** Verify that the running mean and variance trackers normalize state observations strictly *before* they are passed to the RND predictor network.
-* [] **RND integration on nchain:** Verify that the Rainbow agents learn nchain faster with RND by running an integration test. Save extrinsic reward over time for each PPO,SAC,DQN with and without RND. 
+* [ ] **RND integration on nchain:** Verify that the Rainbow agents learn nchain faster with RND by running an integration test. Save extrinsic reward over time for each PPO,SAC,DQN with and without RND. 
   - Status: DQN fails with and without RND, SAC does slightly better with RND but plateus while no RND SAC eventually passes it up in performance.
 
 ### 2. PopArt (Adaptive Target Rescaling)
@@ -16,7 +16,7 @@ You need mathematically exact, highly isolated unit tests that run deterministic
 * [x] **Precise Output Preservation:** Initialize the value network and pass a dummy batch of states to obtain unnormalized outputs $V_{old}$. Manually update the PopArt running mean and variance statistics with an extreme arbitrary shift. Apply the required affine transformation to the final linear layer's weights and biases. Pass the same dummy batch through the network to obtain $V_{new}$. Assert that $V_{old} = V_{new}$ exactly, up to machine precision ($\approx 10^{-6}$).
 * [x] **Scale Invariance:** Train the algorithm on a toy environment (like a 1-step bandit) with rewards multiplied by $10^4$. Train a second instance with rewards multiplied by $10^{-4}$. Assert that both instances converge to the optimal policy in approximately the same number of steps, demonstrating true scale invariance.
 
-* [x] **Integration:** Ensure that the implemented algorithms (SAC, DQN [EV and Dist], PPO) correctly use popart in their update function. You may add a running state tracker and an argument to "agent.update(debug_popart = True)" or similar to probe the agent's use of popart. DO NOT unit test a copy of the code, you must to call the live implementations, otherwise the unit test has no value. 
+* [ ] **Integration:** Ensure that the implemented algorithms (SAC, DQN [EV and Dist], PPO) correctly use popart in their update function. You may add a running state tracker and an argument to "agent.update(debug_popart = True)" or similar to probe the agent's use of popart. DO NOT unit test a copy of the code, you must to call the live implementations, otherwise the unit test has no value. 
 
 ### 3. Distributional Value Estimates (IQN)
 **Objective:** Verify the Implicit Quantile Network correctly maps continuous quantile fractions $\tau$ to the true underlying return distribution and properly computes the Huber quantile loss.

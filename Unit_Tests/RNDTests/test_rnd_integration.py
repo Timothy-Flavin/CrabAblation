@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import argparse
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from learning_algorithms.DQN_Rainbow import RainbowDQN
+from learning_algorithms.DQN_Rainbow import EVRainbowDQN
 rng = np.random.default_rng()
 # Simple Deterministic N-Chain Environment
 class NChainEnv(gym.Env):
@@ -52,15 +52,14 @@ class NChainEnv(gym.Env):
 
 def train_dqn(use_rnd=False):
     env = NChainEnv(n=7)
-    agent = RainbowDQN(
+    agent = EVRainbowDQN(
         input_dim=7, 
         n_action_dims=1, 
         n_action_bins=2, 
         Beta=1.0 if use_rnd else 0.0,
         lr=1e-3,
-        ext_r_clamp=10.0, # allow big reward for n-chain
-        burn_in_updates=0, # Start updating right away
-        Beta_half_life_steps=2500
+        burn_in_updates=20, # Start updating right away
+        beta_half_life_steps=2500
     )
     
     returns = []

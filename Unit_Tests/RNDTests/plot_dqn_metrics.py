@@ -6,19 +6,21 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from learning_algorithms.DQN_Rainbow import RainbowDQN
+from learning_algorithms.DQN_Rainbow import EVRainbowDQN
 from Unit_Tests.RNDTests.test_rnd_integration import NChainEnv, smooth_ema
 
 def train_dqn_metrics(use_rnd=False):
     env = NChainEnv(n=8)
-    agent = RainbowDQN(
+    agent = EVRainbowDQN(
         input_dim=8, 
         n_action_dims=1, 
         n_action_bins=2, 
-        Beta=10.0 if use_rnd else 0.0,
+        Beta=1.0 if use_rnd else 0.0,
         lr=1e-3,
-        ext_r_clamp=10.0,
-        burn_in_updates=0
+        burn_in_updates=20,
+        beta_half_life_steps=2500,
+        dueling=False,
+        delayed=True,
     )
     
     metrics = {
@@ -45,9 +47,9 @@ def train_dqn_metrics(use_rnd=False):
             with torch.no_grad():
                 action_tensor = agent.sample_action(
                     torch.tensor(obs, dtype=torch.float32), 
-                    eps=0.5-episode/2000, 
+                    eps=0.25-episode/4000, 
                     step=global_step, 
-                    n_steps=1000
+                    n_steps=1
                 )
                 action = int(action_tensor[0])
             

@@ -71,9 +71,13 @@ class TestPopartIntegration(unittest.TestCase):
 
             steps_to_converge = 200
             for step in range(1, 200):
+                obs = torch.randn(batch_size, 1)
+                next_obs = torch.randn(batch_size, 1)
+                target_act = (obs > 0).long()
+
                 act = torch.randint(0, 10, (batch_size, 1))
                 r = torch.where(
-                    act[:, 0] == 0,
+                    act == target_act,
                     torch.tensor(float(scale)),
                     torch.tensor(-float(scale) / 9),
                 )
@@ -99,7 +103,9 @@ class TestPopartIntegration(unittest.TestCase):
                     )
 
                 with torch.no_grad():
-                    if (agent.ext_online(obs).argmax(-1) == 0).all():
+                    test_obs = torch.tensor([[-1.0], [1.0]])
+                    test_target = torch.tensor([0, 1])
+                    if (agent.ext_online(test_obs).argmax(-1).flatten() == test_target).all():
                         steps_to_converge = step
                         break
             return steps_to_converge
