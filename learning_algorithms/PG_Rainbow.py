@@ -152,6 +152,7 @@ class PPOAgent(Agent):
         self.num_minibatches = num_minibatches
 
         self.distributional = distributional
+        self.n_quantiles = 32
         self.popart = popart
         self.Beta = Beta
         self.start_Beta = Beta
