@@ -254,8 +254,7 @@ class RainbowBase(Agent):
     def to(self, device):
         """Move the agent and all its subcomponents to a specific device."""
         device = torch.device(device)
-        if hasattr(self, 'buffer') and self.buffer is not None:
-            self.buffer.device = device
+        self.device = device
         main_lr = self.optim.param_groups[0]["lr"] if hasattr(self, "optim") else self.lr
         int_lr = self.int_optim.param_groups[0]["lr"] if hasattr(self, "int_optim") else self.intrinsic_lr
         rnd_lr = self.rnd_optim.param_groups[0]["lr"] if hasattr(self, "rnd_optim") else self.rnd_lr
@@ -264,7 +263,7 @@ class RainbowBase(Agent):
         if hasattr(self, "ext_target"): self.ext_target.to(device)
         if hasattr(self, "int_online"): self.int_online.to(device)
         if hasattr(self, "int_target"): self.int_target.to(device)
-        if hasattr(self, "obs_rms") and hasattr(self.obs_rms, "to"): self.obs_rms.to(device)
+        if hasattr(self, "rnd"): self.rnd.to(device)
 
         if hasattr(self, "ext_online"):
             self.optim = torch.optim.Adam(self.ext_online.parameters(), lr=main_lr)
@@ -273,6 +272,13 @@ class RainbowBase(Agent):
         if hasattr(self, "rnd"):
             self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         return self
+
+    def buffer_to(self,device):
+        self.buffer_device = device
+        if hasattr(self, 'buffer') and self.buffer is not None:
+            self.buffer.device = device
+        if hasattr(self, "obs_rms") and hasattr(self.obs_rms, "to"): 
+            self.obs_rms.to(device)
 
     def update_target(self):
         """Polyak averaging: target = (1 - tau) * target + tau * online."""
@@ -362,7 +368,7 @@ class EVRainbowDQN(RainbowBase):
         ).float()
         self.int_online = EV_Q_Network(
             input_dim, n_action_dims, n_action_bins, hidden_layer_sizes=hidden_layer_sizes,
-            dueling=dueling, popart=True, min_std=0.01 **int_online_kwargs,
+            dueling=dueling, popart=True, min_std=0.01, **int_online_kwargs,
         ).float()
         self.int_target = EV_Q_Network(
             input_dim, n_action_dims, n_action_bins, hidden_layer_sizes=hidden_layer_sizes,
@@ -404,9 +410,9 @@ class EVRainbowDQN(RainbowBase):
 
         b_obs = b_obs.to(self.device, non_blocking=True)
         b_a = b_a.to(self.device, non_blocking=True)
-        b_term = b_term.to(self.device, non_blocking=True)
-        b_trunc = b_trunc.to(self.device, non_blocking=True)
-        b_r_ext = b_r_ext.to(self.device, non_blocking=True)
+        b_term = b_term.to(self.device, non_blocking=True).view(-1)
+        b_trunc = b_trunc.to(self.device, non_blocking=True).view(-1)
+        b_r_ext = b_r_ext.to(self.device, non_blocking=True).view(-1)
         # Need the extra trailing dim for torch.gather later
         b_actions_idx = b_a.view(batch_size, self.n_action_dims, 1)
         #Get intrinsic errors if we are going to use them
@@ -493,7 +499,7 @@ class EVRainbowDQN(RainbowBase):
                 b_next_obs, normalized=False
             )
             # Double q actions if delayed. We grab actions from online and vals from target
-            if self.delayed:
+            if self.delayed_target:
                 next_int_actions = self.int_online(
                     b_next_obs, normalized=True
                 ).argmax(-1,keepdim=True).detach()
@@ -580,8 +586,6 @@ class EVRainbowDQN(RainbowBase):
             if self.soft or self.munchausen:
                 q_ext = q_ext / self.tau
                 actions = torch.distributions.Categorical(logits=q_ext).sample()
-                if verbose:
-                    print(f"Logits: {logits.cpu().numpy()}")
             else:
                 actions = torch.argmax(q_ext, dim=-1)
                 
@@ -595,8 +599,6 @@ class EVRainbowDQN(RainbowBase):
                 actions = torch.where(
                     explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask, explore_actions, actions
                 )
-            if verbose:
-                print(f"Q-values ext: {q_ext.cpu().numpy()}")
 
             if is_batched:
                 return actions.tolist()
@@ -721,11 +723,10 @@ class IQNRainbowDQN(RainbowBase):
 
         b_obs = b_obs.to(self.device, non_blocking=True)
         b_a = b_a.to(self.device, non_blocking=True)
-        b_term = b_term.to(self.device, non_blocking=True)
-        b_trunc = b_trunc.to(self.device, non_blocking=True)
-        b_r_ext = b_r_ext.to(self.device, non_blocking=True)
+        b_term = b_term.to(self.device, non_blocking=True).view(-1)
+        b_trunc = b_trunc.to(self.device, non_blocking=True).view(-1)
+        b_r_ext = b_r_ext.to(self.device, non_blocking=True).view(-1)
         b_actions_idx = b_a.view(batch_size, self.n_action_dims, 1)
-        input(b_actions_idx)
 
         # Get intrinsic errors if we are going to use them
         if self.Beta > 0.0:
