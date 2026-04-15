@@ -11,6 +11,9 @@ from learning_algorithms.RandomDistilation import RNDModel, RunningMeanStd
 from learning_algorithms.RainbowNetworks import EV_Q_Network, IQN_Network
 from learning_algorithms.agent import Agent
 
+# TODO: RunningMeanStd is on cpu, the rest is on specified device. Must add
+# experiences to running mean and do that stuff before sending it to the gpu
+# to avoid meaningless copies back and forth or device errors. 
 
 class RainbowBase(Agent):
     """
@@ -48,8 +51,15 @@ class RainbowBase(Agent):
         norm_obs: bool = True,
         burn_in_updates: int = 0,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
+        device = 'cpu',
+        buffer_device = 'cpu',
     ):
         super().__init__()
+        self.device = device
+        self.buffer_device = buffer_device
+        if not torch.cuda.is_available():
+            self.device = "cpu"
+            self.buffer_device = "cpu"
         self.input_dim = input_dim
         self.n_action_dims = n_action_dims
         self.n_action_bins = n_action_bins
@@ -87,6 +97,7 @@ class RainbowBase(Agent):
         self.step = 0
         self.last_eps = 1.0
         self.update_timings = None
+        self.buffer = self._init_buffer()
 
         # RND and running stats setup
         rnd_target_encoder = encoder_factory() if encoder_factory is not None else None
@@ -98,34 +109,55 @@ class RainbowBase(Agent):
             encoder_target=rnd_target_encoder,
             encoder_predictor=rnd_predictor_encoder,
         ).float()
-        
+        self.rnd.to(self.device)
         self.rnd_optim = torch.optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
-        self.int_rms = RunningMeanStd(shape=())
+        
+    def _init_buffer(self) -> ReplayBuffer:
+        """
+        Initializes the pinned memory ReplayBuffer based on RainbowBase parameters.
+        """
+        # Determine observation shape (handling both tuple and int inputs)
+        obs_shape = self.input_dim if isinstance(self.input_dim, tuple) else (self.input_dim,)
+        
+        # In DQN/Rainbow, we usually store the action index.
+        # If n_action_dims > 1, it's a MultiDiscrete setup.
+        # We store them as a vector of length n_action_dims.
+        action_dim = self.n_action_dims
+        
+        # Determine number of environments
+        n_envs = len(self.envs.remotes) if hasattr(self.envs, 'remotes') else getattr(self.envs, 'num_envs', 1)
 
-        if envs is not None:
-            self.buffer = ReplayBuffer(
-                buffer_size,
-                envs.single_observation_space,
-                envs.single_action_space,
-                "cuda" if torch.cuda.is_available() else "cpu",
-                n_envs=envs.num_envs,
-                handle_timeout_termination=False,
-            )
-        else:
-            self.buffer = None
+        return ReplayBuffer(
+            buffer_size=self.buffer_size,
+            n_envs=n_envs,
+            obs_shape=obs_shape,
+            action_dim=action_dim,
+            device="cpu",
+            optimize_memory_usage=False,
+            handle_timeout_termination=True
+        )
 
-    def observe(self, obs, action, reward, next_obs, done, info):
-        device = next(self.ext_online.parameters()).device
+    def observe(self, obs, action, reward, next_obs, terminated, truncated, info):
         # Update running stats for PopArt / Intrinsic
         if isinstance(obs, np.ndarray):
-            b_next_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
-            b_r = torch.as_tensor(reward, dtype=torch.float32, device=device).view(-1, 1)
+            b_next_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=self.buffer_device).view(-1,self.obs_dim)
         else:
-            b_next_obs = next_obs.to(device=device, dtype=torch.float32)
-            b_r = reward.to(device=device, dtype=torch.float32).view(-1, 1)
-            
-        self.update_running_stats(b_next_obs, b_r)
+            b_next_obs = next_obs.to(device=self.buffer_device, dtype=torch.float32)
+        self.obs_rms.update(b_next_obs)
+
+        if isinstance(obs, np.ndarray):
+            b_r = torch.as_tensor(reward, dtype=torch.float32, device=self.buffer_device).view(-1, 1)
+            b_a = torch.as_tensor(action, dtype=torch.int64, device=self.buffer_device).view(-1,self.n_action_dims)
+            b_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=self.buffer_device).view(-1,self.obs_dim)
+            b_term = torch.as_tensor(terminated, dtype=torch.float32, device=self.buffer_device).view(-1,1)
+            b_trunc = torch.as_tensor(truncated, dtype=torch.float32, device=self.buffer_device).view(-1,1)
+        else:
+            b_r = reward.to(dtype=torch.float32, device=self.buffer_device).view(-1, 1)
+            b_a = action.to(dtype=torch.int64, device=self.buffer_device).view(-1,self.n_action_dims)
+            b_obs = next_obs.to(dtype=torch.float32, device=self.buffer_device).view(-1,self.obs_dim)
+            b_term = terminated.to(dtype=torch.float32, device=self.buffer_device).view(-1,1)
+            b_trunc =truncated.to(dtype=torch.float32, device=self.buffer_device).view(-1,1)
         
         # ONLINE TD TARGET AND UPDATE_STATS:
         if hasattr(self, 'ext_online') and getattr(self, "popart", True):
@@ -133,20 +165,6 @@ class RainbowBase(Agent):
                 # Extrinsic Target
                 if hasattr(self.ext_online, "normalize"): 
                     pass # We will do a forward pass
-                    
-                # Format tensors for forward pass
-                if isinstance(obs, np.ndarray):
-                    o = torch.as_tensor(obs, dtype=torch.float32, device=device)
-                    a = torch.as_tensor(action, dtype=torch.long, device=device).view(-1, 1)
-                    r = torch.as_tensor(reward, dtype=torch.float32, device=device)
-                    no = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
-                    d = torch.as_tensor(done, dtype=torch.float32, device=device)
-                else:
-                    o = obs.to(device=device, dtype=torch.float32)
-                    a = action.to(device=device, dtype=torch.long).view(-1, 1)
-                    r = reward.to(device=device, dtype=torch.float32)
-                    no = next_obs.to(device=device, dtype=torch.float32)
-                    d = done.to(device=device, dtype=torch.float32)
 
                 # Intrinsic Reward Generation
                 rnd_errors, _ = self._update_RND(no, batch_norm=False)
@@ -238,9 +256,7 @@ class RainbowBase(Agent):
         if hasattr(self, "ext_target"): self.ext_target.to(device)
         if hasattr(self, "int_online"): self.int_online.to(device)
         if hasattr(self, "int_target"): self.int_target.to(device)
-        if hasattr(self, "rnd") and hasattr(self.rnd, "to"): self.rnd.to(device)
         if hasattr(self, "obs_rms") and hasattr(self.obs_rms, "to"): self.obs_rms.to(device)
-        if hasattr(self, "int_rms") and hasattr(self.int_rms, "to"): self.int_rms.to(device)
 
         if hasattr(self, "ext_online"):
             self.optim = torch.optim.Adam(self.ext_online.parameters(), lr=main_lr)
@@ -260,16 +276,7 @@ class RainbowBase(Agent):
             for tp, op in zip(self.int_target.parameters(), self.int_online.parameters()):
                 tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
 
-    @torch.no_grad()
-    def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
-        x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
-        self.obs_rms.update(x64)
-        with torch.no_grad():
-            norm_x64 = self.obs_rms.normalize(x64)
-            if norm_x64.ndim == 1:
-                norm_x64 = norm_x64.unsqueeze(0)
-            rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze().detach()
-            self.int_rms.update(rnd_err.to(dtype=torch.float64))
+
 
     def _update_RND(self, next_obs: torch.Tensor, batch_norm=False):
         with torch.no_grad():        
@@ -485,7 +492,7 @@ class EVRainbowDQN(RainbowBase):
                 next_head_vals = torch.gather(q_next_target_raw, -1, target_actions_next).squeeze(-1)
 
             assert isinstance(next_head_vals, torch.Tensor)
-            online_ext_target = b_r_ext + self.gamma * (1 - b_term).view(-1, 1) * next_head_vals
+            online_ext_target = b_r_ext.view(-1) + self.gamma * (1 - b_term).view(-1) * next_head_vals
 
         target_for_stats_ext = online_ext_target.detach() # maintain [B, D]
         self.ext_online.output_layer.update_stats(target_for_stats_ext)
