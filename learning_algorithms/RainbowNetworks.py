@@ -25,6 +25,7 @@ class EV_Q_Network(nn.Module):
         popart: bool = False,
         encoder: Optional[nn.Module] = None,
         encoder_out_dim: Optional[int] = None,
+        min_std: float =0.001
     ):
         super().__init__()
         self.dueling = dueling
@@ -58,7 +59,7 @@ class EV_Q_Network(nn.Module):
         else:
             if self.popart:
                 self.output_layer = PopArtLayer(
-                    last_hidden, self.n_actions_total, epsilon=0.001
+                    last_hidden, self.n_actions_total, epsilon=min_std
                 )
             else:
                 self.out_layer = nn.Linear(last_hidden, self.n_actions_total)
@@ -119,6 +120,7 @@ class IQN_Network(nn.Module):
         popart: bool = False,
         encoder: Optional[nn.Module] = None,
         encoder_out_dim: Optional[int] = None,
+        min_std: float = 0.001
     ):
         super().__init__()
         self.dueling = dueling
@@ -148,7 +150,7 @@ class IQN_Network(nn.Module):
         if dueling:
             if self.popart:
                 self.output_layer = PopArtDuelingIQNLayer(
-                    last_hidden, n_action_dims, n_action_bins, epsilon=0.001
+                    last_hidden, n_action_dims, n_action_bins, epsilon=min_std
                 )
             else:
                 self.value_head = nn.Linear(last_hidden, 1)
@@ -156,7 +158,7 @@ class IQN_Network(nn.Module):
         else:
             if self.popart:
                 self.output_layer = PopArtIQNLayer(
-                    last_hidden, self.n_actions_total, epsilon=0.001
+                    last_hidden, self.n_actions_total, epsilon=min_std
                 )
             else:
                 self.out_head = nn.Linear(last_hidden, self.n_actions_total)

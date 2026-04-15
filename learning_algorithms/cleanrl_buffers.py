@@ -42,7 +42,8 @@ class ReplayBufferSamples(NamedTuple):
     observations: th.Tensor
     actions: th.Tensor
     next_observations: th.Tensor
-    dones: th.Tensor
+    terminations: th.Tensor
+    truncations: th.Tensor
     rewards: th.Tensor
 
 
@@ -179,8 +180,8 @@ class ReplayBuffer(BaseBuffer):
 
         self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=th.float32).pin_memory()
         self.rewards = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.dones = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.timeouts = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+        self.terms = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+        self.truncs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
 
     def add(
         self,
@@ -188,8 +189,8 @@ class ReplayBuffer(BaseBuffer):
         next_obs: np.ndarray | th.Tensor,
         action: np.ndarray | th.Tensor,
         reward: np.ndarray | th.Tensor,
-        done: np.ndarray | th.Tensor,
-        infos: list[dict[str, Any]],
+        term: np.ndarray | th.Tensor,
+        trunc: np.ndarray | th.Tensor,
     ) -> None:
         self.observations[self.pos].copy_(th.as_tensor(obs).reshape((self.n_envs, *self.obs_shape)))
         if self.optimize_memory_usage:
@@ -199,11 +200,8 @@ class ReplayBuffer(BaseBuffer):
 
         self.actions[self.pos].copy_(th.as_tensor(action).reshape((self.n_envs, self.action_dim)))
         self.rewards[self.pos].copy_(th.as_tensor(reward))
-        self.dones[self.pos].copy_(th.as_tensor(done))
-
-        if self.handle_timeout_termination:
-            timeout_vals = th.tensor([info.get("TimeLimit.truncated", False) for info in infos], dtype=th.float32)
-            self.timeouts[self.pos].copy_(timeout_vals)
+        self.terms[self.pos].copy_(th.as_tensor(term))
+        self.truncs[self.pos].copy_(th.as_tensor(trunc))
 
         self.pos = (self.pos + 1) % self.buffer_size
         if self.pos == 0:
@@ -220,11 +218,12 @@ class ReplayBuffer(BaseBuffer):
             next_obs = self.next_observations[batch_inds, env_indices]
 
         rewards = self.rewards[batch_inds, env_indices].reshape(-1, 1)
-        dones = (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1)
+        terms = self.terms[batch_inds, env_indices].reshape(-1, 1)
+        truncs = self.truncs[batch_inds, env_indices].reshape(-1, 1)
 
         return ReplayBufferSamples(
             self.to_torch(obs), self.to_torch(actions), self.to_torch(next_obs),
-            self.to_torch(dones), self.to_torch(rewards)
+            self.to_torch(terms), self.to_torch(truncs), self.to_torch(rewards)
         )
 
 
@@ -255,37 +254,48 @@ class RolloutBuffer(BaseBuffer):
         self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=th.float32).pin_memory()
         self.rewards = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
         self.returns = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.episode_starts = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+        self.terminations = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+        self.truncations = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
         self.values = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
         self.log_probs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
         self.advantages = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
         self.generator_ready = False
         super().reset()
 
-    def compute_returns_and_advantage(self, last_values: th.Tensor, dones: np.ndarray) -> None:
+    def compute_returns_and_advantage(
+        self, last_values: th.Tensor, terminations: np.ndarray, truncations: np.ndarray
+    ) -> None:
         last_values = last_values.flatten()
         last_gae_lam = 0
-        dones_t = th.as_tensor(dones, dtype=th.float32)
+        
+        terms_t = th.as_tensor(terminations, dtype=th.float32).flatten()
+        truncs_t = th.as_tensor(truncations, dtype=th.float32).flatten()
 
         for step in reversed(range(self.buffer_size)):
             if step == self.buffer_size - 1:
-                next_non_terminal = 1.0 - dones_t
+                # Value bootstrap applies if episode truncates, but not if it terminates natively.
+                next_non_terminal = 1.0 - terms_t
+                
+                # Prevent GAE advantage from bleeding over an episode boundary (either terminated or truncated)
+                next_episode_continuation = 1.0 - th.clamp(terms_t + truncs_t, 0.0, 1.0)
                 next_values = last_values
             else:
-                next_non_terminal = 1.0 - self.episode_starts[step + 1]
+                next_non_terminal = 1.0 - self.terminations[step]
+                next_episode_continuation = 1.0 - th.clamp(self.terminations[step] + self.truncations[step], 0.0, 1.0)
                 next_values = self.values[step + 1]
             
             delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
-            last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
+            last_gae_lam = delta + self.gamma * self.gae_lambda * next_episode_continuation * last_gae_lam
             self.advantages[step] = last_gae_lam
         
         self.returns.copy_(self.advantages + self.values)
 
-    def add(self, obs, action, reward, episode_start, value, log_prob) -> None:
+    def add(self, obs, action, reward, termination, truncation, value, log_prob) -> None:
         self.observations[self.pos].copy_(th.as_tensor(obs).reshape((self.n_envs, *self.obs_shape)))
         self.actions[self.pos].copy_(th.as_tensor(action).reshape((self.n_envs, self.action_dim)))
         self.rewards[self.pos].copy_(th.as_tensor(reward))
-        self.episode_starts[self.pos].copy_(th.as_tensor(episode_start))
+        self.terminations[self.pos].copy_(th.as_tensor(termination))
+        self.truncations[self.pos].copy_(th.as_tensor(truncation))
         self.values[self.pos].copy_(value.flatten())
         self.log_probs[self.pos].copy_(log_prob.reshape(self.n_envs))
         
@@ -293,22 +303,4 @@ class RolloutBuffer(BaseBuffer):
         if self.pos == self.buffer_size:
             self.full = True
 
-    def get(self, batch_size: int | None = None) -> Generator[RolloutBufferSamples]:
-        assert self.full
-        indices = th.randperm(self.buffer_size * self.n_envs)
-        
-        if not self.generator_ready:
-            for tensor_name in ["observations", "actions", "values", "log_probs", "advantages", "returns"]:
-                self.__dict__[tensor_name] = self.swap_and_flatten(self.__dict__[tensor_name])
-            self.generator_ready = True
-
-        batch_size = batch_size or (self.buffer_size * self.n_envs)
-        for start_idx in range(0, self.buffer_size * self.n_envs, batch_size):
-            yield self._get_samples(indices[start_idx : start_idx + batch_size])
-
-    def _get_samples(self, batch_inds: th.Tensor) -> RolloutBufferSamples:
-        data = (
-            self.observations[batch_inds], self.actions[batch_inds], self.values[batch_inds],
-            self.log_probs[batch_inds], self.advantages[batch_inds], self.returns[batch_inds],
-        )
-        return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
+    def get(self, batch_size: int | None = None) -> Generator

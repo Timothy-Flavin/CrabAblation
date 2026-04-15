@@ -25,7 +25,7 @@ class RainbowBase(Agent):
         input_dim,
         n_action_dims,
         n_action_bins,
-        envs=None,
+        n_envs=1,
         buffer_size: int = int(1e5),
         hidden_layer_sizes=[128, 128],
         lr: float = 1e-3,
@@ -61,6 +61,13 @@ class RainbowBase(Agent):
             self.device = "cpu"
             self.buffer_device = "cpu"
         self.input_dim = input_dim
+        if isinstance(self.input_dim, (int, np.integer)):
+            self.obs_ndim = 1
+        elif hasattr(self.input_dim, '__len__'):
+            self.obs_ndim = len(self.input_dim)
+        else:
+            raise TypeError(f"Unsupported input_dim type: {type(self.input_dim)}. Expected int or array-like.")
+        
         self.n_action_dims = n_action_dims
         self.n_action_bins = n_action_bins
         self.n_actions = n_action_dims * n_action_bins
@@ -93,6 +100,9 @@ class RainbowBase(Agent):
         self.norm_obs = norm_obs
         self.burn_in_updates = burn_in_updates
         self.encoder_factory = encoder_factory
+        # Determine number of environments
+        self.n_envs = n_envs# = len(self.envs.remotes) if self.envs is not None and hasattr(self.envs, 'remotes') else getattr(self.envs, 'num_envs', 1)
+
         
         self.step = 0
         self.last_eps = 1.0
@@ -124,41 +134,42 @@ class RainbowBase(Agent):
         # If n_action_dims > 1, it's a MultiDiscrete setup.
         # We store them as a vector of length n_action_dims.
         action_dim = self.n_action_dims
-        
-        # Determine number of environments
-        n_envs = len(self.envs.remotes) if hasattr(self.envs, 'remotes') else getattr(self.envs, 'num_envs', 1)
-
         return ReplayBuffer(
             buffer_size=self.buffer_size,
             n_envs=n_envs,
             obs_shape=obs_shape,
             action_dim=action_dim,
-            device="cpu",
+            device=self.buffer_device,
             optimize_memory_usage=False,
             handle_timeout_termination=True
         )
 
     def observe(self, obs, action, reward, next_obs, terminated, truncated, info):
-        # Update running stats for PopArt / Intrinsic
-        if isinstance(obs, np.ndarray):
-            b_next_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=self.buffer_device).view(-1,self.obs_dim)
-        else:
-            b_next_obs = next_obs.to(device=self.buffer_device, dtype=torch.float32)
-        self.obs_rms.update(b_next_obs)
+        # Update random network distillation running mean and std norm
+        # if we are using intrinsic rewards. 
+        if self.Beta > 0.0:
+            if isinstance(next_obs, np.ndarray):
+                b_next_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=self.buffer_device)
+            else:
+                b_next_obs = next_obs.clone().detach().to(device=self.buffer_device, dtype=torch.float32)
+            
+            # Add batch dimension if it is missing (e.g., n_envs=1 returning unbatched states)
+            if b_next_obs.ndim == self.obs_ndim:
+                b_next_obs = b_next_obs.unsqueeze(0)
+                
+            self.obs_rms.update(b_next_obs)
 
-        if isinstance(obs, np.ndarray):
-            b_r = torch.as_tensor(reward, dtype=torch.float32, device=self.buffer_device).view(-1, 1)
-            b_a = torch.as_tensor(action, dtype=torch.int64, device=self.buffer_device).view(-1,self.n_action_dims)
-            b_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=self.buffer_device).view(-1,self.obs_dim)
-            b_term = torch.as_tensor(terminated, dtype=torch.float32, device=self.buffer_device).view(-1,1)
-            b_trunc = torch.as_tensor(truncated, dtype=torch.float32, device=self.buffer_device).view(-1,1)
-        else:
-            b_r = reward.to(dtype=torch.float32, device=self.buffer_device).view(-1, 1)
-            b_a = action.to(dtype=torch.int64, device=self.buffer_device).view(-1,self.n_action_dims)
-            b_obs = next_obs.to(dtype=torch.float32, device=self.buffer_device).view(-1,self.obs_dim)
-            b_term = terminated.to(dtype=torch.float32, device=self.buffer_device).view(-1,1)
-            b_trunc =truncated.to(dtype=torch.float32, device=self.buffer_device).view(-1,1)
-        
+        # The buffer natively handles the shapes and tensor casting for memory efficiency
+        self.buffer.add(
+            obs=obs,
+            next_obs=next_obs,
+            action=action,
+            reward=reward,
+            term=terminated, # Fixed to match function signature
+            trunc=truncated, # Fixed to match function signature
+        )
+
+    def old_popart()
         # ONLINE TD TARGET AND UPDATE_STATS:
         if hasattr(self, 'ext_online') and getattr(self, "popart", True):
             with torch.no_grad():
@@ -276,20 +287,12 @@ class RainbowBase(Agent):
             for tp, op in zip(self.int_target.parameters(), self.int_online.parameters()):
                 tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
 
-
-
-    def _update_RND(self, next_obs: torch.Tensor, batch_norm=False):
+    def _update_RND(self, next_obs: torch.Tensor):
         with torch.no_grad():        
-            if batch_norm:
-                norm_next_obs_f32 = (next_obs - next_obs.mean(dim=0, keepdim=True)) / (
-                    next_obs.std(dim=0, keepdim=True, unbiased=False) + 1e-6
-                )
-            else:
-                norm_next_obs = self.obs_rms.normalize(next_obs.to(dtype=torch.float64))
-                norm_next_obs_f32 = norm_next_obs.to(dtype=torch.float32)
+            norm_next_obs = self.obs_rms.normalize(next_obs)
 
         with torch.enable_grad():
-            rnd_errors = self.rnd(norm_next_obs_f32)
+            rnd_errors = self.rnd(norm_next_obs)
             rnd_loss = rnd_errors.mean()
             self.rnd_optim.zero_grad()
             rnd_loss.backward()
@@ -305,7 +308,7 @@ class EVRainbowDQN(RainbowBase):
         input_dim,
         n_action_dims,
         n_action_bins,
-        envs=None,
+        n_envs:int=1,
         buffer_size: int = int(1e5),
         hidden_layer_sizes=[128, 128],
         lr: float = 1e-3,
@@ -333,7 +336,7 @@ class EVRainbowDQN(RainbowBase):
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
     ):
         super().__init__(
-            input_dim=input_dim, n_action_dims=n_action_dims, n_action_bins=n_action_bins, envs=envs, buffer_size=buffer_size,
+            input_dim=input_dim, n_action_dims=n_action_dims, n_action_bins=n_action_bins, n_envs=n_envs, buffer_size=buffer_size,
             hidden_layer_sizes=hidden_layer_sizes, lr=lr, gamma=gamma, alpha=alpha, tau=tau,
             polyak_tau=polyak_tau, l_clip=l_clip, soft=soft, munchausen=munchausen, Thompson=Thompson,
             dueling=dueling, Beta=Beta, delayed=delayed, ent_reg_coef=ent_reg_coef,
@@ -362,11 +365,11 @@ class EVRainbowDQN(RainbowBase):
         ).float()
         self.int_online = EV_Q_Network(
             input_dim, n_action_dims, n_action_bins, hidden_layer_sizes=hidden_layer_sizes,
-            dueling=dueling, popart=True, **int_online_kwargs,
+            dueling=dueling, popart=True, min_std=0.01 **int_online_kwargs,
         ).float()
         self.int_target = EV_Q_Network(
             input_dim, n_action_dims, n_action_bins, hidden_layer_sizes=hidden_layer_sizes,
-            dueling=dueling, popart=True, **int_target_kwargs,
+            dueling=dueling, popart=True, min_std=0.01, **int_target_kwargs,
         ).float()
 
         self.ext_target.requires_grad_(False)
@@ -384,57 +387,43 @@ class EVRainbowDQN(RainbowBase):
         ent = -(pi * logpi).sum(dim=-1)  # [B]
         return pi, logpi, ent
 
-    def update(
-        self, batch_size=None, step=0, extrinsic_only=False
-    ):
-        # Set up wall clock time for optimization later
-        if self.update_timings is None:
-            self.update_timings = {
-                "update_rnd": 0.0, "extrinsic_loss": 0.0,
-                "intrinsic_loss": 0.0, "logging": 0.0, "total": 0.0,
-            }
-        update_timings = self.update_timings
-        t__ = time.time()
+    def update(self, batch_size=None):
+        self.step += 1
 
+        # Get batch data from buffer
         if batch_size is None:
             batch_size = 128
+        (
+            b_obs, b_a, b_next_obs,b_term, b_trunc, b_r_ext
+        ) = self.buffer.sample(batch_size)
+        # Get the batch to the gpu
+        b_next_obs = b_next_obs.to(self.device, non_blocking=True)
         
-        data = self.buffer.sample(batch_size)
-        idx = torch.arange(0, batch_size)
-        
-        b_obs = data.observations
-        b_actions_idx = data.actions.long()
-        if b_actions_idx.ndim == 1:
-            b_actions_idx = b_actions_idx.view(-1, 1)
-        a = data.actions
-        b_r_ext = data.rewards.flatten()
-        b_next_obs = data.next_observations
-        b_term = data.dones.flatten()
-        
-        self.step += 1
-        t_ = time.time()
-
-        t_ = time.time()
         if self.step < self.burn_in_updates:
             if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
-                rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=True)
+                rnd_errors, rnd_loss = self._update_RND(b_next_obs)
                 return 0.0
             return 0.0
-        update_timings["update_rnd"] += time.time() - t_
-        
-        if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
-            rnd_errors, rnd_loss = self._update_RND(b_next_obs, batch_norm=False)
+
+        b_obs = b_obs.to(self.device, non_blocking=True)
+        b_a = b_a.to(self.device, non_blocking=True)
+        b_term = b_term.to(self.device, non_blocking=True)
+        b_trunc = b_trunc.to(self.device, non_blocking=True)
+        b_r_ext = b_r_ext.to(self.device, non_blocking=True)
+        # Need the extra trailing dim for torch.gather later
+        b_actions_idx = b_a.view(batch_size, self.n_action_dims, 1)
+
+        #Get intrinsic errors if we are going to use them
+        if self.Beta > 0.0:
+            rnd_errors, rnd_loss = self._update_RND(b_next_obs)
             if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
                 self.Beta = self.start_Beta * (
                     0.5 ** (self.step / self.beta_half_life_steps)
                 )
-            with torch.no_grad():
-                norm_int = self.int_rms.scale(
-                    rnd_errors.detach().to(dtype=torch.float64)
-                )
-                b_r_int = norm_int.to(dtype=torch.float32)
+            b_r_int = rnd_errors.detach()
         else:
             rnd_errors, rnd_loss, b_r_int = torch.zeros_like(b_r_ext), 0, 0
+
 
         logpi_now = None
         pi_now = None
@@ -444,54 +433,33 @@ class EVRainbowDQN(RainbowBase):
         # Get target
         with torch.no_grad():
             q_ext_norm = self.ext_online(b_obs, normalized=True)  # [B,D,Bins]
-            # if self.Beta>0.0:
-            #     q_int_norm = self.int_online(b_obs, normalized=True)  # [B,D,Bins]
-            #     q_mixed_now = self.Beta * q_int_norm + (1-self.Beta)*q_ext_norm
-            # else:
-            #     q_mixed_now = q_ext_norm
-            
-            b_actions_idx = a[idx]
-            if b_actions_idx.ndim == 1:
-                b_act_view = b_actions_idx.view(-1, 1)
-            else:
-                b_act_view = b_actions_idx  # [B,D]
-            b_actions_idx = b_act_view.unsqueeze(-1)
-            
             q_next_online_norm = self.ext_online(b_next_obs, normalized=True)
-            # if self.Beta > 0.0:
-            #     q_next_int_online_norm = self.int_online(b_next_obs, normalized=True)
-            #     if self.delayed_target:
-            #         q_next_int_target_norm = self.int_target(b_next_obs, normalized=True)       
-            #     else: 
-            #         q_next_int_target_norm = q_next_int_online_norm 
-            #     #q_next_online_mixed = (1.0 - self.Beta) * q_next_online_norm + self.Beta * q_next_int_online_norm
-            # else:
-            #     #q_next_online_mixed = q_next_online_norm
-
             q_next_target_raw = self.ext_target(b_next_obs, normalized=False) if self.delayed_target else self.ext_online(b_next_obs, normalized=False)   
+            
+            # Munchausen loss only for the exploiter 
             if self.munchausen:
                 if logpi_now is None:
                     logpi_now = torch.clamp(
                         torch.log_softmax(q_ext_norm / self.tau, dim=-1), min=-1e8
                     )
-
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(-1)  # [B,D]
                 r_kl = torch.clamp(selected_logpi, min=self.l_clip)
                 if r_kl.ndim > 1:
                     r_kl = r_kl.sum(-1)
                 b_r_ext += current_sigma * self.alpha * self.tau * r_kl 
 
+            # Next value with entropy and weighted sum over q values
             if self.munchausen or self.soft:
                 logpi_next = torch.clamp(
                     torch.log_softmax(q_next_online_norm / self.tau, dim=-1), min=-1e8
                 )
                 pi_next = torch.exp(logpi_next)
                 next_head_vals = (pi_next * (current_sigma * self.alpha * logpi_next + q_next_target_raw)).sum(-1)
+            # Next value with no entropy or weighted sum, using argmax policy
             else:
                 target_actions_next = q_next_online_norm.argmax(dim=-1, keepdim=True).detach()
                 next_head_vals = torch.gather(q_next_target_raw, -1, target_actions_next).squeeze(-1)
 
-            assert isinstance(next_head_vals, torch.Tensor)
             online_ext_target = b_r_ext.view(-1) + self.gamma * (1 - b_term).view(-1) * next_head_vals
 
         target_for_stats_ext = online_ext_target.detach() # maintain [B, D]
@@ -504,44 +472,39 @@ class EVRainbowDQN(RainbowBase):
         q_selected_norm = torch.gather(q_ext_now_norm, -1, b_actions_idx).squeeze(-1) # [B, D]
         extrinsic_loss = torch.nn.functional.mse_loss(q_selected_norm, td_target_norm)
         
-        # if self.Beta>0.0:
-        #     q_mixed_now = self.Beta * q_int_norm.detach() + (1-self.Beta)*q_ext_now_norm
-        # else:
-        #     q_mixed_now = q_ext_now_norm
         if self.ent_reg_coef > 0.0:
             logpi_now = torch.clamp(
                 torch.log_softmax(q_ext_now_norm / self.tau, dim=-1), min=-1e8
             )
             if torch.isnan(logpi_now).any():
                 print("NaN detected in logpi_now!")
+                raise("fuck")
             pi_now = torch.exp(logpi_now)
             entropy_loss = (pi_now * logpi_now).sum(dim=-1).mean()
-        extrinsic_loss = extrinsic_loss + self.ent_reg_coef * entropy_loss
+            extrinsic_loss = extrinsic_loss + self.ent_reg_coef * entropy_loss
         
         self.optim.zero_grad()
         extrinsic_loss.backward()
         if hasattr(self, "ext_online"):
             torch.nn.utils.clip_grad_norm_(self.ext_online.parameters(), max_norm=10.0)
         self.optim.step()
-        update_timings["extrinsic_loss"] += time.time() - t_
 
-        if extrinsic_only:
-            update_timings["total"] += time.time() - t__
-            return float(extrinsic_loss.item())
 
-        t_ = time.time()
 
         # Intrinsic Q update
         with torch.no_grad():
-            next_int_actions = self.int_online(b_next_obs, normalized=True).argmax(-1,keepdim=True).detach()
             int_q_next = (self.int_target if self.delayed_target else self.int_online)(
                 b_next_obs, normalized=False
             )
+            # Double q actions if delayed. We grab actions from online and vals from target
+            if self.delayed:
+                next_int_actions = self.int_online(
+                    b_next_obs, normalized=True
+                ).argmax(-1,keepdim=True).detach()
+            else:
+                next_int_actions = int_q_next.argmax(-1,keepdim=True).detach()
             int_q_next_target = torch.gather(int_q_next, -1, next_int_actions).squeeze(-1)
-            r_int_only = (
-                b_r_int if isinstance(b_r_int, torch.Tensor) else torch.zeros_like(b_r_ext)
-            )
-            int_td_target = r_int_only + self.gamma * int_q_next_target
+            int_td_target = b_r_int + self.gamma * int_q_next_target
 
         target_for_stats_int = int_td_target.detach()
         self.int_online.output_layer.update_stats(target_for_stats_int)
@@ -552,19 +515,21 @@ class EVRainbowDQN(RainbowBase):
         int_td_target_norm = self.int_online.output_layer.normalize(target_for_stats_int)
         int_q_now_norm = self.int_online(b_obs, normalized=True)
         int_q_selected_norm = torch.gather(int_q_now_norm, -1, b_actions_idx).squeeze(-1)
-            
         intrinsic_loss = torch.nn.functional.mse_loss(
             int_q_selected_norm, int_td_target_norm
         )
 
         self.int_optim.zero_grad()
         intrinsic_loss.backward()
+        
+        # Update target network
+        if self.delayed_target:
+            self.update_target()
+        
+        # tracking
         if hasattr(self, "int_online"):
             torch.nn.utils.clip_grad_norm_(self.int_online.parameters(), max_norm=10.0)
         self.int_optim.step()
-        update_timings["intrinsic_loss"] += time.time() - t_
-
-        t_ = time.time()
 
         if isinstance(b_r_int, torch.Tensor):
             r_int_log = float(b_r_int.mean().item())
@@ -591,21 +556,6 @@ class EVRainbowDQN(RainbowBase):
             "Q_int_mean": float(int_q_now_norm.mean().item()) if 'int_q_now_norm' in locals() else 0.0,
             "last_eps": float(self.last_eps),
         }
-        if self.tb_writer is not None:
-            try:
-                for k, v in self.last_losses.items():
-                    if isinstance(v, (int, float)):
-                        self.tb_writer.add_scalar(
-                            f"{self.tb_prefix}/{k}", float(v), step
-                        )
-            except Exception:
-                pass
-
-        update_timings["logging"] += time.time() - t_
-        update_timings["total"] += time.time() - t__
-
-        if self.delayed_target:
-            self.update_target()
         return float(extrinsic_loss.item())
 
     def sample_action(
@@ -618,7 +568,7 @@ class EVRainbowDQN(RainbowBase):
         verbose: bool = False,
     ):
         self.last_eps = eps
-        is_batched = obs.ndim > 1
+        is_batched = obs.ndim > self.obs_ndim:
         obs_b = obs if is_batched else obs.unsqueeze(0)
         batch_size = obs_b.size(0)
 
