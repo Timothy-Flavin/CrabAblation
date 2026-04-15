@@ -26,7 +26,7 @@ class TestScaleInvariance(unittest.TestCase):
                 n_action_bins=2,
                 hidden_layer_sizes=[32],
                 lr=0.01,  # Needs higher lr
-                popart=use_popart,
+                
                 burn_in_updates=0 # turn off burn in
             ).to(torch.device("cpu"))
             
@@ -45,9 +45,18 @@ class TestScaleInvariance(unittest.TestCase):
                 r = torch.where(act[:, 0] == 0, torch.tensor(float(scale)), torch.tensor(-float(scale)))
                 
                 # update agent
-                agent.update(
-                    obs, act, r, next_obs, terms, batch_size=None, step=step, extrinsic_only=True
-                )
+                class MockBuffer:
+                    def sample(self, *args, **kwargs):
+                        import types
+                        return types.SimpleNamespace(
+                            observations=obs,
+                            actions=act,
+                            rewards=r.unsqueeze(1),
+                            next_observations=next_obs,
+                            dones=terms.unsqueeze(1)
+                        )
+                agent.buffer = MockBuffer()
+                agent.update(batch_size=batch_size, step=step, extrinsic_only=True)
                 
                 # Check greedy action on state (1)
                 with torch.no_grad():

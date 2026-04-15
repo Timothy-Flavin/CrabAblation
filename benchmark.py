@@ -6,7 +6,7 @@ warnings.filterwarnings("ignore")
 
 import argparse
 from types import SimpleNamespace
-
+import traceback 
 import gymnasium as gym
 import numpy as np
 import torch
@@ -210,7 +210,8 @@ def run_grid_search(args, total_steps=2000):
                         best_config = current_config
 
                 except Exception as e:
-                    pass
+                    traceback.print_exc()
+                    exit()
                 finally:
                     vec_env.close()
 

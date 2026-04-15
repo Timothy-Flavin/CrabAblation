@@ -51,11 +51,13 @@ class NChainEnv(gym.Env):
         return self._get_obs(), reward, terminated, truncated, {}
 
 def train_dqn(use_rnd=False):
-    env = NChainEnv(n=7)
+    env = NChainEnv(n=10)
+    envs = gym.vector.SyncVectorEnv([lambda: NChainEnv(n=10)])
     agent = EVRainbowDQN(
-        input_dim=7, 
+        input_dim=10, 
         n_action_dims=1, 
         n_action_bins=2, 
+        envs=envs,
         Beta=1.0 if use_rnd else 0.0,
         lr=1e-3,
         burn_in_updates=20, # Start updating right away
@@ -85,22 +87,10 @@ def train_dqn(use_rnd=False):
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             
-            # Since step logic updates the rms:
-            agent.update_running_stats(
-                torch.tensor(next_obs, dtype=torch.float64), 
-                torch.tensor([reward], dtype=torch.float64)
-            )
-            
+            agent.observe(obs, np.array([action], dtype=np.int32), reward, next_obs, terminated, truncated)
             # Update
-            agent.update(
-                torch.tensor(obs).unsqueeze(0), 
-                torch.tensor([[action]]), 
-                torch.tensor([reward]), 
-                torch.tensor(next_obs).unsqueeze(0), 
-                torch.tensor([terminated], dtype=torch.float32), 
-                batch_size=1,
-                step=1
-            )
+            if agent.buffer.pos >= 1 or getattr(agent.buffer, "full", False):
+                agent.update(batch_size=1, step=global_step)
             agent.update_target()
             
             obs = next_obs
@@ -111,13 +101,6 @@ def train_dqn(use_rnd=False):
     print(f"Final list of returns for train_dqn(use_rnd={use_rnd}): {returns[-20:]}")
     return returns
 
-class MockBatch:
-    def __init__(self, obs, act, rew, next_obs, dones):
-        self.observations = obs
-        self.actions = act
-        self.rewards = rew
-        self.next_observations = next_obs
-        self.dones = dones
 
 from learning_algorithms.SAC_Rainbow import SACAgent
 
@@ -159,26 +142,15 @@ def train_sac(use_rnd=False):
                 # Get action from SAC
                 obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
                 action_t, _, _ = agent.actor.get_action(obs_t)
-                action = action_t.item()
+                action = float(action_t.item())
                 
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             
-            agent.update_running_stats(
-                torch.tensor(next_obs, dtype=torch.float32).unsqueeze(0), 
-                torch.tensor([reward], dtype=torch.float32)
-            )
-            
-            # Form dummy batch
-            batch = MockBatch(
-                obs=torch.tensor(obs, dtype=torch.float32).unsqueeze(0),
-                act=torch.tensor([[action]], dtype=torch.float32),
-                rew=torch.tensor([reward], dtype=torch.float32),
-                next_obs=torch.tensor(next_obs, dtype=torch.float32).unsqueeze(0),
-                dones=torch.tensor([terminated], dtype=torch.float32)
-            )
-            
-            agent.update(batch, global_step=global_step)
+            import numpy as np
+            agent.observe(obs, np.array([action], dtype=np.int32), reward, next_obs, terminated, truncated)
+            if agent.buffer.pos >= 1 or getattr(agent.buffer, "full", False):
+                agent.update(batch_size=1, global_step=global_step)
             
             obs = next_obs
             episode_return += reward
@@ -231,11 +203,6 @@ def train_ppo(use_rnd=False):
             
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
-            
-            agent.update_running_stats(
-                torch.tensor(next_obs, dtype=torch.float32).unsqueeze(0), 
-                r=torch.tensor([reward], dtype=torch.float32)
-            )
             
             obs_b.append(obs_t)
             act_b.append(action_t)

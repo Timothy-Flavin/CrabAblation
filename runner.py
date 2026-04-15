@@ -232,7 +232,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             obs_dim,
             n_action_dims,
             n_action_bins,
-            envs=vec_env,
+            n_envs=int(vec_env.num_envs),
             buffer_size=int(args.dqn_buffer_size),
             hidden_layer_sizes=hidden_layer_sizes,
             soft=soft,
@@ -255,7 +255,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             obs_dim,
             n_action_dims,
             n_action_bins,
-            envs=vec_env,
+            n_envs=int(vec_env.num_envs),
             buffer_size=int(args.dqn_buffer_size),
             hidden_layer_sizes=hidden_layer_sizes,
             soft=soft,
@@ -805,21 +805,21 @@ def rollout_offline_rl(
                 real_next_obs[idx] = infos["final_observation"][idx]
 
         r_mult = rewards * 10.0 if args.algo == "dqn" else rewards
-        term_or_trunc = np.logical_or(terminations, truncations)
+        #term_or_trunc = np.logical_or(terminations, truncations)
         
         actions_arr = np.asarray(actions)
         if args.algo == "dqn" and actions_arr.ndim == 1:
             actions_arr = actions_arr.reshape(-1, 1)
 
         # Unified Observe (Buffer addition & Stat tracking inside agent)
-        agent.observe(obs, actions_arr, r_mult, real_next_obs, term_or_trunc, infos)
+        agent.observe(obs, actions_arr, r_mult, real_next_obs, terminations, truncations)
 
         # Logging & Housekeeping
         for env_i in range(args.num_envs):
             total_samples += 1
             r_ep[env_i] += float(r_mult[env_i] if args.algo == "dqn" else rewards[env_i])
             ep_len[env_i] += 1
-            if term_or_trunc[env_i]:
+            if terminations[env_i] or truncations[env_i]:
                 rhist.append(float(r_ep[env_i]))
                 if len(rhist) < 20:
                     smooth_r = float(sum(rhist) / len(rhist))

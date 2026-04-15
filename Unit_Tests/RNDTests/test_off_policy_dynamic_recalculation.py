@@ -4,10 +4,10 @@ import torch
 import inspect
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from learning_algorithms.DQN_Rainbow import RainbowDQN
+from learning_algorithms.DQN_Rainbow import EVRainbowDQN
 
 def test_off_policy_dynamic_recalc():
-    agent = RainbowDQN(input_dim=10, n_action_dims=1, n_action_bins=2, Beta=1.0)
+    agent = EVRainbowDQN(input_dim=10, n_action_dims=1, n_action_bins=2, Beta=1.0)
     
     # 1) Verify update signature does not accept pre-computed intrinsic rewards
     # preventing stale RND rewards leaking from the replay buffer
@@ -22,13 +22,15 @@ def test_off_policy_dynamic_recalc():
     state[:, 0] = 1.0
     
     with torch.no_grad():
-        r_int_pre = agent._int_reward(torch.zeros(10), agent.rnd(state)).mean().item()
+        r_int_pre, _ = agent._update_RND(state, batch_norm=False)
+        r_int_pre = r_int_pre.mean().item()
         
     for _ in range(50):
         agent._update_RND(state, batch_norm=False)
         
     with torch.no_grad():
-        r_int_post = agent._int_reward(torch.zeros(10), agent.rnd(state)).mean().item()
+        r_int_post, _ = agent._update_RND(state, batch_norm=False)
+        r_int_post = r_int_post.mean().item()
         
     assert r_int_pre != r_int_post, "Dynamic recalculation is yielding identical results! Normalization/RND update is broken."
     

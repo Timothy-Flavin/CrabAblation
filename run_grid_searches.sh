@@ -10,22 +10,22 @@ COMPUTER_NAME=$1
 
 echo "Running grid search for cartpole..."
 python benchmark.py --algo dqn --grid_search --device_name "$COMPUTER_NAME" --env_name cartpole 
-python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name cartpole 
-python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name cartpole 
+#python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name cartpole 
+#python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name cartpole 
 
 echo "Running grid search for minigrid..."
 python benchmark.py --algo dqn --grid_search --device_name "$COMPUTER_NAME" --env_name minigrid
-python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name minigrid
-python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name minigrid
+#python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name minigrid
+#python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name minigrid
 
 echo "Running grid search for mujoco..."
 python benchmark.py --algo dqn --grid_search --device_name "$COMPUTER_NAME" --env_name mujoco
-python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name mujoco
-python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name mujoco
+#python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name mujoco
+#python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name mujoco
 
 echo "Running grid search for hide-and-seek-engine..."
-python benchmark.py --algo dqn --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
-python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
-python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
+#python benchmark.py --algo dqn --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
+#python benchmark.py --algo ppo --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
+#python benchmark.py --algo sac --grid_search --device_name "$COMPUTER_NAME" --env_name hide-and-seek-engine
 
 echo "All grid searches completed!"

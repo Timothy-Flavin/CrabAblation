@@ -4,11 +4,11 @@ import torch
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from learning_algorithms.DQN_Rainbow import RainbowDQN
+from learning_algorithms.DQN_Rainbow import EVRainbowDQN
 
 def test_n_chain_discovery():
     input_dim = 10
-    agent = RainbowDQN(
+    agent = EVRainbowDQN(
         input_dim=input_dim,
         n_action_dims=1,
         n_action_bins=2,
@@ -54,7 +54,7 @@ if __name__ == "__main__":
     
 def test_full_chain():
     input_dim = 10
-    agent = RainbowDQN(
+    agent = EVRainbowDQN(
         input_dim=input_dim,
         n_action_dims=1,
         n_action_bins=2,
