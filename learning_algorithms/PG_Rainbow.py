@@ -506,8 +506,21 @@ class PPOAgent(Agent):
             ext_returns = ext_advantages + ext_values
             int_returns = int_advantages + int_values
 
+            if self.popart:
+                if self.distributional:
+                    sigma_ext = self.ext_critic.output_layer.sigma.detach()
+                    sigma_int = self.int_critic.output_layer.sigma.detach()
+                else:
+                    sigma_ext = self.ext_critic_head.sigma.detach()
+                    sigma_int = self.int_critic_head.sigma.detach()
+            else:
+                sigma_ext, sigma_int = 1.0, 1.0
+
+            norm_ext_adv = ext_advantages / sigma_ext
+            norm_int_adv = int_advantages / sigma_int
+
             # Combine advantages
-            combined_advantages = ext_advantages + self.Beta * int_advantages
+            combined_advantages = norm_ext_adv + self.Beta * norm_int_adv
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + self.obs_shape)
