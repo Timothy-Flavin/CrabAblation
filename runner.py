@@ -21,7 +21,7 @@ from environment_utils import (
     make_env_thunk,
 )
 from learning_algorithms.cleanrl_buffers import ReplayBuffer
-from learning_algorithms.DQN_Rainbow import EVRainbowDQN, RainbowDQN
+from learning_algorithms.DQN_Rainbow import EVRainbowDQN, IQNRainbowDQN
 from learning_algorithms.MixedObservationEncoder import MixedObservationEncoder
 from learning_algorithms.PG_Rainbow import PPOAgent
 from learning_algorithms.SAC_Rainbow import SACAgent
@@ -176,7 +176,7 @@ def _encoder_factory_from_vec_env(
 def _agent_spec_from_vec_env(vec_env):
     return SimpleNamespace(
         single_observation_space=vec_env.single_observation_space,
-        single_action_space=_proxy_action_space(vec_env.single_action_space),
+        single_action_space=_proxy_action_space(vec_env.single_action_space), num_envs=vec_env.num_envs,
     )
 
 
@@ -217,7 +217,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         n_action_bins = int(env_spec["n_action_bins"])
     hidden_layer_sizes = env_spec["hidden_layer_sizes"]
 
-    AgentClass = RainbowDQN if cfg["distributional"] else EVRainbowDQN
+    AgentClass = IQNRainbowDQN if cfg["distributional"] else EVRainbowDQN
     soft = bool(cfg["soft"])
     munchausen = bool(cfg["munchausen"])
     dueling = bool(cfg["dueling"])
@@ -227,11 +227,13 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     ent_reg_coef = float(cfg["ent_reg_coef"])
     tau = float(cfg["tau"])
     alpha = float(cfg["alpha"])
-    if AgentClass is RainbowDQN:
+    if AgentClass is IQNRainbowDQN:
         agent = AgentClass(
             obs_dim,
             n_action_dims,
             n_action_bins,
+            envs=vec_env,
+            buffer_size=int(args.dqn_buffer_size),
             hidden_layer_sizes=hidden_layer_sizes,
             soft=soft,
             munchausen=munchausen,
@@ -240,11 +242,10 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             Beta=beta,
             ent_reg_coef=ent_reg_coef,
             delayed=delayed,
-            popart=popart,
             tau=tau,
             polyak_tau=0.005,
             alpha=alpha,
-            Beta_half_life_steps=50000,
+            beta_half_life_steps=50000,
             norm_obs=False,
             burn_in_updates=1000,
             encoder_factory=encoder_factory,
@@ -254,6 +255,8 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             obs_dim,
             n_action_dims,
             n_action_bins,
+            envs=vec_env,
+            buffer_size=int(args.dqn_buffer_size),
             hidden_layer_sizes=hidden_layer_sizes,
             soft=soft,
             munchausen=munchausen,
@@ -262,10 +265,10 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             Beta=beta,
             ent_reg_coef=ent_reg_coef,
             delayed=delayed,
-            popart=popart,
             tau=tau,
             polyak_tau=0.005,
             alpha=alpha,
+            beta_half_life_steps=50000,
             norm_obs=False,
             burn_in_updates=1000,
             encoder_factory=encoder_factory,
@@ -354,7 +357,7 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         entropy_coef_zero=cfg["entropy_coef_zero"],
         distributional=cfg["distributional"],
         dueling=cfg["dueling"],
-        popart=cfg["popart"],
+        
         delayed_critics=cfg["delayed_critics"],
         hidden_layer_sizes=hidden_layer_sizes,
         n_quantiles=args.n_quantiles,
@@ -696,19 +699,21 @@ def rollout_offline_rl(
     agent,
     args,
     device,
-    buffer,
+    writer=None,
     max_wall_time_seconds=None,
     total_steps_override=None,
 ):
-    obs, _ = vec_env.reset()
+    import time
+    start_time = time.time()
+    total_samples = 0
+
+    if args.algo == "dqn":
+        batch_size = int(args.dqn_batch_size)
+    else:
+        batch_size = int(args.batch_size)
+    
     total_step_budget = _compute_rollout_budget(args, total_steps_override)
 
-    time_taken_modular = {
-        "action_sample": 0.0,
-        "env_step": 0.0,
-        "update_agent": 0.0,
-        "eval_agent": 0.0,
-    }
     rhist = []
     smooth_rhist = []
     lhist = []
@@ -719,327 +724,141 @@ def rollout_offline_rl(
     smooth_r = 0.0
     ep = 0
 
-    start_time = time.time()
+    time_taken_modular = {
+        "action_sample": 0.0,
+        "env_step": 0.0,
+        "update_agent": 0.0,
+        "eval_agent": 0.0,
+    }
 
-    writer = None
-    if getattr(args, "run", None) is not None:
-        results_dir = os.path.join("results", args.algo, args.env_name)
-        os.makedirs(results_dir, exist_ok=True)
-        tb_dir = os.path.join(
-            results_dir, f"tensorboard_run{args.run}_abl{args.ablation}"
-        )
-        writer = SummaryWriter(log_dir=tb_dir)
-        writer.add_scalar("run/started", 1, 0)
-
-        if hasattr(agent, "attach_tensorboard"):
-            agent.attach_tensorboard(writer, prefix="agent")
-
-    total_samples = 0
-    updates_performed = 0
+    obs, _ = vec_env.reset()
     steps_since_update = 0
-    timed_out = False
+    updates_performed = 0
 
-    if max_wall_time_seconds is None:
-        max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
+    env_spec = get_env_benchmark_spec(args.env_name)
+    action_transform = ActionTransformHandler(
+        args.env_name,
+        args.algo,
+        vec_env.single_action_space,
+        bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
+        discrete_bins=int(env_spec["n_action_bins"]),
+        batched=True,
+    )
+    
+    proxy_action_space = _proxy_action_space(vec_env.single_action_space)
+    proxy_action_dim = int(np.prod(proxy_action_space.shape))
 
-    if args.algo == "dqn":
-        obs_dim = int(np.prod(vec_env.single_observation_space.shape))
-        env_spec = get_env_benchmark_spec(args.env_name)
-        n_action_dims = int(env_spec["n_action_dims"])
-        dqn_action_transform = ActionTransformHandler(
-            args.env_name,
-            "dqn",
-            vec_env.single_action_space,
-            bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
-            discrete_bins=int(env_spec["n_action_bins"]),
-            batched=True,
-        )
+    eval_every_episodes = 25
 
-        blen = int(args.dqn_buffer_size)
-        batch_size = int(args.dqn_batch_size)
-        rnd_burn_in = int(args.rnd_burn_in)
-
-        if n_action_dims > 1:
-            buff_actions = torch.zeros(
-                (blen, n_action_dims), dtype=torch.long, device=device
-            )
-        else:
-            buff_actions = torch.zeros((blen,), dtype=torch.long, device=device)
-        buff_obs = torch.zeros((blen, obs_dim), dtype=torch.float32, device=device)
-        buff_next_obs = torch.zeros((blen, obs_dim), dtype=torch.float32, device=device)
-        buff_term = torch.zeros((blen,), dtype=torch.float32, device=device)
-        buff_r = torch.zeros((blen,), dtype=torch.float32, device=device)
-
-        buffer_ptr = 0
-
-        while total_samples < total_step_budget:
-            if total_samples > 0 and total_samples % 10000 == 0:
-                print(f"[SAC] Step {total_samples}/{total_step_budget} (Episodes: {ep})")
-            if (
-                max_wall_time_seconds is not None
-                and max_wall_time_seconds > 0
-                and (time.time() - start_time) >= max_wall_time_seconds
-            ):
-                timed_out = True
-                break
-
-            eps_current = max(
-                1.0 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05
-            )
+    while total_samples < total_step_budget:
+        if total_samples > 0 and total_samples % 10000 == 0:
+            print(f"[{args.algo.upper()}] Step {total_samples}/{total_step_budget} (Episodes: {ep})")
+        if (
+            max_wall_time_seconds is not None
+            and max_wall_time_seconds > 0
+            and (time.time() - start_time) >= max_wall_time_seconds
+        ):
+            break
+            
+        t_ = time.time()
+        
+        # Sample action
+        if args.algo == "dqn":
+            eps_current = max(1.0 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05)
             tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
-            t_ = time.time()
-            actions = agent.sample_action(
-                tobs,
-                eps=eps_current,
-                step=total_samples,
-                n_steps=total_step_budget,
-            )
-            time_taken_modular["action_sample"] += time.time() - t_
-            step_action = dqn_action_transform.transform_action(actions)
+            actions = agent.sample_action(tobs, eps=eps_current, step=total_samples, n_steps=total_step_budget)
+        else: # SAC
+            learning_starts_val = getattr(args, "learning_starts", 5000)
+            if total_samples < learning_starts_val:
+                import gym
+                if isinstance(vec_env.single_action_space, gym.spaces.Box):
+                    actions = np.array([vec_env.single_action_space.sample() for _ in range(vec_env.num_envs)], dtype=np.float32)
+                else: 
+                    actions = np.random.uniform(low=0.0, high=1.0, size=(vec_env.num_envs, proxy_action_dim)).astype(np.float32)
+            else:
+                actions = agent.sample_action(torch.as_tensor(obs, dtype=torch.float32, device=device)) 
+                
+        time_taken_modular["action_sample"] += time.time() - t_
+        
+        step_action = action_transform.transform_action(actions)
+        
+        t_ = time.time()
+        next_obs, rewards, terminations, truncations, infos = vec_env.step(step_action)
+        time_taken_modular["env_step"] += time.time() - t_
 
-            t_ = time.time()
-            next_obs, r, term, trunc, _ = vec_env.step(step_action)
-            time_taken_modular["env_step"] += time.time() - t_
+        for env_i in range(args.num_envs):
+            if ep_len[env_i] + 1 >= getattr(args, "max_frames_per_ep", 2000):
+                truncations[env_i] = True
 
-            for env_i in range(args.num_envs):
-                if ep_len[env_i] + 1 >= 2000:
-                    trunc[env_i] = True
+        real_next_obs = next_obs.clone() if isinstance(next_obs, torch.Tensor) else next_obs.copy()
+        for idx, trunc in enumerate(truncations):
+            if trunc and "final_observation" in infos:
+                real_next_obs[idx] = infos["final_observation"][idx]
 
-            r_mult = r * 10.0
+        r_mult = rewards * 10.0 if args.algo == "dqn" else rewards
+        term_or_trunc = np.logical_or(terminations, truncations)
+        
+        actions_arr = np.asarray(actions)
+        if args.algo == "dqn" and actions_arr.ndim == 1:
+            actions_arr = actions_arr.reshape(-1, 1)
 
-            if hasattr(agent, "update_running_stats"):
-                agent.update_running_stats(
-                    torch.as_tensor(next_obs, dtype=torch.float32, device=device),
-                    torch.as_tensor(r_mult, dtype=torch.float32, device=device),
-                )
+        # Unified Observe (Buffer addition & Stat tracking inside agent)
+        agent.observe(obs, actions_arr, r_mult, real_next_obs, term_or_trunc, infos)
 
-            actions_arr = np.asarray(actions)
-            for env_i in range(args.num_envs):
-                idx = buffer_ptr % blen
-                if n_action_dims > 1:
-                    buff_actions[idx] = torch.as_tensor(
-                        actions_arr[env_i], dtype=torch.long, device=device
-                    )
+        # Logging & Housekeeping
+        for env_i in range(args.num_envs):
+            total_samples += 1
+            r_ep[env_i] += float(r_mult[env_i] if args.algo == "dqn" else rewards[env_i])
+            ep_len[env_i] += 1
+            if term_or_trunc[env_i]:
+                rhist.append(float(r_ep[env_i]))
+                if len(rhist) < 20:
+                    smooth_r = float(sum(rhist) / len(rhist))
                 else:
-                    buff_actions[idx] = int(
-                        np.asarray(actions_arr[env_i]).reshape(-1)[0]
-                    )
+                    smooth_r = float(0.05 * rhist[-1] + 0.95 * smooth_r)
+                smooth_rhist.append(float(smooth_r))
+                ep += 1
+                
+                if writer:
+                    writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
+                    writer.add_scalar("episode/smooth_reward", float(smooth_r), total_samples)
 
-                buff_obs[idx].copy_(torch.as_tensor(obs[env_i], dtype=torch.float32, device=device))
-                buff_next_obs[idx].copy_(
-                    torch.as_tensor(next_obs[env_i], dtype=torch.float32, device=device)
-                )
-                buff_term[idx] = float(term[env_i] or trunc[env_i])
-                buff_r[idx] = float(r_mult[env_i])
-
-                buffer_ptr += 1
-                total_samples += 1
-                r_ep[env_i] += float(r_mult[env_i])
-                ep_len[env_i] += 1
-
-                if term[env_i] or trunc[env_i]:
-                    rhist.append(float(r_ep[env_i]))
-                    if len(rhist) < 20:
-                        smooth_r = float(sum(rhist) / len(rhist))
-                    else:
-                        smooth_r = float(0.05 * rhist[-1] + 0.95 * smooth_r)
-                    smooth_rhist.append(float(smooth_r))
-                    ep += 1
-
-                    if writer:
-                        writer.add_scalar(
-                            "episode/reward", float(rhist[-1]), total_samples
-                        )
-                        writer.add_scalar(
-                            "episode/smooth_reward", float(smooth_r), total_samples
-                        )
-
-                    t_ = time.time()
-                    if ep % 50 == 0 and total_samples > total_step_budget // 2:
-                        evalr = 0.0
-                        for _ in range(5):
-                            evalr += evaluate_agent(
-                                agent,
-                                args,
-                                device,
-                                step=total_samples,
-                                n_steps=total_step_budget,
-                            )
-                        eval_hist.append(float(evalr / 5.0))
-                        if writer:
-                            writer.add_scalar(
-                                "eval/reward", float(eval_hist[-1]), total_samples
-                            )
-                    time_taken_modular["eval_agent"] += time.time() - t_
-
-                    ep_len[env_i] = 0
-                    r_ep[env_i] = 0.0
-
-            obs = next_obs
-            steps_since_update += args.num_envs
-
-            t_ = time.time()
+                r_ep[env_i] = 0.0
+                ep_len[env_i] = 0
+                
+        obs = next_obs
+        
+        # Update Agent
+        steps_since_update += args.num_envs
+        t_ = time.time()
+        if args.algo == "dqn":
+            rnd_burn_in = getattr(args, "rnd_burn_in", 0)
             while steps_since_update >= args.update_every:
                 if total_samples > batch_size:
-                    if total_samples < rnd_burn_in:
-                        agent.update(
-                            buff_obs,
-                            buff_actions,
-                            buff_r,
-                            buff_next_obs,
-                            buff_term,
-                            batch_size=batch_size,
-                            step=min(total_samples, blen),
-                        )
-                        updates_performed += 1
-                    else:
-                        loss_val = agent.update(
-                            buff_obs,
-                            buff_actions,
-                            buff_r,
-                            buff_next_obs,
-                            buff_term,
-                            batch_size=batch_size,
-                            step=min(total_samples, blen),
-                        )
+                    loss_val = agent.update(batch_size=batch_size, step=total_samples)
+                    if total_samples >= rnd_burn_in:
                         lhist.append(float(loss_val))
-                        updates_performed += 1
-                        agent.update_target()
-                steps_since_update -= args.update_every
-            time_taken_modular["update_agent"] += time.time() - t_
-
-    else:
-        if buffer is None:
-            raise ValueError("rollout_offline_rl requires a replay buffer for SAC")
-
-        proxy_action_space = _proxy_action_space(vec_env.single_action_space)
-        proxy_action_dim = int(np.prod(proxy_action_space.shape))
-        env_spec = get_env_benchmark_spec(args.env_name)
-        sac_action_transform = ActionTransformHandler(
-            args.env_name,
-            "sac",
-            vec_env.single_action_space,
-            bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
-            discrete_bins=int(env_spec["n_action_bins"]),
-            batched=True,
-        )
-        eval_every_episodes = 25
-
-        while total_samples < total_step_budget:
-            if (
-                max_wall_time_seconds is not None
-                and max_wall_time_seconds > 0
-                and (time.time() - start_time) >= max_wall_time_seconds
-            ):
-                timed_out = True
-                break
-
-            if total_samples < args.learning_starts:
-                if isinstance(vec_env.single_action_space, gym.spaces.Box):
-                    actions_agent = np.array(
-                        [
-                            vec_env.single_action_space.sample()
-                            for _ in range(vec_env.num_envs)
-                        ],
-                        dtype=np.float32,
-                    )
-                else:
-                    actions_agent = np.random.uniform(
-                        low=0.0,
-                        high=1.0,
-                        size=(vec_env.num_envs, proxy_action_dim),
-                    ).astype(np.float32)
-            else:
-                actions_agent = agent.sample_action(obs, deterministic=False)
-
-            actions_env = sac_action_transform.transform_action(actions_agent)
-            next_obs, rewards, terminations, truncations, infos = vec_env.step(
-                actions_env
-            )
-
-            for env_i in range(args.num_envs):
-                if ep_len[env_i] + 1 >= 2000:
-                    truncations[env_i] = True
-
-            real_next_obs = next_obs.clone() if isinstance(next_obs, torch.Tensor) else next_obs.copy()
-            for idx, trunc in enumerate(truncations):
-                if trunc and "final_observation" in infos:
-                    real_next_obs[idx] = infos["final_observation"][idx]
-            buffer.add(obs, real_next_obs, actions_agent, rewards, terminations, infos)
-
-            for env_i in range(args.num_envs):
-                r_ep[env_i] += float(rewards[env_i])
-                ep_len[env_i] += 1
-                if terminations[env_i] or truncations[env_i]:
-                    rhist.append(float(r_ep[env_i]))
-                    if len(rhist) < 20:
-                        smooth_r = float(sum(rhist) / len(rhist))
-                    else:
-                        smooth_r = float(0.05 * rhist[-1] + 0.95 * smooth_r)
-                    smooth_rhist.append(float(smooth_r))
-                    ep += 1
-                    if writer:
-                        writer.add_scalar(
-                            "episode/reward", float(rhist[-1]), total_samples
-                        )
-                        writer.add_scalar(
-                            "episode/smooth_reward", float(smooth_r), total_samples
-                        )
-
-                    if (
-                        ep % eval_every_episodes == 0
-                        and total_samples > total_step_budget // 3
-                    ):
-                        evalr = evaluate_agent(
-                            agent,
-                            args,
-                            device,
-                            step=total_samples,
-                            n_steps=total_step_budget,
-                        )
-                        eval_hist.append(float(evalr))
-                        if writer:
-                            writer.add_scalar(
-                                "eval/reward", float(evalr), total_samples
-                            )
-
-                    ep_len[env_i] = 0
-                    r_ep[env_i] = 0.0
-
-            if hasattr(agent, "update_running_stats"):
-                next_obs_t = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
-                rewards_t = torch.as_tensor(rewards, dtype=torch.float32, device=device)
-                agent.update_running_stats(next_obs_t, rewards_t)
-
-            obs = next_obs
-            total_samples += args.num_envs
-            steps_since_update += args.num_envs
-
-            # buffer.size() returns timestep positions (not individual transitions).
-            # We need batch_size individual transitions, which requires
-            # ceil(batch_size / n_envs) timesteps.
-            _n_envs_buf = int(getattr(buffer, "n_envs", args.num_envs))
-            _min_buf_timesteps = max(1, args.batch_size // _n_envs_buf)
-            while steps_since_update >= args.update_every:
-                if (
-                    total_samples > args.learning_starts
-                    and buffer.size() >= _min_buf_timesteps
-                ):
-                    data = buffer.sample(args.batch_size)
-                    loss = agent.update(data, global_step=total_samples)
-                    lhist.append(float(loss))
                     updates_performed += 1
                 steps_since_update -= args.update_every
-
-    if writer:
-        writer.flush()
-        writer.close()
+        else: # SAC
+            while total_samples > batch_size and steps_since_update >= getattr(args, "policy_frequency", 1):
+                loss_val = agent.update(batch_size=batch_size, global_step=total_samples)
+                if loss_val is not None:
+                    try:
+                        lhist.append(float(loss_val[0] if isinstance(loss_val, tuple) else loss_val))
+                    except:
+                        pass
+                updates_performed += 1
+                agent.update_target()
+                steps_since_update -= getattr(args, "policy_frequency", 1)
+        time_taken_modular["update_agent"] += time.time() - t_
 
     train_time = time.time() - start_time
-    steps_per_sec = (total_samples / train_time) if train_time > 0 else 0.0
-    updates_per_sec = (updates_performed / train_time) if train_time > 0 else 0.0
+    steps_per_sec = total_samples / (train_time if train_time > 0 else 1)
+    updates_per_sec = updates_performed / (train_time if train_time > 0 else 1)
 
     return {
+        "final_model": agent,
         "rhist": rhist,
         "smooth_rhist": smooth_rhist,
         "lhist": lhist,
@@ -1048,10 +867,11 @@ def rollout_offline_rl(
         "updates_performed": int(updates_performed),
         "steps_per_sec": float(steps_per_sec),
         "updates_per_sec": float(updates_per_sec),
-        "timed_out": bool(timed_out),
         "train_time": float(train_time),
+        "timed_out": False,
         "time_taken_modular": time_taken_modular,
     }
+
 
 
 def main():
@@ -1064,7 +884,6 @@ def main():
         pass
     try:
         agent, _ = build_agent(args, vec_env, device)
-        buffer = build_buffer(args, vec_env, device)
 
         max_wall = args.max_wall_time if args.max_wall_time > 0 else None
         step_override = (

@@ -217,7 +217,6 @@ class SACAgent(Agent):
         entropy_coef_zero: bool = False,
         distributional: bool = False,
         dueling: bool = False,
-        popart: bool = True,
         delayed_critics: bool = True,
         hidden_layer_sizes: tuple[int, int] = (128, 128),
         n_quantiles: int = 32,
@@ -231,6 +230,7 @@ class SACAgent(Agent):
         rnd_output_dim: int = 128,
         rnd_lr: float = 1e-3,
         beta_half_life_steps: Optional[int] = None,
+        buffer_size: int = int(1e5),
     ):
         super().__init__()
         self.gamma = gamma
@@ -241,7 +241,7 @@ class SACAgent(Agent):
         self.entropy_coef_zero = entropy_coef_zero
         self.distributional = distributional
         self.dueling = dueling
-        self.popart = popart
+        self.popart = True
         self.delayed_critics = delayed_critics
         hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
         self.n_quantiles = n_quantiles
@@ -250,6 +250,15 @@ class SACAgent(Agent):
         obs_dim = int(np.array(envs.single_observation_space.shape).prod())
         act_dim = int(np.prod(envs.single_action_space.shape))
         critic_input_dim = obs_dim + act_dim
+
+        self.buffer = ReplayBuffer(
+            buffer_size,
+            envs.single_observation_space,
+            envs.single_action_space,
+            "cuda" if torch.cuda.is_available() else "cpu",
+            n_envs=envs.num_envs,
+            handle_timeout_termination=False,
+        )
 
         actor_encoder = encoder_factory() if encoder_factory is not None else None
         self.actor = Actor(
@@ -344,6 +353,8 @@ class SACAgent(Agent):
 
     def to(self, device):
         device = torch.device(device)
+        if hasattr(self, 'buffer') and self.buffer is not None:
+            self.buffer.device = device
         self.actor.to(device)
         self.qf1.to(device)
         self.qf2.to(device)
@@ -396,6 +407,87 @@ class SACAgent(Agent):
         if single:
             return action_np[0]
         return action_np
+
+    def observe(self, obs, action, reward, next_obs, done, info):
+        self.buffer.add(obs, next_obs, action, reward, done, info)
+
+        if not self.popart:
+            return
+
+        with torch.no_grad():
+            o = torch.as_tensor(obs, dtype=torch.float32, device=self.actor.device)
+            a = torch.as_tensor(action, dtype=torch.float32, device=self.actor.device)
+            r = torch.as_tensor(reward, dtype=torch.float32, device=self.actor.device)
+            no = torch.as_tensor(next_obs, dtype=torch.float32, device=self.actor.device)
+            d = torch.as_tensor(done, dtype=torch.float32, device=self.actor.device)
+
+            self.update_running_stats(no, r)
+
+            target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
+            target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
+            target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
+            target_qf2_int = self.qf2_target_int if self.delayed_critics else self.qf2_int
+
+            augmented_reward = r
+
+            int_r = 0.0
+            if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
+                norm_next_obs = self.obs_rms.normalize(no.to(dtype=torch.float64)).to(dtype=torch.float32)
+                rnd_errors = self.rnd(norm_next_obs)
+                int_r = self.int_rms.scale(rnd_errors.detach().to(dtype=torch.float64)).float()
+                int_r = torch.clamp(int_r, -5.0, 5.0)
+            else:
+                int_r = torch.zeros_like(r)
+
+            if self.munchausen:
+                mean, log_std = self.actor(o)
+                std = log_std.exp()
+                normal = torch.distributions.Normal(mean, std)
+                a_norm = (a - self.actor.action_bias) / self.actor.action_scale
+                a_norm = torch.clamp(a_norm, -0.9999, 0.9999)
+                x_pretanh = torch.atanh(a_norm)
+                log_prob = normal.log_prob(x_pretanh)
+                log_prob -= torch.log(self.actor.action_scale * (1 - a_norm.pow(2)) + 1e-6)
+                log_pi_replay = log_prob.sum(1)
+                m_r = self.munchausen_alpha * self.munchausen_tau * torch.clamp(log_pi_replay, min=self.l_clip)
+                augmented_reward = augmented_reward + m_r
+
+            next_state_actions, next_state_log_pi, _ = self.actor.get_action(no)
+            next_critic_input = self._critic_input(no, next_state_actions)
+            current_sigma = self.qf1.output_layer.sigma.detach()
+
+            if self.distributional:
+                target_taus = self._sample_taus(1, self.n_target_quantiles, self.actor.device)
+                qf1_next_quantiles = self._critic_quantiles(target_qf1, next_critic_input, target_taus, normalized=False)
+                qf2_next_quantiles = self._critic_quantiles(target_qf2, next_critic_input, target_taus, normalized=False)
+                min_qf_next_quantiles = torch.min(qf1_next_quantiles, qf2_next_quantiles)
+                next_q_quantiles = augmented_reward.unsqueeze(1) + (1 - d).unsqueeze(1) * self.gamma * (min_qf_next_quantiles - current_sigma * self.alpha * next_state_log_pi)
+                
+                qf1_next_quantiles_int = self._critic_quantiles(target_qf1_int, next_critic_input, target_taus, normalized=False)
+                qf2_next_quantiles_int = self._critic_quantiles(target_qf2_int, next_critic_input, target_taus, normalized=False)
+                min_qf_next_quantiles_int = torch.min(qf1_next_quantiles_int, qf2_next_quantiles_int)
+                next_q_quantiles_int = int_r.unsqueeze(1) + self.gamma * min_qf_next_quantiles_int
+
+                self.qf1.output_layer.update_stats(next_q_quantiles)
+                self.qf2.output_layer.update_stats(next_q_quantiles)
+                self.qf1_int.output_layer.update_stats(next_q_quantiles_int)
+                self.qf2_int.output_layer.update_stats(next_q_quantiles_int)
+            else:
+                qf1_next_target = self._critic_scalar_value(target_qf1, next_critic_input, normalized=False)
+                qf2_next_target = self._critic_scalar_value(target_qf2, next_critic_input, normalized=False)
+                min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
+                target_for_stats = augmented_reward + (1 - d) * self.gamma * (min_qf_next_target - current_sigma * self.alpha * next_state_log_pi.view(-1))
+                
+                qf1_next_target_int = self._critic_scalar_value(target_qf1_int, next_critic_input, normalized=False)
+                qf2_next_target_int = self._critic_scalar_value(target_qf2_int, next_critic_input, normalized=False)
+                min_qf_next_target_int = torch.min(qf1_next_target_int, qf2_next_target_int)
+                target_for_stats_int = int_r + self.gamma * min_qf_next_target_int
+
+                self.qf1.output_layer.update_stats(target_for_stats)
+                self.qf2.output_layer.update_stats(target_for_stats)
+                self.qf1_int.output_layer.update_stats(target_for_stats_int)
+                self.qf2_int.output_layer.update_stats(target_for_stats_int)
+
 
     def update_target(self):
         if not self.delayed_critics:
@@ -476,7 +568,8 @@ class SACAgent(Agent):
         rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze().detach()
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
 
-    def update(self, data, global_step: int):
+    def update(self, batch_size: int, global_step: int):
+        data = self.buffer.sample(batch_size)
         if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
             self.Beta = self.start_Beta * (
                 0.5 ** (global_step / self.beta_half_life_steps)
@@ -612,8 +705,6 @@ class SACAgent(Agent):
             )
             
             if self.popart:
-                self.qf1.output_layer.update_stats(next_q_quantiles)  # type:ignore
-                self.qf2.output_layer.update_stats(next_q_quantiles)  # type:ignore
                 target_quantiles_1 = self.qf1.output_layer.normalize(
                     next_q_quantiles  # type:ignore
                 )
@@ -628,8 +719,6 @@ class SACAgent(Agent):
                 )
                 
                 # Intrinsic popart
-                self.qf1_int.output_layer.update_stats(next_q_quantiles_int)  # type:ignore
-                self.qf2_int.output_layer.update_stats(next_q_quantiles_int)  # type:ignore
                 target_quantiles_1_int = self.qf1_int.output_layer.normalize(
                     next_q_quantiles_int  # type:ignore
                 )
@@ -684,8 +773,6 @@ class SACAgent(Agent):
         else:
             if self.popart:
                 target_for_stats = next_q_value.unsqueeze(1)  # type:ignore
-                self.qf1.output_layer.update_stats(target_for_stats)
-                self.qf2.output_layer.update_stats(target_for_stats)
                 next_q_value_norm_1 = self.qf1.output_layer.normalize(
                     target_for_stats
                 ).view(-1)
@@ -703,8 +790,6 @@ class SACAgent(Agent):
                 
                 # Intrinsic Popart
                 target_for_stats_int = next_q_value_int.unsqueeze(1)  # type:ignore
-                self.qf1_int.output_layer.update_stats(target_for_stats_int)
-                self.qf2_int.output_layer.update_stats(target_for_stats_int)
                 next_q_value_norm_1_int = self.qf1_int.output_layer.normalize(
                     target_for_stats_int
                 ).view(-1)

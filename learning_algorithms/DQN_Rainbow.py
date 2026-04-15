@@ -1,3 +1,5 @@
+import numpy as np
+from learning_algorithms.cleanrl_buffers import ReplayBuffer
 import torch
 import torch.nn as nn
 import random
@@ -20,6 +22,8 @@ class RainbowBase(Agent):
         input_dim,
         n_action_dims,
         n_action_bins,
+        envs=None,
+        buffer_size: int = int(1e5),
         hidden_layer_sizes=[128, 128],
         lr: float = 1e-3,
         gamma: float = 0.99,
@@ -99,6 +103,51 @@ class RainbowBase(Agent):
         self.obs_rms = RunningMeanStd(shape=(input_dim,))
         self.int_rms = RunningMeanStd(shape=())
 
+        if envs is not None:
+            self.buffer = ReplayBuffer(
+                buffer_size,
+                envs.single_observation_space,
+                envs.single_action_space,
+                "cuda" if torch.cuda.is_available() else "cpu",
+                n_envs=envs.num_envs,
+                handle_timeout_termination=False,
+            )
+        else:
+            self.buffer = None
+
+    def observe(self, obs, action, reward, next_obs, done, info):
+        device = self.obs_rms.mean.device
+        # Update running stats for PopArt / Intrinsic
+        if isinstance(obs, np.ndarray):
+            b_next_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
+            b_r = torch.as_tensor(reward, dtype=torch.float32, device=device).view(-1, 1)
+        else:
+            b_next_obs = next_obs.to(device=device, dtype=torch.float32)
+            b_r = reward.to(device=device, dtype=torch.float32).view(-1, 1)
+        
+        self.update_running_stats(b_next_obs, b_r)
+        
+        # Format tensors for buffer
+        if isinstance(obs, np.ndarray):
+            o = torch.as_tensor(obs, dtype=torch.float32, device=device)
+            a = torch.as_tensor(action, dtype=torch.float32, device=device)
+            if a.ndim == 1:
+                a = a.view(-1, 1)
+            r = torch.as_tensor(reward, dtype=torch.float32, device=device)
+            no = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
+            d = torch.as_tensor(done, dtype=torch.float32, device=device)
+        else:
+            o = obs.to(device=device, dtype=torch.float32)
+            a = action.to(device=device, dtype=torch.float32)
+            if a.ndim == 1:
+                a = a.view(-1, 1)
+            r = reward.to(device=device, dtype=torch.float32)
+            no = next_obs.to(device=device, dtype=torch.float32)
+            d = done.to(device=device, dtype=torch.float32)
+            
+        if self.buffer is not None:
+            self.buffer.add(o.cpu().numpy(), no.cpu().numpy(), a.cpu().numpy(), r.cpu().numpy(), d.cpu().numpy(), info)
+
     def to(self, device):
         """Move the agent and all its subcomponents to a specific device."""
         main_lr = self.optim.param_groups[0]["lr"] if hasattr(self, "optim") else self.lr
@@ -168,6 +217,8 @@ class EVRainbowDQN(RainbowBase):
         input_dim,
         n_action_dims,
         n_action_bins,
+        envs=None,
+        buffer_size: int = int(1e5),
         hidden_layer_sizes=[128, 128],
         lr: float = 1e-3,
         gamma: float = 0.99,
@@ -246,7 +297,7 @@ class EVRainbowDQN(RainbowBase):
         return pi, logpi, ent
 
     def update(
-        self, obs, a, r, next_obs, term, batch_size=None, step=0, extrinsic_only=False
+        self, batch_size=None, step=0, extrinsic_only=False
     ):
         # Set up wall clock time for optimization later
         if self.update_timings is None:
@@ -257,17 +308,23 @@ class EVRainbowDQN(RainbowBase):
         update_timings = self.update_timings
         t__ = time.time()
 
-        self.step += 1
         if batch_size is None:
-            idx = torch.arange(0, len(r))
-            batch_size = len(r)
-        else:
-            idx = torch.randint(low=0, high=step, size=(batch_size,))
-        b_next_obs = next_obs[idx]
+            batch_size = 128
+        
+        data = self.buffer.sample(batch_size)
+        idx = torch.arange(0, batch_size)
+        
+        b_obs = data.observations
+        b_actions_idx = data.actions
+        if b_actions_idx.ndim == 1:
+            b_actions_idx = b_actions_idx.view(-1, 1)
+        a = data.actions
+        b_r_ext = data.rewards.flatten()
+        b_next_obs = data.next_observations
+        b_term = data.dones.flatten()
+        
+        self.step += 1
         t_ = time.time()
-        b_obs = obs[idx]
-        b_r_ext = r[idx]
-        b_term = term[idx]
 
         t_ = time.time()
         if self.step < self.burn_in_updates:
@@ -521,6 +578,8 @@ class IQNRainbowDQN(RainbowBase):
         input_dim,
         n_action_dims,
         n_action_bins,
+        envs=None,
+        buffer_size: int = int(1e5),
         hidden_layer_sizes=[128, 128],
         lr: float = 1e-3,
         gamma: float = 0.99,
@@ -609,7 +668,7 @@ class IQNRainbowDQN(RainbowBase):
         return loss
 
     def update(
-        self, obs, a, r, next_obs, term, batch_size=None, step=0, extrinsic_only=False
+        self, batch_size=None, step=0, extrinsic_only=False
     ):
         if self.update_timings is None:
             self.update_timings = {
@@ -620,11 +679,20 @@ class IQNRainbowDQN(RainbowBase):
         t__ = time.time()
 
         if batch_size is None:
-            idx = torch.arange(0, len(r))
-            batch_size = len(r)
-        else:
-            idx = torch.randint(low=0, high=step, size=(batch_size,))
-        b_next_obs = next_obs[idx]
+            batch_size = 128
+
+        data = self.buffer.sample(batch_size)
+        idx = torch.arange(0, batch_size)
+        
+        b_obs = data.observations
+        b_actions_idx = data.actions
+        if b_actions_idx.ndim == 1:
+            b_actions_idx = b_actions_idx.view(-1, 1)
+        a = data.actions
+        b_r_ext = data.rewards.flatten()
+        b_next_obs = data.next_observations
+        b_term = data.dones.flatten()
+        r = data.rewards
 
         self.step += 1
         t_ = time.time()

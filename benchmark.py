@@ -165,12 +165,7 @@ def run_grid_search(args, total_steps=2000):
                             total_steps_override=total_steps,
                         )
                     else:
-                        results = rollout_offline_rl(
-                            vec_env,
-                            agent,
-                            args,
-                            device,
-                            buffer,
+                        results = rollout_offline_rl(vec_env, agent, args, device,
                             max_wall_time_seconds=args.max_wall_time,
                             total_steps_override=total_steps,
                         )
@@ -239,153 +234,29 @@ def run_grid_search(args, total_steps=2000):
 
 
 def benchmark_updates(
-    agent, args, obs_dim, action_dim, device="cpu", batch_sizes=None, iters=50
+    agent, args, obs_dim, action_dim, vec_env=None, device="cpu", batch_sizes=None, iters=50
 ):
-    if batch_sizes is None:
-        batch_sizes = [64, 256]
-
-    if args.algo == "dqn":
-        env_spec = get_env_benchmark_spec(args.env_name)
-        n_action_dims = int(getattr(agent, "n_action_dims", env_spec["n_action_dims"]))
-        n_action_bins = int(getattr(agent, "n_action_bins", env_spec["n_action_bins"]))
-
-        def make_batch_dqn(bs, dev):
-            obs = torch.randn((bs, obs_dim), device=dev)
-            next_obs = torch.randn((bs, obs_dim), device=dev)
-            if n_action_dims == 1:
-                actions = torch.randint(0, n_action_bins, (bs,), device=dev)
-            else:
-                actions = torch.randint(
-                    0, n_action_bins, (bs, n_action_dims), device=dev
-                )
-            rewards = torch.randn((bs,), device=dev)
-            terms = torch.zeros((bs,), device=dev)
-            return {
-                "obs": obs,
-                "actions": actions,
-                "rewards": rewards,
-                "next_obs": next_obs,
-                "terms": terms,
-                "bs": bs,
-            }
-
-        def run_update_dqn(batch, _):
-            agent.update(
-                batch["obs"],
-                batch["actions"],
-                batch["rewards"],
-                batch["next_obs"],
-                batch["terms"],
-                batch_size=batch["bs"],
-                step=batch["bs"],
-            )
-
-        make_batch_fn = make_batch_dqn
-        run_update_fn = run_update_dqn
-
-    elif args.algo == "ppo":
-        act_shape = tuple(args._vec_env.single_action_space.shape)
-        n_action_bins = int(
-            getattr(
-                agent,
-                "n_action_bins",
-                get_env_benchmark_spec(args.env_name)["n_action_bins"],
-            )
+    import time
+    if args.algo in ["sac", "dqn"]:
+        agent.to(device)
+        print(f"\n--- Benchmarking Offline Env Rollout for {args.algo.upper()} ---")
+        t_start = time.time()
+        from runner import rollout_offline_rl
+        args.batch_size = 256
+        args.dqn_batch_size = 256
+        print("Using rollout_offline_rl with true env dynamics.")
+        rollout_offline_rl(
+            vec_env, 
+            agent, 
+            args, 
+            device, 
+            writer=None,
+            max_wall_time_seconds=None, 
+            total_steps_override=getattr(args, 'benchmark_steps', iters * 5)
         )
-
-        def make_batch_ppo(bs, dev):
-            obs = torch.randn((args.num_steps, args.num_envs, obs_dim), device=dev)
-            if len(act_shape) == 0:
-                actions = torch.randint(
-                    0,
-                    n_action_bins,
-                    (args.num_steps, args.num_envs),
-                    device=dev,
-                )
-            else:
-                actions = torch.randint(
-                    0,
-                    n_action_bins,
-                    (args.num_steps, args.num_envs) + act_shape,
-                    device=dev,
-                )
-            logprobs = torch.randn((args.num_steps, args.num_envs), device=dev)
-            rewards = torch.randn((args.num_steps, args.num_envs), device=dev)
-            dones = torch.zeros((args.num_steps, args.num_envs), device=dev)
-            ext_values = torch.randn((args.num_steps, args.num_envs), device=dev)
-            int_values = torch.randn((args.num_steps, args.num_envs), device=dev)
-            next_obs = torch.randn((args.num_envs, obs_dim), device=dev)
-            next_done = torch.zeros((args.num_envs,), device=dev)
-            return {
-                "obs": obs,
-                "actions": actions,
-                "logprobs": logprobs,
-                "rewards": rewards,
-                "dones": dones,
-                "ext_values": ext_values,
-                "int_values": int_values,
-                "next_obs": next_obs,
-                "next_done": next_done,
-            }
-
-        def run_update_ppo(batch, _):
-            agent.update(
-                batch["obs"],
-                batch["actions"],
-                batch["logprobs"],
-                batch["rewards"],
-                batch["dones"],
-                batch["ext_values"],
-                batch["int_values"],
-                batch["next_obs"],
-                batch["next_done"],
-            )
-
-        make_batch_fn = make_batch_ppo
-        run_update_fn = run_update_ppo
-
-    else:
-
-        def make_batch_sac(bs, dev):
-            observations = torch.randn((bs, obs_dim), dtype=torch.float32, device=dev)
-            next_observations = torch.randn(
-                (bs, obs_dim), dtype=torch.float32, device=dev
-            )
-            actions = torch.randn((bs, action_dim), dtype=torch.float32, device=dev)
-            rewards = torch.randn((bs, 1), dtype=torch.float32, device=dev)
-            dones = torch.zeros((bs, 1), dtype=torch.float32, device=dev)
-            return {
-                "observations": observations,
-                "next_observations": next_observations,
-                "actions": actions,
-                "rewards": rewards,
-                "dones": dones,
-                "bs": bs,
-            }
-
-        def run_update_sac(batch, step_idx):
-            data = SimpleNamespace(
-                observations=batch["observations"],
-                next_observations=batch["next_observations"],
-                actions=batch["actions"],
-                rewards=batch["rewards"],
-                dones=batch["dones"],
-            )
-            agent.update(data, global_step=step_idx + batch["bs"])
-
-        make_batch_fn = make_batch_sac
-        run_update_fn = run_update_sac
-
-    benchmark_updates_generic(
-        agent,
-        device=device,
-        batch_sizes=batch_sizes,
-        iters=iters,
-        make_batch_fn=make_batch_fn,
-        update_fn=run_update_fn,
-    )
-
-
+        t_end = time.time()
+        print(f"Offline RL Update Benchmark for {args.algo.upper()} complete. Real Training Time: {(t_end - t_start):.3f}s.")
+        return
 def benchmark_action_sampling(
     agent, args, obs_dim, device="cpu", batch_sizes=None, iters=200
 ):
@@ -457,11 +328,11 @@ def main():
         agent, _ = build_agent(args, vec_env, device)
 
         benchmark_updates(
-            agent, args, obs_dim, action_dim, device="cpu", batch_sizes=[64, 256]
+            agent, args, obs_dim, action_dim, vec_env, device="cpu", batch_sizes=[64, 256]
         )
         if torch.cuda.is_available():
             benchmark_updates(
-                agent, args, obs_dim, action_dim, device="cuda", batch_sizes=[64, 256]
+                agent, args, obs_dim, action_dim, vec_env, device="cuda", batch_sizes=[64, 256]
             )
 
         benchmark_action_sampling(
@@ -500,7 +371,6 @@ def main():
                             rollout_agent,
                             args,
                             rollout_device,
-                            rollout_buffer,
                             max_wall_time_seconds=args.max_wall_time,
                             total_steps_override=args.benchmark_steps,
                         )
