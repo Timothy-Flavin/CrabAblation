@@ -169,90 +169,90 @@ class RainbowBase(Agent):
             trunc=truncated, # Fixed to match function signature
         )
 
-    def old_popart()
-        # ONLINE TD TARGET AND UPDATE_STATS:
-        if hasattr(self, 'ext_online') and getattr(self, "popart", True):
-            with torch.no_grad():
-                # Extrinsic Target
-                if hasattr(self.ext_online, "normalize"): 
-                    pass # We will do a forward pass
+    # def old_popart()
+    #     # ONLINE TD TARGET AND UPDATE_STATS:
+    #     if hasattr(self, 'ext_online') and getattr(self, "popart", True):
+    #         with torch.no_grad():
+    #             # Extrinsic Target
+    #             if hasattr(self.ext_online, "normalize"): 
+    #                 pass # We will do a forward pass
 
-                # Intrinsic Reward Generation
-                rnd_errors, _ = self._update_RND(no, batch_norm=False)
-                norm_int = self.int_rms.scale(rnd_errors.detach().to(dtype=torch.float64))
-                if getattr(self, "int_r_clip", None) is not None and self.int_r_clip > 0.0:
-                    norm_int = torch.clamp(norm_int, min=-self.int_r_clip, max=self.int_r_clip)
-                int_r = norm_int.to(dtype=torch.float32)
+    #             # Intrinsic Reward Generation
+    #             rnd_errors, _ = self._update_RND(no, batch_norm=False)
+    #             norm_int = self.int_rms.scale(rnd_errors.detach().to(dtype=torch.float64))
+    #             if getattr(self, "int_r_clip", None) is not None and self.int_r_clip > 0.0:
+    #                 norm_int = torch.clamp(norm_int, min=-self.int_r_clip, max=self.int_r_clip)
+    #             int_r = norm_int.to(dtype=torch.float32)
 
-                # Q-values depends on distributional or EV
-                distributional = getattr(self, "n_quantiles", None) is not None
+    #             # Q-values depends on distributional or EV
+    #             distributional = getattr(self, "n_quantiles", None) is not None
                 
-                if distributional:
-                    # IQN
-                    taus = self._sample_taus(no.shape[0], self.n_target_quantiles, device)
-                    next_q_norm = self.ext_target.forward(no, taus, normalized=True).mean(dim=1)
-                    next_q_int_norm = self.int_target.forward(no, taus, normalized=True).mean(dim=1)
-                else:
-                    # EV
-                    next_q_norm = self.ext_target(no, normalized=True)
-                    next_q_int_norm = self.int_target(no, normalized=True)
+    #             if distributional:
+    #                 # IQN
+    #                 taus = self._sample_taus(no.shape[0], self.n_target_quantiles, device)
+    #                 next_q_norm = self.ext_target.forward(no, taus, normalized=True).mean(dim=1)
+    #                 next_q_int_norm = self.int_target.forward(no, taus, normalized=True).mean(dim=1)
+    #             else:
+    #                 # EV
+    #                 next_q_norm = self.ext_target(no, normalized=True)
+    #                 next_q_int_norm = self.int_target(no, normalized=True)
 
-                if self.dueling:
-                    if distributional:
-                        online_next_q_norm = self.ext_online.forward(no, taus, normalized=True).mean(dim=1)
-                    else:
-                        online_next_q_norm = self.ext_online(no, normalized=True)
-                    next_actions = online_next_q_norm.argmax(dim=-1, keepdim=True)
-                else:
-                    next_actions = next_q_norm.argmax(dim=-1, keepdim=True)
+    #             if self.dueling:
+    #                 if distributional:
+    #                     online_next_q_norm = self.ext_online.forward(no, taus, normalized=True).mean(dim=1)
+    #                 else:
+    #                     online_next_q_norm = self.ext_online(no, normalized=True)
+    #                 next_actions = online_next_q_norm.argmax(dim=-1, keepdim=True)
+    #             else:
+    #                 next_actions = next_q_norm.argmax(dim=-1, keepdim=True)
 
-                if distributional:
-                    next_q_unnorm = self.ext_target(no, taus, normalized=False).mean(dim=1)
-                    target_q = next_q_unnorm.gather(-1, next_actions).squeeze(-1)
+    #             if distributional:
+    #                 next_q_unnorm = self.ext_target(no, taus, normalized=False).mean(dim=1)
+    #                 target_q = next_q_unnorm.gather(-1, next_actions).squeeze(-1)
                     
-                    next_q_int_unnorm = self.int_target(no, taus, normalized=False).mean(dim=1)
-                    target_q_int = next_q_int_unnorm.gather(-1, next_actions).squeeze(-1)
-                else:
-                    target_q = next_q_norm.gather(-1, next_actions).squeeze(-1)
-                    if hasattr(self.ext_target.output_layer, "unnormalize"):
-                        target_q = self.ext_target.output_layer.unnormalize(target_q)
-                    target_q_int = next_q_int_norm.gather(-1, next_actions).squeeze(-1)
-                    if hasattr(self.int_target.output_layer, "unnormalize"):
-                        target_q_int = self.int_target.output_layer.unnormalize(target_q_int)
+    #                 next_q_int_unnorm = self.int_target(no, taus, normalized=False).mean(dim=1)
+    #                 target_q_int = next_q_int_unnorm.gather(-1, next_actions).squeeze(-1)
+    #             else:
+    #                 target_q = next_q_norm.gather(-1, next_actions).squeeze(-1)
+    #                 if hasattr(self.ext_target.output_layer, "unnormalize"):
+    #                     target_q = self.ext_target.output_layer.unnormalize(target_q)
+    #                 target_q_int = next_q_int_norm.gather(-1, next_actions).squeeze(-1)
+    #                 if hasattr(self.int_target.output_layer, "unnormalize"):
+    #                     target_q_int = self.int_target.output_layer.unnormalize(target_q_int)
 
-                r_ext_view = r.view(-1, 1) if r.ndim == 1 else r
-                d_view = d.view(-1, 1) if d.ndim == 1 else d
-                int_r_view = int_r.view(-1, 1) if int_r.ndim == 1 else int_r
+    #             r_ext_view = r.view(-1, 1) if r.ndim == 1 else r
+    #             d_view = d.view(-1, 1) if d.ndim == 1 else d
+    #             int_r_view = int_r.view(-1, 1) if int_r.ndim == 1 else int_r
 
-                ext_target_val = r_ext_view + (1 - d_view) * self.gamma * target_q
-                int_target_val = int_r_view + (1 - d_view) * self.gamma * target_q_int
+    #             ext_target_val = r_ext_view + (1 - d_view) * self.gamma * target_q
+    #             int_target_val = int_r_view + (1 - d_view) * self.gamma * target_q_int
 
-                if hasattr(self.ext_online, "output_layer") and hasattr(self.ext_online.output_layer, "update_stats"):
-                    if not distributional: ext_target_val = ext_target_val.view(-1, 1)
-                    self.ext_online.output_layer.normalize(ext_target_val)
-                    if not distributional: int_target_val = int_target_val.view(-1, 1)
-                    self.int_online.output_layer.normalize(int_target_val)
+    #             if hasattr(self.ext_online, "output_layer") and hasattr(self.ext_online.output_layer, "update_stats"):
+    #                 if not distributional: ext_target_val = ext_target_val.view(-1, 1)
+    #                 self.ext_online.output_layer.normalize(ext_target_val)
+    #                 if not distributional: int_target_val = int_target_val.view(-1, 1)
+    #                 self.int_online.output_layer.normalize(int_target_val)
 
-        # Format tensors for buffer
-        if isinstance(obs, np.ndarray):
-            o = torch.as_tensor(obs, dtype=torch.float32, device=device)
-            a = torch.as_tensor(action, dtype=torch.float32, device=device)
-            if a.ndim == 1:
-                a = a.view(-1, 1)
-            r = torch.as_tensor(reward, dtype=torch.float32, device=device)
-            no = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
-            d = torch.as_tensor(done, dtype=torch.float32, device=device)
-        else:
-            o = obs.to(device=device, dtype=torch.float32)
-            a = action.to(device=device, dtype=torch.float32)
-            if a.ndim == 1:
-                a = a.view(-1, 1)
-            r = reward.to(device=device, dtype=torch.float32)
-            no = next_obs.to(device=device, dtype=torch.float32)
-            d = done.to(device=device, dtype=torch.float32)
+    #     # Format tensors for buffer
+    #     if isinstance(obs, np.ndarray):
+    #         o = torch.as_tensor(obs, dtype=torch.float32, device=device)
+    #         a = torch.as_tensor(action, dtype=torch.float32, device=device)
+    #         if a.ndim == 1:
+    #             a = a.view(-1, 1)
+    #         r = torch.as_tensor(reward, dtype=torch.float32, device=device)
+    #         no = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
+    #         d = torch.as_tensor(done, dtype=torch.float32, device=device)
+    #     else:
+    #         o = obs.to(device=device, dtype=torch.float32)
+    #         a = action.to(device=device, dtype=torch.float32)
+    #         if a.ndim == 1:
+    #             a = a.view(-1, 1)
+    #         r = reward.to(device=device, dtype=torch.float32)
+    #         no = next_obs.to(device=device, dtype=torch.float32)
+    #         d = done.to(device=device, dtype=torch.float32)
             
-        if self.buffer is not None:
-            self.buffer.add(o.cpu().numpy(), no.cpu().numpy(), a.cpu().numpy(), r.cpu().numpy(), d.cpu().numpy(), info)
+    #     if self.buffer is not None:
+    #         self.buffer.add(o.cpu().numpy(), no.cpu().numpy(), a.cpu().numpy(), r.cpu().numpy(), d.cpu().numpy(), info)
 
     def to(self, device):
         """Move the agent and all its subcomponents to a specific device."""
