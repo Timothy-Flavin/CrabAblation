@@ -48,7 +48,6 @@ class TestPopartIntegration(unittest.TestCase):
                 n_action_bins=10,
                 hidden_layer_sizes=[32],
                 lr=0.05,
-                popart=True,
                 burn_in_updates=0,
             ).to(torch.device("cpu"))
 
@@ -110,8 +109,8 @@ class TestPopartIntegration(unittest.TestCase):
                         break
             return steps_to_converge
 
-        large_steps = [train_dqn(1e4, s, check_stats=(s == 0)) for s in range(25)]
-        small_steps = [train_dqn(1e-4, s, check_stats=False) for s in range(25)]
+        large_steps = [train_dqn(1e4, s, check_stats=(s == 0)) for s in range(100)]
+        small_steps = [train_dqn(1e-4, s, check_stats=False) for s in range(100)]
 
         large_mean, large_std = np.mean(large_steps), np.std(large_steps)
         small_mean, small_std = np.mean(small_steps), np.std(small_steps)
@@ -192,8 +191,8 @@ class TestPopartIntegration(unittest.TestCase):
                         break
             return steps_to_converge
 
-        large_steps = [train_sac(1e4, s, check_stats=(s == 0)) for s in range(25)]
-        small_steps = [train_sac(1e-4, s, check_stats=False) for s in range(25)]
+        large_steps = [train_sac(1e4, s, check_stats=(s == 0)) for s in range(100)]
+        small_steps = [train_sac(1e-4, s, check_stats=False) for s in range(100)]
 
         large_mean, large_std = np.mean(large_steps), np.std(large_steps)
         small_mean, small_std = np.mean(small_steps), np.std(small_steps)
@@ -283,8 +282,8 @@ class TestPopartIntegration(unittest.TestCase):
                         break
             return steps_to_converge
 
-        large_steps = [train_ppo(1e4, s, check_stats=(s == 0)) for s in range(25)]
-        small_steps = [train_ppo(1e-4, s, check_stats=False) for s in range(25)]
+        large_steps = [train_ppo(1e4, s, check_stats=(s == 0)) for s in range(100)]
+        small_steps = [train_ppo(1e-4, s, check_stats=False) for s in range(100)]
 
         large_mean, large_std = np.mean(large_steps), np.std(large_steps)
         small_mean, small_std = np.mean(small_steps), np.std(small_steps)

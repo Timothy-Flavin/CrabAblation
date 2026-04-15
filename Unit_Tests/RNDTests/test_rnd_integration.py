@@ -131,7 +131,7 @@ class ContinuousNChainEnv(NChainEnv):
         return super().step(a)
 
 def train_sac(use_rnd=False):
-    env = ContinuousNChainEnv(n=7)
+    env = ContinuousNChainEnv(n=10)
     envs = gym.vector.SyncVectorEnv([lambda: env])
     agent = SACAgent(
         envs=envs,

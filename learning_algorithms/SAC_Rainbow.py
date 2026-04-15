@@ -540,7 +540,7 @@ class SACAgent(Agent):
             next_critic_input = self._critic_input(
                 data.next_observations, next_state_actions
             )
-
+            current_sigma = self.qf1.output_layer.sigma.detach() if self.popart else 1.0
             if self.distributional:
                 target_taus = self._sample_taus(
                     next_critic_input.shape[0],
@@ -561,7 +561,7 @@ class SACAgent(Agent):
                 next_q_quantiles = augmented_rewards.unsqueeze(1) + (
                     1 - data.dones.flatten()
                 ).unsqueeze(1) * self.gamma * (
-                    min_qf_next_quantiles - self.alpha * next_state_log_pi
+                    min_qf_next_quantiles - current_sigma * self.alpha * next_state_log_pi
                 )
                 
                 # Intrinsic Target (No entropy subtraction according to instructions, possibly 0.99 gamma instead of extrinsic gamma, but we'll use self.gamma for simplicity unless specified otherwise)
@@ -590,7 +590,7 @@ class SACAgent(Agent):
                 next_q_value = augmented_rewards + (
                     1 - data.dones.flatten()
                 ) * self.gamma * (
-                    min_qf_next_target - self.alpha * next_state_log_pi.view(-1)
+                    min_qf_next_target - current_sigma * self.alpha * next_state_log_pi.view(-1)
                 )
                 
                 # Intrinsic Target

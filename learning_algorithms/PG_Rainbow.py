@@ -529,6 +529,15 @@ class PPOAgent(Agent):
         old_approx_kl = torch.tensor(0.0)
         approx_kl = torch.tensor(0.0)
 
+        with torch.no_grad():
+            if self.popart:
+                if self.distributional:
+                    self.ext_critic.output_layer.update_stats(b_ext_returns)
+                    self.int_critic.output_layer.update_stats(b_int_returns)
+                else:
+                    self.ext_critic_head.update_stats(b_ext_returns.unsqueeze(1))
+                    self.int_critic_head.update_stats(b_int_returns.unsqueeze(1))
+
         for epoch in range(self.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, self.batch_size, self.minibatch_size):
@@ -568,7 +577,6 @@ class PPOAgent(Agent):
                 if self.distributional:
                     # IQN PopArt updates
                     if self.popart:
-                        self.ext_critic.output_layer.update_stats(b_ext_returns[mb_inds])
                         norm_ext_returns = self.ext_critic.output_layer.normalize(b_ext_returns[mb_inds])
                     else:
                         norm_ext_returns = b_ext_returns[mb_inds]
@@ -578,8 +586,6 @@ class PPOAgent(Agent):
                     v_loss_ext = self._quantile_huber_loss(ext_quantiles_norm, norm_ext_returns, ext_taus)
                 else:
                     if self.popart:
-                        # 1. Update PopArt statistics with raw targets
-                        self.ext_critic_head.update_stats(b_ext_returns[mb_inds].unsqueeze(1))
                         # 2. Normalize the targets using the updated stats
                         norm_ext_returns = self.ext_critic_head.normalize(b_ext_returns[mb_inds].unsqueeze(1)).view(-1)
                         # 3. Get new normalized predictions
@@ -611,7 +617,6 @@ class PPOAgent(Agent):
                 if self.distributional:
                     # IQN PopArt updates
                     if self.popart:
-                        self.int_critic.output_layer.update_stats(b_int_returns[mb_inds])
                         norm_int_returns = self.int_critic.output_layer.normalize(b_int_returns[mb_inds])
                     else:
                         norm_int_returns = b_int_returns[mb_inds]
@@ -621,8 +626,6 @@ class PPOAgent(Agent):
                     v_loss_int = self._quantile_huber_loss(int_quantiles_norm, norm_int_returns, int_taus)
                 else:
                     if self.popart:
-                        # 1. Update PopArt statistics with raw targets
-                        self.int_critic_head.update_stats(b_int_returns[mb_inds].unsqueeze(1))
                         # 2. Normalize the targets using the updated stats
                         norm_int_returns = self.int_critic_head.normalize(b_int_returns[mb_inds].unsqueeze(1)).view(-1)
                         # 3. Get new normalized predictions
