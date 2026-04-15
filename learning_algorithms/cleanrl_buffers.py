@@ -96,11 +96,13 @@ class BaseBuffer(ABC):
         n_envs: int = 1,
         obs_shape: tuple[int, ...] = None,
         action_dim: int = None,
+        action_dtype: th.dtype = th.float32,
     ):
         super().__init__()
         self.buffer_size = buffer_size
         self.device = get_device(device)
         self.n_envs = n_envs
+        self.action_dtype = action_dtype
 
         # Use custom dim if provided, else parse from space
         if obs_shape is not None:
@@ -163,10 +165,11 @@ class ReplayBuffer(BaseBuffer):
         action_dim: int = None,
         optimize_memory_usage: bool = False,
         handle_timeout_termination: bool = True,
+        action_dtype: th.dtype = th.float32,
     ):
         super().__init__(
             buffer_size, observation_space, action_space, device, n_envs, 
-            obs_shape=obs_shape, action_dim=action_dim
+            obs_shape=obs_shape, action_dim=action_dim, action_dtype=action_dtype
         )
         
         self.buffer_size = max(buffer_size // n_envs, 1)
@@ -178,7 +181,7 @@ class ReplayBuffer(BaseBuffer):
         if not optimize_memory_usage:
             self.next_observations = th.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=th.float32).pin_memory()
 
-        self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=th.float32).pin_memory()
+        self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=self.action_dtype).pin_memory()
         self.rewards = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
         self.terms = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
         self.truncs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
@@ -239,10 +242,11 @@ class RolloutBuffer(BaseBuffer):
         action_dim: int = None,
         gae_lambda: float = 1.0,
         gamma: float = 0.99,
+        action_dtype: th.dtype = th.float32,
     ):
         super().__init__(
             buffer_size, observation_space, action_space, device, n_envs,
-            obs_shape=obs_shape, action_dim=action_dim
+            obs_shape=obs_shape, action_dim=action_dim, action_dtype=action_dtype
         )
         self.gae_lambda = gae_lambda
         self.gamma = gamma
@@ -251,7 +255,7 @@ class RolloutBuffer(BaseBuffer):
 
     def reset(self) -> None:
         self.observations = th.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=th.float32).pin_memory()
-        self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=th.float32).pin_memory()
+        self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=self.action_dtype).pin_memory()
         self.rewards = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
         self.returns = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
         self.terminations = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
@@ -303,4 +307,43 @@ class RolloutBuffer(BaseBuffer):
         if self.pos == self.buffer_size:
             self.full = True
 
-    def get(self, batch_size: int | None = None) -> Generator
+    def get(self, batch_size: int | None = None) -> Generator[RolloutBufferSamples, None, None]:
+        assert self.full, "Rollout buffer must be full before sampling"
+        indices = np.random.permutation(self.buffer_size * self.n_envs)
+
+        # Prepare the data by swapping and flattening (Time, Envs) -> (Time * Envs)
+        # We use the staticmethod swap_and_flatten from BaseBuffer
+        observations = self.swap_and_flatten(self.observations)
+        actions = self.swap_and_flatten(self.actions)
+        values = self.swap_and_flatten(self.values)
+        log_probs = self.swap_and_flatten(self.log_probs)
+        advantages = self.swap_and_flatten(self.advantages)
+        returns = self.swap_and_flatten(self.returns)
+
+        start_idx = 0
+        while start_idx < self.buffer_size * self.n_envs:
+            # If batch_size is None, return all data at once
+            end_idx = start_idx + (batch_size if batch_size is not None else self.buffer_size * self.n_envs)
+            yield self._get_samples(indices[start_idx:end_idx], 
+                                    observations, actions, values, 
+                                    log_probs, advantages, returns)
+            start_idx = end_idx
+
+    def _get_samples(
+        self,
+        batch_inds: np.ndarray,
+        observations: th.Tensor,
+        actions: th.Tensor,
+        values: th.Tensor,
+        log_probs: th.Tensor,
+        advantages: th.Tensor,
+        returns: th.Tensor,
+    ) -> RolloutBufferSamples:
+        return RolloutBufferSamples(
+            observations=self.to_torch(observations[batch_inds]),
+            actions=self.to_torch(actions[batch_inds]),
+            old_values=self.to_torch(values[batch_inds]),
+            old_log_prob=self.to_torch(log_probs[batch_inds]),
+            advantages=self.to_torch(advantages[batch_inds]),
+            returns=self.to_torch(returns[batch_inds]),
+        )

@@ -53,6 +53,7 @@ class RainbowBase(Agent):
         super().__init__()
         self.device = device
         self.buffer_device = buffer_device
+        self.buffer_size = buffer_size
         if not torch.cuda.is_available():
             self.device = "cpu"
             self.buffer_device = "cpu"
@@ -132,15 +133,16 @@ class RainbowBase(Agent):
         action_dim = self.n_action_dims
         return ReplayBuffer(
             buffer_size=self.buffer_size,
-            n_envs=n_envs,
+            n_envs=self.n_envs,
             obs_shape=obs_shape,
             action_dim=action_dim,
             device=self.buffer_device,
             optimize_memory_usage=False,
-            handle_timeout_termination=True
+            handle_timeout_termination=True,
+            action_dtype=torch.int32,
         )
 
-    def observe(self, obs, action, reward, next_obs, terminated, truncated, info):
+    def observe(self, obs, action, reward, next_obs, terminated, truncated, info=None):
         # Update random network distillation running mean and std norm
         # if we are using intrinsic rewards. 
         if self.Beta > 0.0:
@@ -154,7 +156,6 @@ class RainbowBase(Agent):
                 b_next_obs = b_next_obs.unsqueeze(0)
                 
             self.obs_rms.update(b_next_obs)
-
         # The buffer natively handles the shapes and tensor casting for memory efficiency
         self.buffer.add(
             obs=obs,
@@ -285,7 +286,7 @@ class RainbowBase(Agent):
 
     def _update_RND(self, next_obs: torch.Tensor):
         with torch.no_grad():        
-            norm_next_obs = self.obs_rms.normalize(next_obs)
+            norm_next_obs = self.obs_rms.normalize(next_obs).float()
 
         with torch.enable_grad():
             rnd_errors = self.rnd(norm_next_obs)
@@ -383,7 +384,7 @@ class EVRainbowDQN(RainbowBase):
         ent = -(pi * logpi).sum(dim=-1)  # [B]
         return pi, logpi, ent
 
-    def update(self, batch_size=None):
+    def update(self, batch_size=None, step=None):
         self.step += 1
 
         # Get batch data from buffer
@@ -408,7 +409,6 @@ class EVRainbowDQN(RainbowBase):
         b_r_ext = b_r_ext.to(self.device, non_blocking=True)
         # Need the extra trailing dim for torch.gather later
         b_actions_idx = b_a.view(batch_size, self.n_action_dims, 1)
-
         #Get intrinsic errors if we are going to use them
         if self.Beta > 0.0:
             rnd_errors, rnd_loss = self._update_RND(b_next_obs)
@@ -564,7 +564,7 @@ class EVRainbowDQN(RainbowBase):
         verbose: bool = False,
     ):
         self.last_eps = eps
-        is_batched = obs.ndim > self.obs_ndim:
+        is_batched = obs.ndim > self.obs_ndim
         obs_b = obs if is_batched else obs.unsqueeze(0)
         batch_size = obs_b.size(0)
 
@@ -700,7 +700,7 @@ class IQNRainbowDQN(RainbowBase):
         loss = (torch.abs(taus_expanded - I_) * huber).mean()
         return loss
 
-    def update(self, batch_size=None):
+    def update(self, batch_size=None, step=None):
         self.step += 1
 
         # Get batch data from buffer
@@ -725,6 +725,7 @@ class IQNRainbowDQN(RainbowBase):
         b_trunc = b_trunc.to(self.device, non_blocking=True)
         b_r_ext = b_r_ext.to(self.device, non_blocking=True)
         b_actions_idx = b_a.view(batch_size, self.n_action_dims, 1)
+        input(b_actions_idx)
 
         # Get intrinsic errors if we are going to use them
         if self.Beta > 0.0:
@@ -899,7 +900,7 @@ class IQNRainbowDQN(RainbowBase):
         verbose: bool = False,
     ):
         self.last_eps = eps
-        is_batched = obs.ndim > 1
+        is_batched = obs.ndim > self.obs_ndim
         obs_b = obs if is_batched else obs.unsqueeze(0)
         batch_size = obs_b.size(0)
 
