@@ -116,7 +116,7 @@ class RainbowBase(Agent):
             self.buffer = None
 
     def observe(self, obs, action, reward, next_obs, done, info):
-        device = self.obs_rms.mean.device
+        device = next(self.ext_online.parameters()).device
         # Update running stats for PopArt / Intrinsic
         if isinstance(obs, np.ndarray):
             b_next_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
@@ -124,9 +124,86 @@ class RainbowBase(Agent):
         else:
             b_next_obs = next_obs.to(device=device, dtype=torch.float32)
             b_r = reward.to(device=device, dtype=torch.float32).view(-1, 1)
-        
+            
         self.update_running_stats(b_next_obs, b_r)
         
+        # ONLINE TD TARGET AND UPDATE_STATS:
+        if hasattr(self, 'ext_online') and getattr(self, "popart", True):
+            with torch.no_grad():
+                # Extrinsic Target
+                if hasattr(self.ext_online, "normalize"): 
+                    pass # We will do a forward pass
+                    
+                # Format tensors for forward pass
+                if isinstance(obs, np.ndarray):
+                    o = torch.as_tensor(obs, dtype=torch.float32, device=device)
+                    a = torch.as_tensor(action, dtype=torch.long, device=device).view(-1, 1)
+                    r = torch.as_tensor(reward, dtype=torch.float32, device=device)
+                    no = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
+                    d = torch.as_tensor(done, dtype=torch.float32, device=device)
+                else:
+                    o = obs.to(device=device, dtype=torch.float32)
+                    a = action.to(device=device, dtype=torch.long).view(-1, 1)
+                    r = reward.to(device=device, dtype=torch.float32)
+                    no = next_obs.to(device=device, dtype=torch.float32)
+                    d = done.to(device=device, dtype=torch.float32)
+
+                # Intrinsic Reward Generation
+                rnd_errors, _ = self._update_RND(no, batch_norm=False)
+                norm_int = self.int_rms.scale(rnd_errors.detach().to(dtype=torch.float64))
+                if getattr(self, "int_r_clip", None) is not None and self.int_r_clip > 0.0:
+                    norm_int = torch.clamp(norm_int, min=-self.int_r_clip, max=self.int_r_clip)
+                int_r = norm_int.to(dtype=torch.float32)
+
+                # Q-values depends on distributional or EV
+                distributional = getattr(self, "n_quantiles", None) is not None
+                
+                if distributional:
+                    # IQN
+                    taus = self._sample_taus(no.shape[0], self.n_target_quantiles, device)
+                    next_q_norm = self.ext_target.forward(no, taus, normalized=True).mean(dim=1)
+                    next_q_int_norm = self.int_target.forward(no, taus, normalized=True).mean(dim=1)
+                else:
+                    # EV
+                    next_q_norm = self.ext_target(no, normalized=True)
+                    next_q_int_norm = self.int_target(no, normalized=True)
+
+                if self.dueling:
+                    if distributional:
+                        online_next_q_norm = self.ext_online.forward(no, taus, normalized=True).mean(dim=1)
+                    else:
+                        online_next_q_norm = self.ext_online(no, normalized=True)
+                    next_actions = online_next_q_norm.argmax(dim=-1, keepdim=True)
+                else:
+                    next_actions = next_q_norm.argmax(dim=-1, keepdim=True)
+
+                if distributional:
+                    next_q_unnorm = self.ext_target(no, taus, normalized=False).mean(dim=1)
+                    target_q = next_q_unnorm.gather(-1, next_actions).squeeze(-1)
+                    
+                    next_q_int_unnorm = self.int_target(no, taus, normalized=False).mean(dim=1)
+                    target_q_int = next_q_int_unnorm.gather(-1, next_actions).squeeze(-1)
+                else:
+                    target_q = next_q_norm.gather(-1, next_actions).squeeze(-1)
+                    if hasattr(self.ext_target.output_layer, "unnormalize"):
+                        target_q = self.ext_target.output_layer.unnormalize(target_q)
+                    target_q_int = next_q_int_norm.gather(-1, next_actions).squeeze(-1)
+                    if hasattr(self.int_target.output_layer, "unnormalize"):
+                        target_q_int = self.int_target.output_layer.unnormalize(target_q_int)
+
+                r_ext_view = r.view(-1, 1) if r.ndim == 1 else r
+                d_view = d.view(-1, 1) if d.ndim == 1 else d
+                int_r_view = int_r.view(-1, 1) if int_r.ndim == 1 else int_r
+
+                ext_target_val = r_ext_view + (1 - d_view) * self.gamma * target_q
+                int_target_val = int_r_view + (1 - d_view) * self.gamma * target_q_int
+
+                if hasattr(self.ext_online, "output_layer") and hasattr(self.ext_online.output_layer, "update_stats"):
+                    if not distributional: ext_target_val = ext_target_val.view(-1, 1)
+                    self.ext_online.output_layer.normalize(ext_target_val)
+                    if not distributional: int_target_val = int_target_val.view(-1, 1)
+                    self.int_online.output_layer.normalize(int_target_val)
+
         # Format tensors for buffer
         if isinstance(obs, np.ndarray):
             o = torch.as_tensor(obs, dtype=torch.float32, device=device)
@@ -150,6 +227,9 @@ class RainbowBase(Agent):
 
     def to(self, device):
         """Move the agent and all its subcomponents to a specific device."""
+        device = torch.device(device)
+        if hasattr(self, 'buffer') and self.buffer is not None:
+            self.buffer.device = device
         main_lr = self.optim.param_groups[0]["lr"] if hasattr(self, "optim") else self.lr
         int_lr = self.int_optim.param_groups[0]["lr"] if hasattr(self, "int_optim") else self.intrinsic_lr
         rnd_lr = self.rnd_optim.param_groups[0]["lr"] if hasattr(self, "rnd_optim") else self.rnd_lr
@@ -201,12 +281,13 @@ class RainbowBase(Agent):
                 norm_next_obs = self.obs_rms.normalize(next_obs.to(dtype=torch.float64))
                 norm_next_obs_f32 = norm_next_obs.to(dtype=torch.float32)
 
-        rnd_errors = self.rnd(norm_next_obs_f32)
-        rnd_loss = rnd_errors.mean()
-        self.rnd_optim.zero_grad()
-        rnd_loss.backward()
-        self.rnd_optim.step()
-        return rnd_errors, rnd_loss
+        with torch.enable_grad():
+            rnd_errors = self.rnd(norm_next_obs_f32)
+            rnd_loss = rnd_errors.mean()
+            self.rnd_optim.zero_grad()
+            rnd_loss.backward()
+            self.rnd_optim.step()
+        return rnd_errors.detach(), rnd_loss.detach()
 
 
 class EVRainbowDQN(RainbowBase):
@@ -245,7 +326,7 @@ class EVRainbowDQN(RainbowBase):
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
     ):
         super().__init__(
-            input_dim=input_dim, n_action_dims=n_action_dims, n_action_bins=n_action_bins,
+            input_dim=input_dim, n_action_dims=n_action_dims, n_action_bins=n_action_bins, envs=envs, buffer_size=buffer_size,
             hidden_layer_sizes=hidden_layer_sizes, lr=lr, gamma=gamma, alpha=alpha, tau=tau,
             polyak_tau=polyak_tau, l_clip=l_clip, soft=soft, munchausen=munchausen, Thompson=Thompson,
             dueling=dueling, Beta=Beta, delayed=delayed, ent_reg_coef=ent_reg_coef,
@@ -315,7 +396,7 @@ class EVRainbowDQN(RainbowBase):
         idx = torch.arange(0, batch_size)
         
         b_obs = data.observations
-        b_actions_idx = data.actions
+        b_actions_idx = data.actions.long()
         if b_actions_idx.ndim == 1:
             b_actions_idx = b_actions_idx.view(-1, 1)
         a = data.actions
@@ -606,7 +687,7 @@ class IQNRainbowDQN(RainbowBase):
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
     ):
         super().__init__(
-            input_dim=input_dim, n_action_dims=n_action_dims, n_action_bins=n_action_bins,
+            input_dim=input_dim, n_action_dims=n_action_dims, n_action_bins=n_action_bins, envs=envs, buffer_size=buffer_size,
             hidden_layer_sizes=hidden_layer_sizes, lr=lr, gamma=gamma, alpha=alpha, tau=tau,
             polyak_tau=polyak_tau, l_clip=l_clip, soft=soft, munchausen=munchausen, Thompson=Thompson,
             dueling=dueling, Beta=Beta, delayed=delayed, ent_reg_coef=ent_reg_coef,
@@ -685,7 +766,7 @@ class IQNRainbowDQN(RainbowBase):
         idx = torch.arange(0, batch_size)
         
         b_obs = data.observations
-        b_actions_idx = data.actions
+        b_actions_idx = data.actions.long()
         if b_actions_idx.ndim == 1:
             b_actions_idx = b_actions_idx.view(-1, 1)
         a = data.actions
@@ -713,12 +794,7 @@ class IQNRainbowDQN(RainbowBase):
                     norm_int = torch.clamp(norm_int, min=-self.int_r_clip, max=self.int_r_clip)
                 b_r_int = norm_int.to(dtype=torch.float32)
         else:
-            rnd_errors, rnd_loss, b_r_int = torch.zeros_like(r[idx]), 0, 0
-
-        b_obs = obs[idx]
-        b_r_ext = r[idx]
-        b_term = term[idx]
-        b_actions_idx = a[idx]
+            rnd_errors, rnd_loss, b_r_int = torch.zeros_like(b_r_ext), 0, 0
 
         t_ = time.time()
         loss_ext, m_r, e_loss = self._rl_update_extrinsic(b_obs, b_actions_idx, b_r_ext, b_next_obs, b_term, batch_size)

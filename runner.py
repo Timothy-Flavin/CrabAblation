@@ -546,6 +546,7 @@ def rollout_online_rl(
     r_ep = np.zeros(args.num_envs)
     ep_len = np.zeros(args.num_envs, dtype=int)
     smooth_r = 0.0
+    ep = 0
 
     start_time = time.time()
 
@@ -579,6 +580,7 @@ def rollout_online_rl(
     updates_performed = 0
     timed_out = False
 
+    eval_every_episodes = getattr(args, 'eval_every_episodes', 25)
     if max_wall_time_seconds is None:
         max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
 
@@ -636,10 +638,17 @@ def rollout_online_rl(
                     )
                     rhist.append(float(r_ep[env_i]))
                     smooth_rhist.append(float(smooth_r))
+                    ep += 1
                     if writer:
                         writer.add_scalar(
                             "charts/episodic_return", float(r_ep[env_i]), global_step
                         )
+
+                    if ep % eval_every_episodes == 0 and ep > 0:
+                        eval_res = evaluate_agent(agent, args, device, step=global_step, n_steps=total_step_budget)
+                        eval_hist.append(eval_res)
+                        if writer:
+                            writer.add_scalar("charts/eval_return", eval_res, global_step)
                     r_ep[env_i] = 0.0
                     ep_len[env_i] = 0
 
@@ -822,6 +831,12 @@ def rollout_offline_rl(
                 if writer:
                     writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
                     writer.add_scalar("episode/smooth_reward", float(smooth_r), total_samples)
+
+                if ep % eval_every_episodes == 0 and ep > 0:
+                    eval_res = evaluate_agent(agent, args, device)
+                    eval_hist.append(eval_res)
+                    if writer:
+                        writer.add_scalar("eval/reward", eval_res, total_samples)
 
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0

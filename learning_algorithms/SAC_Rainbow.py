@@ -216,6 +216,8 @@ class SACAgent(Agent):
         autotune: bool = True,
         entropy_coef_zero: bool = False,
         distributional: bool = False,
+        popart: bool = True,
+
         dueling: bool = False,
         delayed_critics: bool = True,
         hidden_layer_sizes: tuple[int, int] = (128, 128),
@@ -231,6 +233,7 @@ class SACAgent(Agent):
         rnd_lr: float = 1e-3,
         beta_half_life_steps: Optional[int] = None,
         buffer_size: int = int(1e5),
+
     ):
         super().__init__()
         self.gamma = gamma
@@ -241,7 +244,7 @@ class SACAgent(Agent):
         self.entropy_coef_zero = entropy_coef_zero
         self.distributional = distributional
         self.dueling = dueling
-        self.popart = True
+        self.popart = popart
         self.delayed_critics = delayed_critics
         hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
         self.n_quantiles = n_quantiles
@@ -255,7 +258,7 @@ class SACAgent(Agent):
             buffer_size,
             envs.single_observation_space,
             envs.single_action_space,
-            "cuda" if torch.cuda.is_available() else "cpu",
+            device if "device" in locals() else ("cuda" if torch.cuda.is_available() else "cpu"),
             n_envs=envs.num_envs,
             handle_timeout_termination=False,
         )
@@ -375,6 +378,17 @@ class SACAgent(Agent):
             self.alpha = self.log_alpha.exp().item()
             q_lr = self.q_optimizer.param_groups[0]["lr"]
             self.a_optimizer = optim.Adam([self.log_alpha], lr=q_lr)
+            
+        policy_lr = self.actor_optimizer.param_groups[0]["lr"]
+        q_lr = self.q_optimizer.param_groups[0]["lr"]
+        self.q_optimizer = optim.Adam(
+            list(self.qf1.parameters()) + list(self.qf2.parameters()), lr=q_lr
+        )
+        self.q_int_optimizer = optim.Adam(
+            list(self.qf1_int.parameters()) + list(self.qf2_int.parameters()), lr=q_lr
+        )
+        self.actor_optimizer = optim.Adam(list(self.actor.parameters()), lr=policy_lr)
+        
         self.rnd.to(device)
         self.obs_rms.to(device)
         self.int_rms.to(device)
@@ -457,7 +471,7 @@ class SACAgent(Agent):
             current_sigma = self.qf1.output_layer.sigma.detach()
 
             if self.distributional:
-                target_taus = self._sample_taus(1, self.n_target_quantiles, self.actor.device)
+                target_taus = self._sample_taus(next_critic_input.shape[0], self.n_target_quantiles, self.actor.device)
                 qf1_next_quantiles = self._critic_quantiles(target_qf1, next_critic_input, target_taus, normalized=False)
                 qf2_next_quantiles = self._critic_quantiles(target_qf2, next_critic_input, target_taus, normalized=False)
                 min_qf_next_quantiles = torch.min(qf1_next_quantiles, qf2_next_quantiles)
@@ -557,6 +571,11 @@ class SACAgent(Agent):
 
     @torch.no_grad()
     def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
+        with torch.no_grad():
+            x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
+            self.obs_rms.update(x64)
+            norm_next_obs = self.obs_rms.normalize(next_obs).to(torch.float32)
+            rnd_errors = self.rnd(norm_next_obs)
         """Update observation and intrinsic reward running stats with a single env step."""
         if self.Beta <= 0.0 and not getattr(self, 'always_update_rnd', False):
             return

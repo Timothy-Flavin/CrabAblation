@@ -14,7 +14,6 @@ import torch
 from environment_utils import get_env_benchmark_spec
 from runner import (
     build_agent,
-    build_buffer,
     create_vec_env,
     rollout_offline_rl,
     rollout_online_rl,
@@ -152,7 +151,6 @@ def run_grid_search(args, total_steps=2000):
                 try:
                     device = resolve_torch_device(dev)
                     agent, _ = build_agent(args, vec_env, device)
-                    buffer = build_buffer(args, vec_env, device)
                     actual_num_envs = int(getattr(vec_env, "num_envs", num_envs))
 
                     if args.algo == "ppo":
@@ -355,7 +353,6 @@ def main():
                 try:
                     rollout_device = resolve_torch_device(dev)
                     rollout_agent, _ = build_agent(args, rollout_env, rollout_device)
-                    rollout_buffer = build_buffer(args, rollout_env, rollout_device)
                     if args.algo == "ppo":
                         results = rollout_online_rl(
                             rollout_env,
