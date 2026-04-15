@@ -459,6 +459,8 @@ class EVRainbowDQN(RainbowBase):
         update_timings["logging"] += time.time() - t_
         update_timings["total"] += time.time() - t__
 
+        if self.delayed_target:
+            self.update_target()
         return float(extrinsic_loss.item())
 
     def sample_action(
@@ -477,33 +479,33 @@ class EVRainbowDQN(RainbowBase):
 
         with torch.no_grad():
             q_ext = self.ext_online(obs_b, normalized=True)  # [B,n_actions]
+            rand_vals = torch.rand(batch_size, device=obs_b.device)
+            explore_mask = (rand_vals < min_ent) | (rand_vals < eps)
             
+            if self.Beta > 0.0:
+                int_q = self.int_online(obs_b, normalized=True)
+                q_ext = (1.0 - self.Beta) * q_ext + self.Beta * int_q
+
             if self.soft or self.munchausen:
-                logits = q_ext / self.tau
-                actions = torch.distributions.Categorical(logits=logits).sample()
+                q_ext = q_ext / self.tau
+                actions = torch.distributions.Categorical(logits=q_ext).sample()
                 if verbose:
                     print(f"Logits: {logits.cpu().numpy()}")
             else:
-                if self.Beta > 0.0:
-                    int_q = self.int_online(obs_b, normalized=True)
-                    q_ext = (1.0 - self.Beta) * q_ext + self.Beta * int_q
-
                 actions = torch.argmax(q_ext, dim=-1)
-                rand_vals = torch.rand(batch_size, device=obs_b.device)
                 
-                explore_mask = (rand_vals < min_ent) | (rand_vals < eps)
-                if explore_mask.any():
-                    explore_actions = torch.randint(
-                        0,
-                        self.n_action_bins,
-                        (batch_size, self.n_action_dims),
-                        device=obs_b.device,
-                    )
-                    actions = torch.where(
-                        explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask, explore_actions, actions
-                    )
-                if verbose:
-                    print(f"Q-values ext: {q_ext.cpu().numpy()}")
+            if explore_mask.any():
+                explore_actions = torch.randint(
+                    0,
+                    self.n_action_bins,
+                    (batch_size, self.n_action_dims),
+                    device=obs_b.device,
+                )
+                actions = torch.where(
+                    explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask, explore_actions, actions
+                )
+            if verbose:
+                print(f"Q-values ext: {q_ext.cpu().numpy()}")
 
             if is_batched:
                 return actions.tolist()
@@ -694,7 +696,8 @@ class IQNRainbowDQN(RainbowBase):
                 
         update_timings["logging"] += time.time() - t_
         update_timings["total"] += time.time() - t__
-        
+        if self.delayed_target:
+            self.update_target()
         return loss_ext.item()
 
     def _rl_update_extrinsic(self, b_obs, b_actions_idx, b_r_ext, b_next_obs, b_term, batch_size):
@@ -711,35 +714,24 @@ class IQNRainbowDQN(RainbowBase):
             target_taus = self._sample_taus(batch_size, self.n_target_quantiles, device)
 
             online_next_q_norm = self.ext_online.forward(b_next_obs, taus, normalized=True).mean(dim=1)
-            if self.Beta > 0.0:
-                int_taus = self._sample_taus(batch_size, self.n_quantiles, device)
-                online_next_q_int_norm = self.int_online.forward(b_next_obs, int_taus, normalized=True).mean(dim=1)
-                online_next_q_mixed_norm = (1.0 - self.Beta) * online_next_q_norm + self.Beta * online_next_q_int_norm.detach()
-            else:
-                online_next_q_mixed_norm = online_next_q_norm
 
             t_net = self.ext_target if self.delayed_target else self.ext_online
             target_quantiles_all = t_net.forward(b_next_obs, target_taus, normalized=False)
 
             q_ext_norm_now = self.ext_online.forward(b_obs, taus, normalized=True).mean(dim=1)
-            # if self.Beta > 0.0:
-            #     q_int_norm_now = self.int_online.forward(b_obs, taus, normalized=True).mean(dim=1)
-            #     q_mixed_now = (1.0 - self.Beta) * q_ext_norm_now + self.Beta * q_int_norm_now.detach()
-            # else:
-            #     q_mixed_now = q_ext_norm_now
 
             logpi_now = torch.clamp(torch.log_softmax(q_ext_norm_now / self.tau, dim=-1), min=-1e8)
 
             m_r = 0.0
             if self.munchausen or self.soft:
-                logpi_next = torch.clamp(torch.log_softmax(online_next_q_mixed_norm / self.tau, dim=-1), min=-1e8)
+                logpi_next = torch.clamp(torch.log_softmax(online_next_q_norm / self.tau, dim=-1), min=-1e8)
                 pi_next = torch.exp(logpi_next)
                 ent_bonus_per_dim = -(pi_next * logpi_next).sum(dim=-1)
                 ent_bonus = ent_bonus_per_dim.sum(dim=-1).unsqueeze(1) # [B, 1]
                 
                 mixed_target = (pi_next.unsqueeze(1) * target_quantiles_all).sum(dim=-1).sum(dim=-1) # [B, Nt]
             else:
-                target_actions = online_next_q_mixed_norm.argmax(dim=-1)
+                target_actions = online_next_q_norm.argmax(dim=-1)
                 action_idx = target_actions.unsqueeze(1).unsqueeze(-1).expand(-1, self.n_target_quantiles, -1, 1)
                 mixed_target = torch.gather(target_quantiles_all, 3, action_idx).squeeze(-1).sum(dim=-1)
                 ent_bonus = 0.0
@@ -804,10 +796,8 @@ class IQNRainbowDQN(RainbowBase):
             int_taus = self._sample_taus(batch_size, self.n_quantiles, device)
             int_target_taus = self._sample_taus(batch_size, self.n_target_quantiles, device)
 
-            online_next_q_norm = self.ext_online.forward(b_next_obs, int_taus, normalized=True).mean(dim=1)
             online_next_q_int_norm = self.int_online.forward(b_next_obs, int_taus, normalized=True).mean(dim=1)
-            online_next_q_mixed_norm = (1.0 - self.Beta) * online_next_q_norm + self.Beta * online_next_q_int_norm.detach()
-            target_actions = online_next_q_mixed_norm.argmax(dim=-1)
+            target_actions = online_next_q_int_norm.argmax(dim=-1)
 
             t_net_int = self.int_target if self.delayed_target else self.int_online
             int_target_all = t_net_int.forward(b_next_obs, int_target_taus, normalized=False) # [B, Nt, D, Bins]
@@ -852,6 +842,7 @@ class IQNRainbowDQN(RainbowBase):
         step: int,
         n_steps: int = 100000,
         min_eps=0.01,
+        verbose: bool = False,
     ):
         self.last_eps = eps
         is_batched = obs.ndim > 1
@@ -862,37 +853,35 @@ class IQNRainbowDQN(RainbowBase):
             taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
             ext_q = self.ext_online(obs_b, taus, normalized=True).mean(dim=1)  # [B,D,Bins]
 
-            if self.Thompson:
-                eps_val = 1e-6
-                rand_vals = torch.clamp(
-                    torch.rand_like(ext_q), min=eps_val, max=1.0 - eps_val
-                )
-                g = -torch.log(-torch.log(rand_vals))
-                ext_q = ext_q + g
+            rand_vals = torch.rand(batch_size, device=obs_b.device)
+            explore_mask = (rand_vals < min_eps) | (rand_vals < eps)
+
+            if self.Beta > 0.0:
+                int_taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
+                int_q = self.int_online(obs_b, int_taus, normalized=True).mean(dim=1)
+                ext_q = (1.0 - self.Beta) * ext_q + self.Beta * int_q
 
             if self.soft or self.munchausen:
                 logits = ext_q / self.tau
                 actions = torch.distributions.Categorical(logits=logits).sample()  # [B,D]
+                if verbose:
+                    print(f"Logits: {logits.cpu().numpy()}")
             else:
-                if self.Beta > 0.0:
-                    int_taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
-                    int_q = self.int_online(obs_b, int_taus, normalized=True).mean(dim=1)
-                    ext_q = (1.0 - self.Beta) * ext_q + self.Beta * int_q
-
                 actions = torch.argmax(ext_q, dim=-1)  # [B,D]
-                rand_vals = torch.rand(batch_size, device=obs_b.device)
                 
-                explore_mask = (rand_vals < min_eps) | (rand_vals < eps)
-                if explore_mask.any():
-                    explore_actions = torch.randint(
-                        0,
-                        self.n_action_bins,
-                        (batch_size, self.n_action_dims),
-                        device=obs_b.device,
-                    )
-                    actions = torch.where(
-                        explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask, explore_actions, actions
-                    )
+            if explore_mask.any():
+                explore_actions = torch.randint(
+                    0,
+                    self.n_action_bins,
+                    (batch_size, self.n_action_dims),
+                    device=obs_b.device,
+                )
+                actions = torch.where(
+                    explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask, explore_actions, actions
+                )
+
+            if verbose:
+                print(f"Q-values ext: {ext_q.cpu().numpy()}")
 
             if is_batched:
                 return actions.tolist()

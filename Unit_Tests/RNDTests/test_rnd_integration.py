@@ -36,7 +36,7 @@ class NChainEnv(gym.Env):
         self.steps += 1
         reward = 0.0
         
-        if action == 0:  # Forward
+        if action == 1:  # Forward
             if self.state < self.n - 1:
                 self.state += 1
             if self.state == self.n - 1:
@@ -201,10 +201,11 @@ def train_ppo(use_rnd=False):
     envs = MockEnvPPO((7,), ())
     agent = PPOAgent(
         envs=envs,
-        Beta=1.0 if use_rnd else 0.0,
+        Beta=50.0 if use_rnd else 0.0,
         learning_rate=1e-3,
         num_envs=1,
-        ent_coef=0.1
+        ent_coef=0.1,
+        beta_half_life_steps=2500,
     )
     
     returns = []

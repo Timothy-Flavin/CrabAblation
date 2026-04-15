@@ -21,6 +21,10 @@ def train_dqn_metrics(use_rnd=False):
         beta_half_life_steps=2500,
         dueling=False,
         delayed=True,
+        soft=True,
+        tau=0.03,
+        alpha=0.9,
+        munchausen=False,
     )
     
     metrics = {
@@ -70,7 +74,7 @@ def train_dqn_metrics(use_rnd=False):
                 batch_size=1,
                 step=1
             )
-            agent.update_target()
+            #agent.update_target()
             
             if hasattr(agent, 'last_losses') and agent.last_losses is not None:
                 metrics['extrinsic_loss'].append(agent.last_losses.get('extrinsic', 0.0))
