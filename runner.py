@@ -80,11 +80,11 @@ def get_args():
     parser.add_argument("--buffer_size", type=int, default=20000)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
-    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--learning_starts", type=int, default=0)
     parser.add_argument("--policy_lr", type=float, default=3e-4)
     parser.add_argument("--q_lr", type=float, default=1e-3)
-    parser.add_argument("--policy_frequency", type=int, default=2)
+    parser.add_argument("--policy_frequency", type=int, default=4)
     parser.add_argument("--target_network_frequency", type=int, default=1)
     parser.add_argument("--alpha", type=float, default=0.2)
     parser.add_argument("--autotune", action="store_true", default=True)
@@ -99,7 +99,7 @@ def get_args():
 
     args = parser.parse_args()
 
-    if args.algo == "sac" and args.update_every == 4:
+    if args.algo == "sac":
         args.update_every = 4
 
     if args.env_name == "mujoco" and args.total_steps == 1000000:
@@ -326,7 +326,7 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         "popart": True,
         "delayed_critics": True,
         "munchausen": True,   # ablation 1 removes this
-        "Beta": 0.01,         # ablation 3 sets this to 0.0
+        "Beta": 0.5,         # ablation 3 sets this to 0.0
     }
 
     if args.ablation == 1:

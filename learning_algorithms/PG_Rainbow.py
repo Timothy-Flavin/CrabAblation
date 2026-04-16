@@ -163,6 +163,7 @@ class BasePPOAgent(Agent):
         self.target_kl = target_kl
         self.update_epochs = update_epochs
         self.num_minibatches = num_minibatches
+        self.timing = {}
 
         self.popart = popart
         self.Beta = Beta

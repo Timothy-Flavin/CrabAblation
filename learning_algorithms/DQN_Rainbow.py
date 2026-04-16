@@ -64,7 +64,7 @@ class RainbowBase(Agent):
             self.obs_ndim = len(self.input_dim)
         else:
             raise TypeError(f"Unsupported input_dim type: {type(self.input_dim)}. Expected int or array-like.")
-        
+        self.timing = {}
         self.n_action_dims = n_action_dims
         self.n_action_bins = n_action_bins
         self.n_actions = n_action_dims * n_action_bins

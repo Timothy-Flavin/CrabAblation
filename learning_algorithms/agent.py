@@ -13,6 +13,7 @@ class Agent(ABC):
         self.tb_writer: SummaryWriter | None = None
         self.tb_prefix: str = "agent"
         self.last_losses: dict[str, Any] = {}
+        self.timing: dict[str, float] = {}
 
     @abstractmethod
     def to(self, device) -> Any:

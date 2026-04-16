@@ -241,6 +241,7 @@ class BaseSAC(Agent):
         super().__init__()
         self.device = torch.device(device)
         self.buffer_device = torch.device(buffer_device)
+        self.timing = {}
 
         self.gamma = gamma
         self.tau = tau
@@ -335,7 +336,6 @@ class BaseSAC(Agent):
             self.alpha = 0.0 if self.entropy_coef_zero else alpha
 
         self.step = 0
-        self.timing = {}
 
         # Munchausen KL penalty
         self.munchausen = munchausen
@@ -419,7 +419,6 @@ class BaseSAC(Agent):
 
     @torch.no_grad()
     def sample_action(self, obs, deterministic: bool = False):
-        t0 = time.time()
         actor_device = self.actor.device
         if isinstance(obs, np.ndarray):
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=actor_device)
@@ -439,13 +438,11 @@ class BaseSAC(Agent):
             action, _, _ = self.actor.get_action(obs_t)
 
         action_np = action.detach().cpu().numpy()
-        self.timing["action sampling"] = self.timing.get("action sampling", 0.0) + (time.time() - t0)
         if single:
             return action_np[0]
         return action_np
 
     def observe(self, obs, action, reward, next_obs, terminated, truncated, info=None):
-        t0 = time.time()
         if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
             if isinstance(next_obs, np.ndarray):
                 b_next_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=self.buffer_device)
@@ -460,7 +457,6 @@ class BaseSAC(Agent):
         self.buffer.add(
             obs, next_obs, action, reward, terminated, truncated
         )
-        self.timing["observe"] = self.timing.get("observe", 0.0) + (time.time() - t0)
 
     def _critic_input(self, obs: torch.Tensor, act: torch.Tensor):
         return torch.cat([obs, act.to(dtype=obs.dtype)], dim=1)
@@ -486,7 +482,6 @@ class BaseSAC(Agent):
         terminations = data.terminations.flatten()
         rnd_loss_val = 0.0
         
-        t0 = time.time()
         if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
             with torch.no_grad():
                 norm_next_obs = self.obs_rms.normalize(
@@ -505,9 +500,7 @@ class BaseSAC(Agent):
                 int_r = torch.clamp(int_r, -5.0, 5.0).squeeze()
         else:
             int_r = torch.zeros(data.rewards.shape[0], dtype=torch.float32, device=data.rewards.device)
-        self.timing["updating the random network distilation (rnd)"] = self.timing.get("updating the random network distilation (rnd)", 0.0) + (time.time() - t0)
 
-        t0 = time.time()
         m_r_val = 0.0
         if self.munchausen:
             with torch.no_grad():
@@ -538,17 +531,13 @@ class BaseSAC(Agent):
             self.qf2.output_layer.update_stats(next_q)
             self.qf1_int.output_layer.update_stats(next_q_int)
             self.qf2_int.output_layer.update_stats(next_q_int)
-        self.timing["getting q ext q int and targets for q ext and q int"] = self.timing.get("getting q ext q int and targets for q ext and q int", 0.0) + (time.time() - t0)
 
-        t0 = time.time()
         critic_input = self._critic_input(data.observations, data.actions)
         
         qf1_loss, qf2_loss, qf1_int_loss, qf2_int_loss, critic_logs = self._compute_critic_losses(
             critic_input, next_q, next_q_int
         )
-        self.timing["_compute_critic_losses"] = self.timing.get("_compute_critic_losses", 0.0) + (time.time() - t0)
         
-        t0 = time.time()
         qf_loss = qf1_loss + qf2_loss
         self.q_optimizer.zero_grad()
         qf_loss.backward()
@@ -558,32 +547,25 @@ class BaseSAC(Agent):
         self.q_int_optimizer.zero_grad()
         qf_int_loss.backward()
         self.q_int_optimizer.step()
-        self.timing["critic backprop"] = self.timing.get("critic backprop", 0.0) + (time.time() - t0)
 
         actor_loss = None
         alpha_loss = None
         min_qf_pi = None
         min_qf_pi_int = None
 
-        t0 = time.time()
         if global_step % self.policy_frequency == 0:
             for _ in range(self.policy_frequency):
-                t1 = time.time()
                 pi, log_pi, _ = self.actor.get_action(data.observations)
                 pi_critic_input = self._critic_input(data.observations, pi)
                 
                 min_qf_pi, min_qf_pi_int = self._get_actor_q_values(pi_critic_input)
                 
                 actor_loss = ((self.alpha * log_pi) - ((1.0 - self.Beta) * min_qf_pi + self.Beta * min_qf_pi_int)).mean()
-                self.timing["actor forward and loss"] = self.timing.get("actor forward and loss", 0.0) + (time.time() - t1)
 
-                t1 = time.time()
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
                 self.actor_optimizer.step()
-                self.timing["actor backprop"] = self.timing.get("actor backprop", 0.0) + (time.time() - t1)
 
-                t1 = time.time()
                 if self.autotune and self.log_alpha is not None and self.a_optimizer is not None:
                     with torch.no_grad():
                         _, log_pi, _ = self.actor.get_action(data.observations)
@@ -593,14 +575,9 @@ class BaseSAC(Agent):
                     alpha_loss.backward()
                     self.a_optimizer.step()
                     self.alpha = self.log_alpha.exp().item()
-                self.timing["alpha loss and backprop"] = self.timing.get("alpha loss and backprop", 0.0) + (time.time() - t1)
-        
-        self.timing["final loss calculation and backward()"] = self.timing.get("final loss calculation and backward()", 0.0) + (time.time() - t0)
 
-        t0 = time.time()
         if global_step % self.target_network_frequency == 0:
             self.update_target()
-        self.timing["update target"] = self.timing.get("update target", 0.0) + (time.time() - t0)
 
         self.step = global_step
         self.last_losses = {

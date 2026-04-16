@@ -12,3 +12,4 @@ all_results
 
 # Consolidated results
 all_results/
+timing_*.json
