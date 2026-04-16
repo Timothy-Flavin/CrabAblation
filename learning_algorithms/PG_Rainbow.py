@@ -320,10 +320,13 @@ class BasePPOAgent(Agent):
                     ext_advantages[t] = lastgaelam_ext = delta_ext + self.gamma * nextnonterminal * lastgaelam_ext
                     int_advantages[t] = lastgaelam_int = delta_int + self.gamma * nextnonterminal * lastgaelam_int
 
+            assert ext_advantages.shape == ext_values.shape, f"Shape mismatch: {ext_advantages.shape}, {ext_values.shape}"
+            assert int_advantages.shape == int_values.shape, f"Shape mismatch: {int_advantages.shape}, {int_values.shape}"
             ext_returns = ext_advantages + ext_values
             int_returns = int_advantages + int_values
 
             sigma_ext, sigma_int = self._get_advantages_scaling()
+            assert ext_advantages.shape == int_advantages.shape, f"Shape mismatch: {ext_advantages.shape}, {int_advantages.shape}"
             combined_advantages = (ext_advantages / sigma_ext) + self.Beta * (int_advantages / sigma_int)
 
         # Batch Flattening
@@ -366,6 +369,8 @@ class BasePPOAgent(Agent):
                 mb_advantages = b_combined_advantages[mb_inds]
                 if self.norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std(unbiased=False) + 1e-8)
+
+                assert mb_advantages.shape == ratio.shape, f"Shape mismatch: mb_advantages {mb_advantages.shape}, ratio {ratio.shape}"
 
                 # Policy Loss
                 pg_loss1 = -mb_advantages * ratio
@@ -482,6 +487,8 @@ class StandardPPOAgent(BasePPOAgent):
         norm_ext_returns = self.ext_critic_head.normalize(b_ext_returns[mb_inds].unsqueeze(1)).view(-1) if self.popart else b_ext_returns[mb_inds]
         norm_ext_value = self.ext_critic(b_obs[mb_inds], normalized=True).view(-1) if self.popart else new_ext_value.view(-1)
         
+        assert norm_ext_value.shape == norm_ext_returns.shape, f"Shape mismatch: norm_ext_value {norm_ext_value.shape}, norm_ext_returns {norm_ext_returns.shape}"
+
         if self.clip_vloss:
             norm_old_ext_values = self.ext_critic_head.normalize(b_ext_values[mb_inds].unsqueeze(1)).view(-1) if self.popart else b_ext_values[mb_inds]
             v_clipped = norm_old_ext_values + torch.clamp(norm_ext_value - norm_old_ext_values, -self.clip_coef, self.clip_coef)
@@ -492,6 +499,8 @@ class StandardPPOAgent(BasePPOAgent):
         # Intrinsic
         norm_int_returns = self.int_critic_head.normalize(b_int_returns[mb_inds].unsqueeze(1)).view(-1) if self.popart else b_int_returns[mb_inds]
         norm_int_value = self.int_critic(b_obs[mb_inds], normalized=True).view(-1) if self.popart else new_int_value.view(-1)
+
+        assert norm_int_value.shape == norm_int_returns.shape, f"Shape mismatch: norm_int_value {norm_int_value.shape}, norm_int_returns {norm_int_returns.shape}"
 
         if self.clip_vloss:
             norm_old_int_values = self.int_critic_head.normalize(b_int_values[mb_inds].unsqueeze(1)).view(-1) if self.popart else b_int_values[mb_inds]
@@ -552,10 +561,14 @@ class DistributionalPPOAgent(BasePPOAgent):
 
         ext_taus = torch.rand(len(mb_inds), self.n_quantiles, device=device)
         ext_quantiles_norm = self.ext_critic(b_obs[mb_inds], ext_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
+        
+        assert ext_quantiles_norm.shape[0] == norm_ext_returns.shape[0], f"Shape mismatch: ext_quantiles {ext_quantiles_norm.shape}, returns {norm_ext_returns.shape}"
         v_loss_ext = self._quantile_huber_loss(ext_quantiles_norm, norm_ext_returns, ext_taus)
 
         int_taus = torch.rand(len(mb_inds), self.n_quantiles, device=device)
         int_quantiles_norm = self.int_critic(b_obs[mb_inds], int_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
+        
+        assert int_quantiles_norm.shape[0] == norm_int_returns.shape[0], f"Shape mismatch: int_quantiles {int_quantiles_norm.shape}, returns {norm_int_returns.shape}"
         v_loss_int = self._quantile_huber_loss(int_quantiles_norm, norm_int_returns, int_taus)
 
         return v_loss_ext, v_loss_int

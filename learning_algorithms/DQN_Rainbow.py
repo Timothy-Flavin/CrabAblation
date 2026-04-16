@@ -448,6 +448,7 @@ class EVRainbowDQN(RainbowBase):
                 r_kl = torch.clamp(selected_logpi, min=self.l_clip)
                 if r_kl.ndim > 1:
                     r_kl = r_kl.sum(-1)
+                assert b_r_ext.ndim == r_kl.ndim
                 b_r_ext += current_sigma * self.alpha * self.tau * r_kl 
 
             # Next value with entropy and weighted sum over q values
@@ -457,18 +458,17 @@ class EVRainbowDQN(RainbowBase):
                 )
                 pi_next = torch.exp(logpi_next)
                 next_head_vals = (pi_next * (current_sigma * self.alpha * logpi_next + q_next_target_raw)).sum(-1)
-                print(f"soft {q_next_target_raw.shape}")
             # Next value with no entropy or weighted sum, using argmax policy
             else:
-                print(f"{q_next_target_raw.shape}")
                 target_actions_next = q_next_online_norm.argmax(dim=-1, keepdim=True).detach()
                 next_head_vals = torch.gather(q_next_target_raw, -1, target_actions_next).squeeze(-1)
             # vdn sum the vals 
             if next_head_vals.ndim>1:
                 next_head_vals=next_head_vals.sum(-1)
-            print(f"br {b_r_ext.view(-1).shape}, term {b_term.view(-1).shape} nhv {next_head_vals.shape}")
+            assert b_r_ext.shape == b_term.shape == next_head_vals.shape, \
+                f"Shape mismatch: {b_r_ext.shape}, {b_term.shape}, {next_head_vals.shape}"
             online_ext_target = b_r_ext.view(-1) + self.gamma * (1 - b_term).view(-1) * next_head_vals
-            input("why")
+        
         target_for_stats_ext = online_ext_target.detach() # maintain [B, D]
         self.ext_online.output_layer.update_stats(target_for_stats_ext)
         if self.delayed_target:
@@ -479,6 +479,8 @@ class EVRainbowDQN(RainbowBase):
         q_selected_norm = torch.gather(q_ext_now_norm, -1, b_actions_idx).squeeze(-1) # [B, D]
         if q_selected_norm.ndim>1:
             q_selected_norm=q_selected_norm.sum(-1)
+        assert q_selected_norm.shape == td_target_norm.shape, \
+            f"Shape mismatch: q_selected_norm {q_selected_norm.shape}, td_target_norm {td_target_norm.shape}"
         extrinsic_loss = torch.nn.functional.mse_loss(q_selected_norm, td_target_norm)
         
         if self.ent_reg_coef > 0.0:
@@ -515,6 +517,8 @@ class EVRainbowDQN(RainbowBase):
             int_q_next_target = torch.gather(int_q_next, -1, next_int_actions).squeeze(-1)
             if int_q_next_target.ndim>1:
                 int_q_next_target=int_q_next_target.sum(-1)
+            assert b_r_int.view(-1).shape == int_q_next_target.shape, \
+                f"Shape mismatch: b_r_int {b_r_int.view(-1).shape}, int_q_next_target {int_q_next_target.shape}"
             int_td_target = b_r_int.view(-1) + self.gamma * int_q_next_target
 
         target_for_stats_int = int_td_target.detach()
@@ -528,6 +532,8 @@ class EVRainbowDQN(RainbowBase):
         int_q_selected_norm = torch.gather(int_q_now_norm, -1, b_actions_idx).squeeze(-1)
         if int_q_selected_norm.ndim>1:
             int_q_selected_norm=int_q_selected_norm.sum(-1)
+        assert int_q_selected_norm.shape == int_td_target_norm.shape, \
+            f"Shape mismatch: int_q_selected_norm {int_q_selected_norm.shape}, int_td_target_norm {int_td_target_norm.shape}"
         intrinsic_loss = torch.nn.functional.mse_loss(
             int_q_selected_norm, int_td_target_norm
         )
@@ -774,23 +780,37 @@ class IQNRainbowDQN(RainbowBase):
                 logpi_next = torch.clamp(torch.log_softmax(online_next_q_norm / self.tau, dim=-1), min=-1e8)
                 pi_next = torch.exp(logpi_next)
                 # Entropy bonus: sum over D
-                ent_bonus = -(pi_next * logpi_next).sum(dim=-1).sum(dim=-1).unsqueeze(1) # [B, 1]
+                ent_bonus = -(pi_next * logpi_next).sum(dim=-1) # sum over bins
+                if ent_bonus.ndim > 1:
+                    ent_bonus = ent_bonus.sum(dim=-1).unsqueeze(1) # sum over D, then [B, 1]
+                else:
+                    ent_bonus = ent_bonus.unsqueeze(1)
                 # Mixed target values
-                mixed_target = (pi_next.unsqueeze(1) * target_quantiles_all).sum(dim=-1).sum(dim=-1) # [B, Nt]
+                mixed_target = (pi_next.unsqueeze(1) * target_quantiles_all).sum(dim=-1) # sum over bins -> [B, Nt, D]
+                if mixed_target.ndim > 2:
+                    mixed_target = mixed_target.sum(dim=-1) # sum over D -> [B, Nt]
             else:
                 target_actions = online_next_q_norm.argmax(dim=-1)
                 action_idx = target_actions.unsqueeze(1).unsqueeze(-1).expand(-1, self.n_target_quantiles, -1, 1)
-                mixed_target = torch.gather(target_quantiles_all, -1, action_idx).squeeze(-1).sum(dim=-1) # [B, Nt]
+                mixed_target = torch.gather(target_quantiles_all, -1, action_idx).squeeze(-1) # [B, Nt, D]
+                if mixed_target.ndim > 2:
+                    mixed_target = mixed_target.sum(dim=-1) # sum over D -> [B, Nt]
 
             if self.munchausen:
                 q_ext_norm_now = self.ext_online(b_obs, taus, normalized=True).mean(dim=1)
                 logpi_now = torch.clamp(torch.log_softmax(q_ext_norm_now / self.tau, dim=-1), min=-1e8)
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(-1)
-                r_kl = torch.clamp(selected_logpi.sum(dim=-1), min=self.l_clip)
+                
+                # sum r_kl over D if needed
+                r_kl = torch.clamp(selected_logpi, min=self.l_clip)
+                if r_kl.ndim > 1:
+                    r_kl = r_kl.sum(dim=-1)
                 m_r = current_sigma * self.alpha * self.tau * r_kl
 
             b_r_final = b_r_ext + m_r
             # Target Q-distribution
+            assert b_r_final.shape == b_term.shape, \
+                f"Shape mismatch: b_r_final {b_r_final.shape}, b_term {b_term.shape}"
             target_values = b_r_final.unsqueeze(1) + (1 - b_term).unsqueeze(1) * self.gamma * (mixed_target + current_sigma * ent_bonus)
 
         # Apply PopArt stats tracking over target distributions
@@ -805,7 +825,11 @@ class IQNRainbowDQN(RainbowBase):
         quantiles_pred = self.ext_online(b_obs, taus_pred, normalized=True) # [B, N, D, Bins]
 
         gather_index_pred = b_actions_idx.unsqueeze(1).expand(-1, self.n_quantiles, -1, 1)
-        pred_chosen = torch.gather(quantiles_pred, -1, gather_index_pred).squeeze(-1).sum(dim=-1) # [B, N]
+        pred_chosen = torch.gather(quantiles_pred, -1, gather_index_pred).squeeze(-1) # [B, N, D]
+        if pred_chosen.ndim > 2:
+            pred_chosen = pred_chosen.sum(dim=-1) # [B, N]
+        assert pred_chosen.shape[0] == target_values_norm.shape[0] and pred_chosen.ndim == target_values_norm.ndim == 2, \
+            f"Shape mismatch: pred_chosen {pred_chosen.shape}, target_values_norm {target_values_norm.shape}"
 
         extrinsic_loss = self._quantile_huber_loss(pred_chosen, target_values_norm, taus_pred)
 
@@ -838,9 +862,13 @@ class IQNRainbowDQN(RainbowBase):
                 int_target_all = t_net_int(b_next_obs, int_target_taus, normalized=False)
 
                 action_idx_int = target_actions_int.unsqueeze(1).unsqueeze(-1).expand(-1, self.n_target_quantiles, -1, 1)
-                mixed_target_int = torch.gather(int_target_all, -1, action_idx_int).squeeze(-1).sum(dim=-1)
+                mixed_target_int = torch.gather(int_target_all, -1, action_idx_int).squeeze(-1) # [B, Nt, D]
+                if mixed_target_int.ndim > 2:
+                    mixed_target_int = mixed_target_int.sum(dim=-1) # [B, Nt]
                 
                 # No terminal mask for intrinsic reward
+                assert b_r_int.unsqueeze(1).shape[0] == mixed_target_int.shape[0], \
+                    f"Shape mismatch: b_r_int {b_r_int.unsqueeze(1).shape}, mixed_target_int {mixed_target_int.shape}"
                 int_target_values = b_r_int.unsqueeze(1) + self.gamma * mixed_target_int
 
             self.int_online.output_layer.update_stats(int_target_values.detach())
@@ -853,7 +881,12 @@ class IQNRainbowDQN(RainbowBase):
             int_quantiles = self.int_online(b_obs, int_taus_pred, normalized=True)
             
             gather_index_int_pred = b_actions_idx.unsqueeze(1).expand(-1, self.n_quantiles, -1, 1)
-            int_pred_chosen = torch.gather(int_quantiles, -1, gather_index_int_pred).squeeze(-1).sum(dim=-1)
+            int_pred_chosen = torch.gather(int_quantiles, -1, gather_index_int_pred).squeeze(-1) # [B, N, D]
+            if int_pred_chosen.ndim > 2:
+                int_pred_chosen = int_pred_chosen.sum(dim=-1) # [B, N]
+                
+            assert int_pred_chosen.shape[0] == int_target_values_norm.shape[0] and int_pred_chosen.ndim == int_target_values_norm.ndim == 2, \
+                f"Shape mismatch: int_pred_chosen {int_pred_chosen.shape}, int_target_values_norm {int_target_values_norm.shape}"
 
             intrinsic_loss = self._quantile_huber_loss(int_pred_chosen, int_target_values_norm, int_taus_pred)
 
