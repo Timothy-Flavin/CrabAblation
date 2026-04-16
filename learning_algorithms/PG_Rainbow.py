@@ -106,7 +106,21 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 
-class PPOAgent(Agent):
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import gymnasium as gym
+from torch.distributions.categorical import Categorical
+from typing import Callable, Optional
+
+# Assuming layer_init, PopArtLayer, RNDModel, RunningMeanStd, infer_encoder_out_dim, IQN_Network, Agent are imported
+
+class BasePPOAgent(Agent):
+    """
+    Master Base Class containing all shared PPO, RND, and GAE logic.
+    Subclasses only need to implement network building and value-loss specifics.
+    """
     def __init__(
         self,
         envs,
@@ -126,7 +140,6 @@ class PPOAgent(Agent):
         num_steps: int = 128,
         hidden_layer_sizes: tuple[int, int] = (64, 64),
         anneal_lr=False,
-        distributional: bool = False,
         popart: bool = True,
         Beta: float = 0.0,
         beta_half_life_steps=None,
@@ -151,8 +164,6 @@ class PPOAgent(Agent):
         self.update_epochs = update_epochs
         self.num_minibatches = num_minibatches
 
-        self.distributional = distributional
-        self.n_quantiles = 32
         self.popart = popart
         self.Beta = Beta
         self.start_Beta = Beta
@@ -170,153 +181,55 @@ class PPOAgent(Agent):
         self.batch_size = int(num_envs * num_steps)
         self.minibatch_size = int(self.batch_size // self.num_minibatches)
         self.num_steps = num_steps
-        hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
+        self.input_dim = np.array(self.obs_shape).prod()
 
-        input_dim = np.array(self.obs_shape).prod()
-        if encoder_factory is None:
-            self.actor = nn.Sequential(
-                layer_init(nn.Linear(input_dim, hidden1)),
-                nn.Tanh(),
-                layer_init(nn.Linear(hidden1, hidden2)),
-                nn.Tanh(),
-                layer_init(
-                    nn.Linear(hidden2, self.n_action_dims * self.n_action_bins),
-                    std=0.01,
-                ),
-            )
-        else:
-            actor_encoder = encoder_factory()
-            actor_out_dim = infer_encoder_out_dim(actor_encoder, int(input_dim))
-            self.actor = nn.Sequential(
-                actor_encoder,
-                layer_init(
-                    nn.Linear(actor_out_dim, self.n_action_dims * self.n_action_bins),
-                    std=0.01,
-                ),
-            )
+        # 1. Setup Shared Actor
+        self._build_actor(encoder_factory, hidden_layer_sizes)
 
-        if self.distributional:
-            ext_critic_kwargs = {}
-            int_critic_kwargs = {}
-            if encoder_factory is not None:
-                ext_encoder = encoder_factory()
-                int_encoder = encoder_factory()
-                ext_critic_kwargs = {
-                    "encoder": ext_encoder,
-                    "encoder_out_dim": infer_encoder_out_dim(
-                        ext_encoder, int(input_dim)
-                    ),
-                }
-                int_critic_kwargs = {
-                    "encoder": int_encoder,
-                    "encoder_out_dim": infer_encoder_out_dim(
-                        int_encoder, int(input_dim)
-                    ),
-                }
+        # 2. Setup Specific Critics (Implemented by Subclass)
+        self._build_critics(encoder_factory, hidden_layer_sizes)
 
-            self.ext_critic = IQN_Network(
-                input_dim=input_dim,
-                n_action_dims=1,
-                n_action_bins=1,
-                hidden_layer_sizes=[hidden1, hidden2],
-                dueling=False,
-                popart=self.popart,
-                **ext_critic_kwargs,
-            )
-            self.int_critic = IQN_Network(
-                input_dim=input_dim,
-                n_action_dims=1,
-                n_action_bins=1,
-                hidden_layer_sizes=[hidden1, hidden2],
-                dueling=False,
-                popart=self.popart,
-                **int_critic_kwargs,
-            )
-        else:
-            if encoder_factory is None:
-                self.ext_critic_base = nn.Sequential(
-                    layer_init(nn.Linear(input_dim, hidden1)),
-                    nn.Tanh(),
-                    layer_init(nn.Linear(hidden1, hidden2)),
-                    nn.Tanh(),
-                )
-                self.int_critic_base = nn.Sequential(
-                    layer_init(nn.Linear(input_dim, hidden1)),
-                    nn.Tanh(),
-                    layer_init(nn.Linear(hidden1, hidden2)),
-                    nn.Tanh(),
-                )
-            else:
-                ext_encoder = encoder_factory()
-                int_encoder = encoder_factory()
-                ext_out_dim = infer_encoder_out_dim(ext_encoder, int(input_dim))
-                int_out_dim = infer_encoder_out_dim(int_encoder, int(input_dim))
-                self.ext_critic_base = ext_encoder
-                self.int_critic_base = int_encoder
-
-            if self.popart:
-                self.ext_critic_head = PopArtLayer(hidden2 if encoder_factory is None else ext_out_dim, 1)
-                self.int_critic_head = PopArtLayer(hidden2 if encoder_factory is None else int_out_dim, 1)
-            else:
-                self.ext_critic_head = layer_init(nn.Linear(hidden2 if encoder_factory is None else ext_out_dim, 1), std=1.0)
-                self.int_critic_head = layer_init(nn.Linear(hidden2 if encoder_factory is None else int_out_dim, 1), std=1.0)
-
-            # Helper functions to act like a single module for your get_actions method
-            def ext_critic_forward(x, normalized=False):
-                base_out = self.ext_critic_base(x)
-                if self.popart:
-                    return self.ext_critic_head(base_out, normalized=normalized)
-                return self.ext_critic_head(base_out)
-
-            def int_critic_forward(x, normalized=False):
-                base_out = self.int_critic_base(x)
-                if self.popart:
-                    return self.int_critic_head(base_out, normalized=normalized)
-                return self.int_critic_head(base_out)
-
-            self.ext_critic = ext_critic_forward
-            self.int_critic = int_critic_forward
-
-        self.rnd = RNDModel(input_dim, rnd_output_dim)
+        # 3. Setup RND and RMS (Shared)
+        self.rnd = RNDModel(self.input_dim, rnd_output_dim)
         self.obs_rms = RunningMeanStd(shape=self.obs_shape)
         self.int_rms = RunningMeanStd(shape=())
         self.ext_rms = RunningMeanStd(shape=())
 
-        if self.distributional:
-            self.optimizer = optim.Adam(
-                list(self.actor.parameters()) + list(self.ext_critic.parameters()),
-                lr=learning_rate, eps=1e-5,
-            )
-            self.int_optim = optim.Adam(
-                self.int_critic.parameters(), lr=intrinsic_lr, eps=1e-5
+        # 4. Setup Optimizers
+        self.optimizer = optim.Adam(
+            list(self.actor.parameters()) + self._get_ext_critic_params(),
+            lr=learning_rate, eps=1e-5,
+        )
+        self.int_optim = optim.Adam(
+            self._get_int_critic_params(), 
+            lr=intrinsic_lr, eps=1e-5
+        )
+        self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
+        self.step = 0
+
+    def _build_actor(self, encoder_factory, hidden_layer_sizes):
+        hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
+        if encoder_factory is None:
+            self.actor = nn.Sequential(
+                layer_init(nn.Linear(self.input_dim, hidden1)), nn.Tanh(),
+                layer_init(nn.Linear(hidden1, hidden2)), nn.Tanh(),
+                layer_init(nn.Linear(hidden2, self.n_action_dims * self.n_action_bins), std=0.01),
             )
         else:
-            self.optimizer = optim.Adam(
-                list(self.actor.parameters()) + list(self.ext_critic_base.parameters()) + list(self.ext_critic_head.parameters()),
-                lr=learning_rate, eps=1e-5,
+            actor_encoder = encoder_factory()
+            actor_out_dim = infer_encoder_out_dim(actor_encoder, int(self.input_dim))
+            self.actor = nn.Sequential(
+                actor_encoder,
+                layer_init(nn.Linear(actor_out_dim, self.n_action_dims * self.n_action_bins), std=0.01),
             )
-            self.int_optim = optim.Adam(
-                list(self.int_critic_base.parameters()) + list(self.int_critic_head.parameters()), 
-                lr=intrinsic_lr, eps=1e-5
-            )
-        self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
-
-        self.step = 0
 
     def to(self, device):
         self.actor.to(device)
-        if self.distributional:
-            self.ext_critic.to(device)
-            self.int_critic.to(device)
-        else:
-            self.ext_critic_base.to(device)
-            self.ext_critic_head.to(device)
-            self.int_critic_base.to(device)
-            self.int_critic_head.to(device)
         self.rnd.to(device)
         self.obs_rms.to(device)
         self.int_rms.to(device)
         self.ext_rms.to(device)
+        self._critics_to(device)
         return self
 
     def get_action_and_values(self, obs, action=None):
@@ -324,25 +237,16 @@ class PPOAgent(Agent):
         if self.n_action_dims > 1:
             logits = logits.view(-1, self.n_action_dims, self.n_action_bins)
             probs = Categorical(logits=logits)
-            if action is None:
-                action = probs.sample()
-            log_prob = probs.log_prob(action).sum(dim=-1)
-            entropy = probs.entropy().sum(dim=-1)
         else:
             probs = Categorical(logits=logits)
-            if action is None:
-                action = probs.sample()
-            log_prob = probs.log_prob(action)
-            entropy = probs.entropy()
+            
+        if action is None:
+            action = probs.sample()
+            
+        log_prob = probs.log_prob(action).sum(dim=-1) if self.n_action_dims > 1 else probs.log_prob(action)
+        entropy = probs.entropy().sum(dim=-1) if self.n_action_dims > 1 else probs.entropy()
 
-        if self.distributional:
-            taus = torch.rand(obs.shape[0], self.n_quantiles, device=obs.device)
-            ext_v = self.ext_critic(obs, taus).mean(dim=1).view(-1, 1).squeeze(-1)
-            int_v = self.int_critic(obs, taus).mean(dim=1).view(-1, 1).squeeze(-1)
-        else:
-            ext_v = self.ext_critic(obs).squeeze(-1)
-            int_v = self.int_critic(obs).squeeze(-1)
-
+        ext_v, int_v = self._get_values(obs)
         return action, log_prob, entropy, ext_v, int_v
 
     def sample_action(self, obs):
@@ -352,178 +256,77 @@ class PPOAgent(Agent):
 
     @torch.no_grad()
     def update_running_stats(self, next_obs, r=None):
-        # Flatten observations across the batch
         obs_flat = next_obs.view(-1, *self.obs_shape)
         x64 = obs_flat.to(dtype=torch.float64, device=self.obs_rms.mean.device)
         self.obs_rms.update(x64)
-
         norm_x64 = self.obs_rms.normalize(x64)
         rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze().detach()
         self.int_rms.update(rnd_err.to(dtype=torch.float64))
         if r is not None:
             self.ext_rms.update(r.reshape(-1).to(dtype=torch.float64))
 
-    def _quantile_huber_loss(
-        self,
-        pred: torch.Tensor,
-        target: torch.Tensor,
-        taus: torch.Tensor,
-        kappa: float = 1.0,
-    ) -> torch.Tensor:
-        # pred: [B, N], target: [B] or [B, 1]
-        if target.dim() == 1:
-            target = target.unsqueeze(1)  # [B, 1]
-
-        td = target - pred  # [B, 1] - [B, N] -> [B, N]
-        abs_td = torch.abs(td)
-        huber = torch.where(
-            abs_td <= kappa, 0.5 * td.pow(2), kappa * (abs_td - 0.5 * kappa)
-        )
-        I_ = (td < 0).float()
-        loss = (torch.abs(taus - I_) * huber).sum(dim=1).mean()
-        return loss
-
-    def update(
-        self,
-        obs,
-        actions,
-        logprobs,
-        rewards,
-        dones,
-        ext_values,
-        int_values,
-        next_obs,
-        next_done,
-    ):
+    def update(self, obs, actions, logprobs, rewards, dones, ext_values, int_values, next_obs, next_done):
         device = obs.device
         if self.anneal_lr:
-            frac = 1.0 - (self.step - 1.0) / (
-                self.update_epochs * 1000
-            )  # Simple fallback decay
+            frac = 1.0 - (self.step - 1.0) / (self.update_epochs * 1000)
             lrnow = frac * self.optimizer.param_groups[0]["lr"]
             self.optimizer.param_groups[0]["lr"] = lrnow
             self.int_optim.param_groups[0]["lr"] = lrnow
 
         if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
-            self.Beta = self.start_Beta * (
-                0.5 ** (self.step / self.beta_half_life_steps)
-            )
+            self.Beta = self.start_Beta * (0.5 ** (self.step / self.beta_half_life_steps))
 
-        # 1. Update RND running stats and compute intrinsic rewards
+        # --- Shared RND Processing ---
         next_obs_batch = torch.cat([obs[1:], next_obs.unsqueeze(0)], dim=0)
         flat_next_obs = next_obs_batch.reshape(-1, *self.obs_shape)
-
         self.update_running_stats(flat_next_obs, rewards)
 
-        # Normalize observations for RND (without tracking gradients for the normalizer)
         with torch.no_grad():
-            norm_next_obs = self.obs_rms.normalize(flat_next_obs.to(torch.float64)).to(
-                torch.float32
-            )
+            norm_next_obs = self.obs_rms.normalize(flat_next_obs.to(torch.float64)).to(torch.float32)
 
-        # Get RND errors with gradients enabled for training the predictor
         rnd_errors = self.rnd(norm_next_obs)
 
         with torch.no_grad():
             int_rewards_flat = rnd_errors.detach()
-            norm_int_rewards_flat = self.int_rms.scale(
-                int_rewards_flat.to(torch.float64)
-            ).to(torch.float32)
-            int_rewards = norm_int_rewards_flat.view(
-                self.num_steps, self.batch_size // self.num_steps
-            )
+            norm_int_rewards_flat = self.int_rms.scale(int_rewards_flat.to(torch.float64)).to(torch.float32)
+            int_rewards = norm_int_rewards_flat.view(self.num_steps, self.batch_size // self.num_steps)
 
-        # Train RND Predictor
         rnd_loss = rnd_errors.mean()
         self.rnd_optim.zero_grad()
         rnd_loss.backward()
         self.rnd_optim.step()
 
-        # bootstrap value if not done
+        # --- Shared GAE Calculation ---
         with torch.no_grad():
-            if self.distributional:
-                taus_next = torch.rand(
-                    next_obs.shape[0], self.n_quantiles, device=device
-                )
-                next_ext_value = (
-                    self.ext_critic(next_obs, taus_next).mean(dim=1).view(1, -1)
-                )
-                next_int_value = (
-                    self.int_critic(next_obs, taus_next).mean(dim=1).view(1, -1)
-                )
-            else:
-                next_ext_value = self.ext_critic(next_obs).view(1, -1)
-                next_int_value = self.int_critic(next_obs).view(1, -1)
+            next_ext_value, next_int_value = self._get_values(next_obs)
+            next_ext_value, next_int_value = next_ext_value.view(1, -1), next_int_value.view(1, -1)
 
             ext_advantages = torch.zeros_like(rewards).to(device)
             int_advantages = torch.zeros_like(rewards).to(device)
-            lastgaelam_ext = 0
-            lastgaelam_int = 0
+            lastgaelam_ext, lastgaelam_int = 0, 0
 
             for t in reversed(range(self.num_steps)):
-                if t == self.num_steps - 1:
-                    nextnonterminal = 1.0 - next_done
-                    next_ext_values = next_ext_value
-                    next_int_values = next_int_value
-                else:
-                    nextnonterminal = 1.0 - dones[t + 1]
-                    next_ext_values = ext_values[t + 1]
-                    next_int_values = int_values[t + 1]
+                nextnonterminal = 1.0 - next_done if t == self.num_steps - 1 else 1.0 - dones[t + 1]
+                next_ext_values = next_ext_value if t == self.num_steps - 1 else ext_values[t + 1]
+                next_int_values = next_int_value if t == self.num_steps - 1 else int_values[t + 1]
 
-                delta_ext = (
-                    rewards[t]
-                    + self.gamma * next_ext_values * nextnonterminal
-                    - ext_values[t]
-                )
-
-                delta_int = (
-                    int_rewards[t]
-                    + self.gamma * next_int_values
-                    - int_values[t]
-                )
+                delta_ext = rewards[t] + self.gamma * next_ext_values * nextnonterminal - ext_values[t]
+                delta_int = int_rewards[t] + self.gamma * next_int_values - int_values[t]
 
                 if self.use_gae:
-                    ext_advantages[t] = lastgaelam_ext = (
-                        delta_ext
-                        + self.gamma
-                        * self.gae_lambda
-                        * nextnonterminal
-                        * lastgaelam_ext
-                    )
-                    int_advantages[t] = lastgaelam_int = (
-                        delta_int
-                        + self.gamma
-                        * self.gae_lambda
-                        * lastgaelam_int
-                    )
+                    ext_advantages[t] = lastgaelam_ext = delta_ext + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam_ext
+                    int_advantages[t] = lastgaelam_int = delta_int + self.gamma * self.gae_lambda * lastgaelam_int
                 else:
-                    ext_advantages[t] = lastgaelam_ext = (
-                        delta_ext + self.gamma * nextnonterminal * lastgaelam_ext
-                    )
-                    int_advantages[t] = lastgaelam_int = (
-                        delta_int + self.gamma * nextnonterminal * lastgaelam_int
-                    )
+                    ext_advantages[t] = lastgaelam_ext = delta_ext + self.gamma * nextnonterminal * lastgaelam_ext
+                    int_advantages[t] = lastgaelam_int = delta_int + self.gamma * nextnonterminal * lastgaelam_int
 
             ext_returns = ext_advantages + ext_values
             int_returns = int_advantages + int_values
 
-            if self.popart:
-                if self.distributional:
-                    sigma_ext = self.ext_critic.output_layer.sigma.detach()
-                    sigma_int = self.int_critic.output_layer.sigma.detach()
-                else:
-                    sigma_ext = self.ext_critic_head.sigma.detach()
-                    sigma_int = self.int_critic_head.sigma.detach()
-            else:
-                sigma_ext, sigma_int = 1.0, 1.0
+            sigma_ext, sigma_int = self._get_advantages_scaling()
+            combined_advantages = (ext_advantages / sigma_ext) + self.Beta * (int_advantages / sigma_int)
 
-            norm_ext_adv = ext_advantages / sigma_ext
-            norm_int_adv = int_advantages / sigma_int
-
-            # Combine advantages
-            combined_advantages = norm_ext_adv + self.Beta * norm_int_adv
-
-        # flatten the batch
+        # Batch Flattening
         b_obs = obs.reshape((-1,) + self.obs_shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + self.action_shape)
@@ -532,36 +335,24 @@ class PPOAgent(Agent):
         b_int_returns = int_returns.reshape(-1)
         b_ext_values = ext_values.reshape(-1)
         b_int_values = int_values.reshape(-1)
-
         b_inds = np.arange(self.batch_size)
-        clipfracs = []
 
-        pg_loss_total = torch.tensor(0.0)
-        v_loss_ext_total = torch.tensor(0.0)
-        v_loss_int_total = torch.tensor(0.0)
-        entropy_loss_total = torch.tensor(0.0)
-        old_approx_kl = torch.tensor(0.0)
-        approx_kl = torch.tensor(0.0)
+        clipfracs = []
+        pg_loss_total, v_loss_ext_total, v_loss_int_total, entropy_loss_total = 0.0, 0.0, 0.0, 0.0
+        approx_kl, old_approx_kl = 0.0, 0.0
 
         with torch.no_grad():
-            if self.popart:
-                if self.distributional:
-                    self.ext_critic.output_layer.update_stats(b_ext_returns)
-                    self.int_critic.output_layer.update_stats(b_int_returns)
-                else:
-                    self.ext_critic_head.update_stats(b_ext_returns.unsqueeze(1))
-                    self.int_critic_head.update_stats(b_int_returns.unsqueeze(1))
+            self._update_popart_stats(b_ext_returns, b_int_returns)
 
+        # --- Shared Epoch Loop ---
         for epoch in range(self.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, self.batch_size, self.minibatch_size):
                 end = start + self.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, new_ext_value, new_int_value = (
-                    self.get_action_and_values(
-                        b_obs[mb_inds], b_actions.long()[mb_inds]
-                    )
+                _, newlogprob, entropy, new_ext_value, new_int_value = self.get_action_and_values(
+                    b_obs[mb_inds], b_actions.long()[mb_inds]
                 )
 
                 logratio = newlogprob - b_logprobs[mb_inds]
@@ -570,136 +361,42 @@ class PPOAgent(Agent):
                 with torch.no_grad():
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [
-                        ((ratio - 1.0).abs() > self.clip_coef).float().mean().item()
-                    ]
+                    clipfracs += [((ratio - 1.0).abs() > self.clip_coef).float().mean().item()]
 
                 mb_advantages = b_combined_advantages[mb_inds]
                 if self.norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (
-                        mb_advantages.std(unbiased=False) + 1e-8
-                    )
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std(unbiased=False) + 1e-8)
 
-                # Policy loss
+                # Policy Loss
                 pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(
-                    ratio, 1 - self.clip_coef, 1 + self.clip_coef
-                )
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_coef, 1 + self.clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-                # Value loss (Extrinsic)
-                if self.distributional:
-                    # IQN PopArt updates
-                    if self.popart:
-                        norm_ext_returns = self.ext_critic.output_layer.normalize(b_ext_returns[mb_inds])
-                    else:
-                        norm_ext_returns = b_ext_returns[mb_inds]
-
-                    ext_taus = torch.rand(len(mb_inds), self.n_quantiles, device=device)
-                    ext_quantiles_norm = self.ext_critic(b_obs[mb_inds], ext_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
-                    v_loss_ext = self._quantile_huber_loss(ext_quantiles_norm, norm_ext_returns, ext_taus)
-                else:
-                    if self.popart:
-                        # 2. Normalize the targets using the updated stats
-                        norm_ext_returns = self.ext_critic_head.normalize(b_ext_returns[mb_inds].unsqueeze(1)).view(-1)
-                        # 3. Get new normalized predictions
-                        norm_ext_value = self.ext_critic(b_obs[mb_inds], normalized=True).view(-1)
-                    else:
-                        norm_ext_returns = b_ext_returns[mb_inds]
-                        norm_ext_value = new_ext_value.view(-1)
-
-                    if self.clip_vloss:
-                        if self.popart:
-                            # 4. Normalize the historical rollout values using CURRENT stats for accurate clipping
-                            norm_old_ext_values = self.ext_critic_head.normalize(b_ext_values[mb_inds].unsqueeze(1)).view(-1)
-                        else:
-                            norm_old_ext_values = b_ext_values[mb_inds]
-
-                        v_clipped = norm_old_ext_values + torch.clamp(
-                            norm_ext_value - norm_old_ext_values,
-                            -self.clip_coef,
-                            self.clip_coef,
-                        )
-                        v_loss_unclipped = (norm_ext_value - norm_ext_returns) ** 2
-                        v_loss_clipped = (v_clipped - norm_ext_returns) ** 2
-                        v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                        v_loss_ext = 0.5 * v_loss_max.mean()
-                    else:
-                        v_loss_ext = 0.5 * ((norm_ext_value - norm_ext_returns) ** 2).mean()
-
-                # Value loss (Intrinsic)
-                if self.distributional:
-                    # IQN PopArt updates
-                    if self.popart:
-                        norm_int_returns = self.int_critic.output_layer.normalize(b_int_returns[mb_inds])
-                    else:
-                        norm_int_returns = b_int_returns[mb_inds]
-
-                    int_taus = torch.rand(len(mb_inds), self.n_quantiles, device=device)
-                    int_quantiles_norm = self.int_critic(b_obs[mb_inds], int_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
-                    v_loss_int = self._quantile_huber_loss(int_quantiles_norm, norm_int_returns, int_taus)
-                else:
-                    if self.popart:
-                        # 2. Normalize the targets using the updated stats
-                        norm_int_returns = self.int_critic_head.normalize(b_int_returns[mb_inds].unsqueeze(1)).view(-1)
-                        # 3. Get new normalized predictions
-                        norm_int_value = self.int_critic(b_obs[mb_inds], normalized=True).view(-1)
-                    else:
-                        norm_int_returns = b_int_returns[mb_inds]
-                        norm_int_value = new_int_value.view(-1)
-
-                    if self.clip_vloss:
-                        if self.popart:
-                            # 4. Normalize the historical rollout values using CURRENT stats for accurate clipping
-                            norm_old_int_values = self.int_critic_head.normalize(b_int_values[mb_inds].unsqueeze(1)).view(-1)
-                        else:
-                            norm_old_int_values = b_int_values[mb_inds]
-
-                        v_clipped_int = norm_old_int_values + torch.clamp(
-                            norm_int_value - norm_old_int_values,
-                            -self.clip_coef,
-                            self.clip_coef,
-                        )
-                        v_loss_int_unclipped = (norm_int_value - norm_int_returns) ** 2
-                        v_loss_int_clipped = (v_clipped_int - norm_int_returns) ** 2
-                        v_loss_int_max = torch.max(v_loss_int_unclipped, v_loss_int_clipped)
-                        v_loss_int = 0.5 * v_loss_int_max.mean()
-                    else:
-                        v_loss_int = 0.5 * ((norm_int_value - norm_int_returns) ** 2).mean()
-
                 entropy_loss = entropy.mean()
 
-                loss = (
-                    pg_loss - self.ent_coef * entropy_loss + v_loss_ext * self.vf_coef
+                # Value Loss (Delegated to Subclass)
+                v_loss_ext, v_loss_int = self._compute_value_losses(
+                    b_obs, mb_inds, b_ext_returns, b_int_returns, 
+                    new_ext_value, new_int_value, b_ext_values, b_int_values, device
                 )
+
+                loss = pg_loss - self.ent_coef * entropy_loss + v_loss_ext * self.vf_coef
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                if self.distributional:
-                    ext_params = list(self.ext_critic.parameters())
-                else:
-                    ext_params = list(self.ext_critic_base.parameters()) + list(self.ext_critic_head.parameters())
                 nn.utils.clip_grad_norm_(
-                    list(self.actor.parameters()) + ext_params,
-                    self.max_grad_norm,
+                    list(self.actor.parameters()) + self._get_ext_critic_params(), self.max_grad_norm
                 )
                 self.optimizer.step()
 
                 self.int_optim.zero_grad()
                 v_loss_int.backward()
-                if self.distributional:
-                    int_params = list(self.int_critic.parameters())
-                else:
-                    int_params = list(self.int_critic_base.parameters()) + list(self.int_critic_head.parameters())
-                nn.utils.clip_grad_norm_(
-                    int_params, self.max_grad_norm
-                )
+                nn.utils.clip_grad_norm_(self._get_int_critic_params(), self.max_grad_norm)
                 self.int_optim.step()
 
-                pg_loss_total = pg_loss_total + pg_loss
-                v_loss_ext_total = v_loss_ext_total + v_loss_ext
-                v_loss_int_total = v_loss_int_total + v_loss_int
-                entropy_loss_total = entropy_loss_total + entropy_loss
+                pg_loss_total += pg_loss.item()
+                v_loss_ext_total += v_loss_ext.item()
+                v_loss_int_total += v_loss_int.item()
+                entropy_loss_total += entropy_loss.item()
 
             if self.target_kl is not None and approx_kl > self.target_kl:
                 break
@@ -708,239 +405,157 @@ class PPOAgent(Agent):
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-        PG_loss = pg_loss_total.item()
-        V_loss = v_loss_ext_total.item()
-        V_int_loss = v_loss_int_total.item()
-        Entropy = entropy_loss_total.item()
-
         self.last_losses = {
-            "policy_loss": PG_loss,
-            "value_loss": V_loss,
-            "int_value_loss": V_int_loss,
+            "policy_loss": pg_loss_total,
+            "value_loss": v_loss_ext_total,
+            "int_value_loss": v_loss_int_total,
             "rnd_loss": rnd_loss.item(),
-            "entropy": Entropy,
-            "old_approx_kl": old_approx_kl.item(),
-            "approx_kl": approx_kl.item(),
+            "entropy": entropy_loss_total,
+            "old_approx_kl": old_approx_kl.item() if isinstance(old_approx_kl, torch.Tensor) else old_approx_kl,
+            "approx_kl": approx_kl.item() if isinstance(approx_kl, torch.Tensor) else approx_kl,
             "clipfrac": np.mean(clipfracs) if clipfracs else 0.0,
             "explained_variance": explained_var,
             "Beta": float(self.Beta),
         }
-
         self.step += 1
+        return pg_loss_total
 
-        if self.tb_writer is not None:
-            self.tb_writer.add_scalar(
-                f"{self.tb_prefix}/losses/value_loss", V_loss, self.step
+    # =======================================================
+    # Abstract Methods for Subclasses
+    # =======================================================
+    def _build_critics(self, encoder_factory, hidden_layer_sizes): raise NotImplementedError
+    def _critics_to(self, device): raise NotImplementedError
+    def _get_ext_critic_params(self): raise NotImplementedError
+    def _get_int_critic_params(self): raise NotImplementedError
+    def _get_values(self, obs): raise NotImplementedError
+    def _get_advantages_scaling(self): raise NotImplementedError
+    def _update_popart_stats(self, b_ext_returns, b_int_returns): raise NotImplementedError
+    def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, device): raise NotImplementedError
+
+
+class StandardPPOAgent(BasePPOAgent):
+    def _build_critics(self, encoder_factory, hidden_layer_sizes):
+        hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
+        if encoder_factory is None:
+            self.ext_critic_base = nn.Sequential(
+                layer_init(nn.Linear(self.input_dim, hidden1)), nn.Tanh(),
+                layer_init(nn.Linear(hidden1, hidden2)), nn.Tanh()
             )
-            self.tb_writer.add_scalar(
-                f"{self.tb_prefix}/losses/int_value_loss", V_int_loss, self.step
+            self.int_critic_base = nn.Sequential(
+                layer_init(nn.Linear(self.input_dim, hidden1)), nn.Tanh(),
+                layer_init(nn.Linear(hidden1, hidden2)), nn.Tanh()
             )
-            self.tb_writer.add_scalar(
-                f"{self.tb_prefix}/losses/policy_loss", PG_loss, self.step
-            )
-            self.tb_writer.add_scalar(
-                f"{self.tb_prefix}/losses/rnd_loss", rnd_loss.item(), self.step
-            )
-            self.tb_writer.add_scalar(
-                f"{self.tb_prefix}/losses/entropy", Entropy, self.step
-            )
-            self.tb_writer.add_scalar(
-                f"{self.tb_prefix}/losses/old_approx_kl",
-                old_approx_kl.item(),
-                self.step,
-            )
-            self.tb_writer.add_scalar(
-                f"{self.tb_prefix}/losses/approx_kl", approx_kl.item(), self.step
-            )
-            self.tb_writer.add_scalar(
-                f"{self.tb_prefix}/losses/clipfrac",
-                np.mean(clipfracs) if clipfracs else 0.0,
-                self.step,
-            )
-            self.tb_writer.add_scalar(
-                f"{self.tb_prefix}/losses/explained_variance", explained_var, self.step
-            )
-            self.tb_writer.add_scalar(
-                f"{self.tb_prefix}/charts/Beta", float(self.Beta), self.step
-            )
+            critic_hidden, int_critic_hidden = hidden2, hidden2
+        else:
+            self.ext_critic_base, self.int_critic_base = encoder_factory(), encoder_factory()
+            critic_hidden = infer_encoder_out_dim(self.ext_critic_base, int(self.input_dim))
+            int_critic_hidden = infer_encoder_out_dim(self.int_critic_base, int(self.input_dim))
 
-        return pg_loss_total.item()
+        if self.popart:
+            self.ext_critic_head = PopArtLayer(critic_hidden, 1)
+            self.int_critic_head = PopArtLayer(int_critic_hidden, 1)
+        else:
+            self.ext_critic_head = layer_init(nn.Linear(critic_hidden, 1), std=1.0)
+            self.int_critic_head = layer_init(nn.Linear(int_critic_hidden, 1), std=1.0)
+
+        self.ext_critic = lambda x, normalized=False: self.ext_critic_head(self.ext_critic_base(x), normalized=normalized) if self.popart else self.ext_critic_head(self.ext_critic_base(x))
+        self.int_critic = lambda x, normalized=False: self.int_critic_head(self.int_critic_base(x), normalized=normalized) if self.popart else self.int_critic_head(self.int_critic_base(x))
+
+    def _critics_to(self, device):
+        self.ext_critic_base.to(device); self.ext_critic_head.to(device)
+        self.int_critic_base.to(device); self.int_critic_head.to(device)
+
+    def _get_ext_critic_params(self): return list(self.ext_critic_base.parameters()) + list(self.ext_critic_head.parameters())
+    def _get_int_critic_params(self): return list(self.int_critic_base.parameters()) + list(self.int_critic_head.parameters())
+    def _get_values(self, obs): return self.ext_critic(obs).squeeze(-1), self.int_critic(obs).squeeze(-1)
+    
+    def _get_advantages_scaling(self):
+        return (self.ext_critic_head.sigma.detach() if self.popart else 1.0), (self.int_critic_head.sigma.detach() if self.popart else 1.0)
+
+    def _update_popart_stats(self, b_ext_returns, b_int_returns):
+        if self.popart:
+            self.ext_critic_head.update_stats(b_ext_returns.unsqueeze(1))
+            self.int_critic_head.update_stats(b_int_returns.unsqueeze(1))
+
+    def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, device):
+        # Extrinsic
+        norm_ext_returns = self.ext_critic_head.normalize(b_ext_returns[mb_inds].unsqueeze(1)).view(-1) if self.popart else b_ext_returns[mb_inds]
+        norm_ext_value = self.ext_critic(b_obs[mb_inds], normalized=True).view(-1) if self.popart else new_ext_value.view(-1)
+        
+        if self.clip_vloss:
+            norm_old_ext_values = self.ext_critic_head.normalize(b_ext_values[mb_inds].unsqueeze(1)).view(-1) if self.popart else b_ext_values[mb_inds]
+            v_clipped = norm_old_ext_values + torch.clamp(norm_ext_value - norm_old_ext_values, -self.clip_coef, self.clip_coef)
+            v_loss_ext = 0.5 * torch.max((norm_ext_value - norm_ext_returns)**2, (v_clipped - norm_ext_returns)**2).mean()
+        else:
+            v_loss_ext = 0.5 * ((norm_ext_value - norm_ext_returns)**2).mean()
+
+        # Intrinsic
+        norm_int_returns = self.int_critic_head.normalize(b_int_returns[mb_inds].unsqueeze(1)).view(-1) if self.popart else b_int_returns[mb_inds]
+        norm_int_value = self.int_critic(b_obs[mb_inds], normalized=True).view(-1) if self.popart else new_int_value.view(-1)
+
+        if self.clip_vloss:
+            norm_old_int_values = self.int_critic_head.normalize(b_int_values[mb_inds].unsqueeze(1)).view(-1) if self.popart else b_int_values[mb_inds]
+            v_clipped_int = norm_old_int_values + torch.clamp(norm_int_value - norm_old_int_values, -self.clip_coef, self.clip_coef)
+            v_loss_int = 0.5 * torch.max((norm_int_value - norm_int_returns)**2, (v_clipped_int - norm_int_returns)**2).mean()
+        else:
+            v_loss_int = 0.5 * ((norm_int_value - norm_int_returns)**2).mean()
+
+        return v_loss_ext, v_loss_int
 
 
-if __name__ == "__main__":
-    args = tyro.cli(Args)
-    args.batch_size = int(args.num_envs * args.num_steps)
-    args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    args.num_iterations = args.total_timesteps // args.batch_size
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s"
-        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
+class DistributionalPPOAgent(BasePPOAgent):
+    def __init__(self, *args, **kwargs):
+        self.n_quantiles = 32
+        super().__init__(*args, **kwargs)
 
-    # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    def _build_critics(self, encoder_factory, hidden_layer_sizes):
+        hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
+        ext_kwargs, int_kwargs = {}, {}
+        if encoder_factory is not None:
+            ext_enc, int_enc = encoder_factory(), encoder_factory()
+            ext_kwargs = {"encoder": ext_enc, "encoder_out_dim": infer_encoder_out_dim(ext_enc, int(self.input_dim))}
+            int_kwargs = {"encoder": int_enc, "encoder_out_dim": infer_encoder_out_dim(int_enc, int(self.input_dim))}
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+        self.ext_critic = IQN_Network(input_dim=self.input_dim, n_action_dims=1, n_action_bins=1, hidden_layer_sizes=[hidden1, hidden2], dueling=False, popart=self.popart, **ext_kwargs)
+        self.int_critic = IQN_Network(input_dim=self.input_dim, n_action_dims=1, n_action_bins=1, hidden_layer_sizes=[hidden1, hidden2], dueling=False, popart=self.popart, min_std=0.01, **int_kwargs)
 
-    # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [
-            make_env(args.env_id, i, args.capture_video, run_name)
-            for i in range(args.num_envs)
-        ],
-    )
-    assert isinstance(
-        envs.single_action_space, gym.spaces.Discrete
-    ), "only discrete action space is supported"
+    def _critics_to(self, device):
+        self.ext_critic.to(device)
+        self.int_critic.to(device)
 
-    agent = PPOAgent(
-        envs,
-        learning_rate=args.learning_rate,
-        gamma=args.gamma,
-        gae_lambda=args.gae_lambda,
-        clip_coef=args.clip_coef,
-        clip_vloss=args.clip_vloss,
-        ent_coef=args.ent_coef,
-        vf_coef=args.vf_coef,
-        max_grad_norm=args.max_grad_norm,
-        norm_adv=args.norm_adv,
-        target_kl=args.target_kl,
-        update_epochs=args.update_epochs,
-        num_minibatches=args.num_minibatches,
-        num_envs=args.num_envs,
-        num_steps=args.num_steps,
-        hidden_layer_sizes=args.hidden_layer_sizes,
-        distributional=False,  # Set to True to use IQN
-        Beta=0.01,  # Set > 0 to use RND intrinsic reward
-        beta_half_life_steps=10000,
-    ).to(device)
-    # If keeping tensorboard inside agent (optional):
-    # agent.attach_tensorboard(writer)
+    def _get_ext_critic_params(self): return list(self.ext_critic.parameters())
+    def _get_int_critic_params(self): return list(self.int_critic.parameters())
+    
+    def _get_values(self, obs):
+        taus = torch.rand(obs.shape[0], self.n_quantiles, device=obs.device)
+        return self.ext_critic(obs, taus).mean(dim=1).view(-1, 1).squeeze(-1), self.int_critic(obs, taus).mean(dim=1).view(-1, 1).squeeze(-1)
 
-    # ALGO Logic: Storage setup
-    assert (
-        envs.single_observation_space is not None
-        and envs.single_observation_space.shape is not None
-    )
-    assert (
-        envs.single_action_space is not None
-        and envs.single_action_space.shape is not None
-    )
-    obs = torch.zeros(
-        [args.num_steps, args.num_envs] + list(envs.single_observation_space.shape)
-    ).to(device)
-    actions = torch.zeros(
-        [args.num_steps, args.num_envs] + list(envs.single_action_space.shape)
-    ).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    ext_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    int_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    def _get_advantages_scaling(self):
+        return (self.ext_critic.output_layer.sigma.detach() if self.popart else 1.0), (self.int_critic.output_layer.sigma.detach() if self.popart else 1.0)
 
-    # TRY NOT TO MODIFY: start the game
-    global_step = 0
-    start_time = time.time()
-    next_obs, _ = envs.reset(seed=args.seed)
-    next_obs = torch.Tensor(next_obs).to(device)
-    next_done = torch.zeros(args.num_envs).to(device)
-    env_episode_rewards = torch.zeros(args.num_envs).to(device)
-    for iteration in range(1, args.num_iterations + 1):
-        # Annealing the rate if instructed to do so.
+    def _update_popart_stats(self, b_ext_returns, b_int_returns):
+        if self.popart:
+            self.ext_critic.output_layer.update_stats(b_ext_returns)
+            self.int_critic.output_layer.update_stats(b_int_returns)
 
-        for step in range(0, args.num_steps):
-            global_step += args.num_envs
-            obs[step] = next_obs
-            dones[step] = next_done
+    def _quantile_huber_loss(self, pred: torch.Tensor, target: torch.Tensor, taus: torch.Tensor, kappa: float = 1.0) -> torch.Tensor:
+        if target.dim() == 1: target = target.unsqueeze(1)
+        td = target - pred
+        abs_td = torch.abs(td)
+        huber = torch.where(abs_td <= kappa, 0.5 * td.pow(2), kappa * (abs_td - 0.5 * kappa))
+        loss = (torch.abs(taus - (td < 0).float()) * huber).sum(dim=1).mean()
+        return loss
 
-            # ALGO LOGIC: action logic
-            action, logprob, ext_v, int_v = agent.sample_action(next_obs)
-            ext_values[step] = ext_v
-            int_values[step] = int_v
-            actions[step] = action
-            logprobs[step] = logprob
+    def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, device):
+        norm_ext_returns = self.ext_critic.output_layer.normalize(b_ext_returns[mb_inds]) if self.popart else b_ext_returns[mb_inds]
+        norm_int_returns = self.int_critic.output_layer.normalize(b_int_returns[mb_inds]) if self.popart else b_int_returns[mb_inds]
 
-            # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, terminations, truncations, infos = envs.step(
-                action.cpu().numpy()
-            )
-            next_done = np.logical_or(terminations, truncations)
-            rewards[step] = torch.tensor(reward).to(device).view(-1)
-            env_episode_rewards += rewards[step]
-            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(
-                next_done
-            ).to(device)
+        ext_taus = torch.rand(len(mb_inds), self.n_quantiles, device=device)
+        ext_quantiles_norm = self.ext_critic(b_obs[mb_inds], ext_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
+        v_loss_ext = self._quantile_huber_loss(ext_quantiles_norm, norm_ext_returns, ext_taus)
 
-            for ne in range(args.num_envs):
-                if terminations[ne] or truncations[ne]:
-                    print(f"episode reward: {env_episode_rewards[ne]}")
-                    env_episode_rewards[ne] = 0
+        int_taus = torch.rand(len(mb_inds), self.n_quantiles, device=device)
+        int_quantiles_norm = self.int_critic(b_obs[mb_inds], int_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
+        v_loss_int = self._quantile_huber_loss(int_quantiles_norm, norm_int_returns, int_taus)
 
-            if "final_info" in infos:
-                for info in infos["final_info"]:
-                    if info and "episode" in info:
-                        print(
-                            f"global_step={global_step}, episodic_return={info['episode']['r']}"
-                        )
-                        writer.add_scalar(
-                            "charts/episodic_return", info["episode"]["r"], global_step
-                        )
-                        writer.add_scalar(
-                            "charts/episodic_length", info["episode"]["l"], global_step
-                        )
-
-        # Perform PPO update
-        agent.update(
-            obs,
-            actions,
-            logprobs,
-            rewards,
-            dones,
-            ext_values,
-            int_values,
-            next_obs,
-            next_done,
-        )
-
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar(
-            "charts/learning_rate", agent.optimizer.param_groups[0]["lr"], global_step
-        )
-        writer.add_scalar(
-            "losses/value_loss", agent.last_losses.get("value_loss", 0), global_step
-        )
-        writer.add_scalar(
-            "losses/policy_loss", agent.last_losses.get("policy_loss", 0), global_step
-        )
-        writer.add_scalar(
-            "losses/entropy", agent.last_losses.get("entropy", 0), global_step
-        )
-        writer.add_scalar(
-            "losses/old_approx_kl",
-            agent.last_losses.get("old_approx_kl", 0),
-            global_step,
-        )
-        writer.add_scalar(
-            "losses/approx_kl", agent.last_losses.get("approx_kl", 0), global_step
-        )
-        writer.add_scalar(
-            "losses/clipfrac", agent.last_losses.get("clipfrac", 0), global_step
-        )
-        writer.add_scalar(
-            "losses/explained_variance",
-            agent.last_losses.get("explained_variance", 0),
-            global_step,
-        )
-        print("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar(
-            "charts/SPS", int(global_step / (time.time() - start_time)), global_step
-        )
-
-    envs.close()
-    writer.close()
+        return v_loss_ext, v_loss_int

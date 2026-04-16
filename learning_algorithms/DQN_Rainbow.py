@@ -457,13 +457,18 @@ class EVRainbowDQN(RainbowBase):
                 )
                 pi_next = torch.exp(logpi_next)
                 next_head_vals = (pi_next * (current_sigma * self.alpha * logpi_next + q_next_target_raw)).sum(-1)
+                print(f"soft {q_next_target_raw.shape}")
             # Next value with no entropy or weighted sum, using argmax policy
             else:
+                print(f"{q_next_target_raw.shape}")
                 target_actions_next = q_next_online_norm.argmax(dim=-1, keepdim=True).detach()
                 next_head_vals = torch.gather(q_next_target_raw, -1, target_actions_next).squeeze(-1)
-
+            # vdn sum the vals 
+            if next_head_vals.ndim>1:
+                next_head_vals=next_head_vals.sum(-1)
+            print(f"br {b_r_ext.view(-1).shape}, term {b_term.view(-1).shape} nhv {next_head_vals.shape}")
             online_ext_target = b_r_ext.view(-1) + self.gamma * (1 - b_term).view(-1) * next_head_vals
-
+            input("why")
         target_for_stats_ext = online_ext_target.detach() # maintain [B, D]
         self.ext_online.output_layer.update_stats(target_for_stats_ext)
         if self.delayed_target:
@@ -472,6 +477,8 @@ class EVRainbowDQN(RainbowBase):
         td_target_norm = self.ext_online.output_layer.normalize(target_for_stats_ext)
         q_ext_now_norm = self.ext_online(b_obs, normalized=True)
         q_selected_norm = torch.gather(q_ext_now_norm, -1, b_actions_idx).squeeze(-1) # [B, D]
+        if q_selected_norm.ndim>1:
+            q_selected_norm=q_selected_norm.sum(-1)
         extrinsic_loss = torch.nn.functional.mse_loss(q_selected_norm, td_target_norm)
         
         if self.ent_reg_coef > 0.0:
@@ -506,7 +513,9 @@ class EVRainbowDQN(RainbowBase):
             else:
                 next_int_actions = int_q_next.argmax(-1,keepdim=True).detach()
             int_q_next_target = torch.gather(int_q_next, -1, next_int_actions).squeeze(-1)
-            int_td_target = b_r_int + self.gamma * int_q_next_target
+            if int_q_next_target.ndim>1:
+                int_q_next_target=int_q_next_target.sum(-1)
+            int_td_target = b_r_int.view(-1) + self.gamma * int_q_next_target
 
         target_for_stats_int = int_td_target.detach()
         self.int_online.output_layer.update_stats(target_for_stats_int)
@@ -517,6 +526,8 @@ class EVRainbowDQN(RainbowBase):
         int_td_target_norm = self.int_online.output_layer.normalize(target_for_stats_int)
         int_q_now_norm = self.int_online(b_obs, normalized=True)
         int_q_selected_norm = torch.gather(int_q_now_norm, -1, b_actions_idx).squeeze(-1)
+        if int_q_selected_norm.ndim>1:
+            int_q_selected_norm=int_q_selected_norm.sum(-1)
         intrinsic_loss = torch.nn.functional.mse_loss(
             int_q_selected_norm, int_td_target_norm
         )
