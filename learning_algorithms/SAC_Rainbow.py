@@ -78,8 +78,6 @@ class Args:
     """if True, use IQN critics; else use expected-value critics"""
     dueling: bool = False
     """if True, enable dueling critic heads"""
-    popart: bool = True
-    """if True, use PopArt-scaled critic outputs"""
     delayed_critics: bool = True
     """if True, use delayed target critics; else use online critics as targets"""
     n_quantiles: int = 32
@@ -202,7 +200,14 @@ class Actor(nn.Module):
         return action, log_prob, mean
 
 
-class SACAgent(Agent):
+class BaseSAC(Agent):
+    """
+    Abstract Base class for Soft Actor-Critic. 
+    Defines the standard update loops, buffer management, RND, and Munchausen logic.
+    Subclasses must implement critic initialization and target/loss logic.
+    """
+    distributional = False
+
     def __init__(
         self,
         envs,
@@ -215,9 +220,6 @@ class SACAgent(Agent):
         alpha: float = 0.2,
         autotune: bool = True,
         entropy_coef_zero: bool = False,
-        distributional: bool = False,
-        popart: bool = True,
-
         dueling: bool = False,
         delayed_critics: bool = True,
         hidden_layer_sizes: tuple[int, int] = (128, 128),
@@ -233,7 +235,6 @@ class SACAgent(Agent):
         rnd_lr: float = 1e-3,
         beta_half_life_steps: Optional[int] = None,
         buffer_size: int = int(1e5),
-
     ):
         super().__init__()
         self.gamma = gamma
@@ -242,9 +243,7 @@ class SACAgent(Agent):
         self.target_network_frequency = target_network_frequency
         self.autotune = autotune and (not entropy_coef_zero)
         self.entropy_coef_zero = entropy_coef_zero
-        self.distributional = distributional
         self.dueling = dueling
-        self.popart = popart
         self.delayed_critics = delayed_critics
         hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
         self.n_quantiles = n_quantiles
@@ -270,14 +269,13 @@ class SACAgent(Agent):
             encoder=actor_encoder,
         )
 
-        CriticClass = IQN_Network if self.distributional else EV_Q_Network
         critic_kwargs = {
             "input_dim": critic_input_dim,
             "n_action_dims": 1,
             "n_action_bins": 1,
             "hidden_layer_sizes": [hidden1, hidden2],
             "dueling": self.dueling,
-            "popart": self.popart,
+            "popart": True,
         }
 
         def _critic_encoder_kwargs():
@@ -301,18 +299,11 @@ class SACAgent(Agent):
         qf2_target_kwargs = dict(critic_kwargs)
         qf2_target_kwargs.update(_critic_encoder_kwargs())
 
-        self.qf1 = CriticClass(**qf1_kwargs)  # type:ignore
-        self.qf2 = CriticClass(**qf2_kwargs)  # type:ignore
-        self.qf1_target = CriticClass(**qf1_target_kwargs)  # type:ignore
-        self.qf2_target = CriticClass(**qf2_target_kwargs)  # type:ignore
+        # Subclasses handle the specific instantiations
+        self._init_critics(qf1_kwargs, qf2_kwargs, qf1_target_kwargs, qf2_target_kwargs)
+
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
-
-        # Dual critics for intrinsic reward
-        self.qf1_int = CriticClass(**qf1_kwargs)
-        self.qf2_int = CriticClass(**qf2_kwargs)
-        self.qf1_target_int = CriticClass(**qf1_target_kwargs)
-        self.qf2_target_int = CriticClass(**qf2_target_kwargs)
         self.qf1_target_int.load_state_dict(self.qf1_int.state_dict())
         self.qf2_target_int.load_state_dict(self.qf2_int.state_dict())
 
@@ -339,13 +330,13 @@ class SACAgent(Agent):
 
         self.step = 0
 
-        # Munchausen KL penalty (ablation 1 removes this)
+        # Munchausen KL penalty
         self.munchausen = munchausen
         self.munchausen_alpha = munchausen_alpha
         self.munchausen_tau = munchausen_tau
         self.l_clip = l_clip
 
-        # RND intrinsic reward (ablation 3 removes this via Beta=0.0)
+        # RND intrinsic reward
         self.Beta = beta_rnd
         self.start_Beta = beta_rnd
         self.beta_half_life_steps = beta_half_life_steps
@@ -353,6 +344,18 @@ class SACAgent(Agent):
         self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.obs_rms = RunningMeanStd(shape=(obs_dim,))
         self.int_rms = RunningMeanStd(shape=())
+
+    def _init_critics(self, qf1_kwargs, qf2_kwargs, qf1_target_kwargs, qf2_target_kwargs):
+        raise NotImplementedError
+
+    def _compute_targets(self, next_critic_input, augmented_rewards, int_r, dones, next_state_log_pi, current_sigma):
+        raise NotImplementedError
+
+    def _compute_critic_losses(self, critic_input, next_q, next_q_int):
+        raise NotImplementedError
+
+    def _get_actor_q_values(self, pi_critic_input):
+        raise NotImplementedError
 
     def to(self, device):
         device = torch.device(device)
@@ -399,7 +402,6 @@ class SACAgent(Agent):
     @torch.no_grad()
     def sample_action(self, obs, deterministic: bool = False):
         actor_device = self.actor.device
-        # Always cast obs to float32
         if isinstance(obs, np.ndarray):
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=actor_device)
         else:
@@ -425,38 +427,41 @@ class SACAgent(Agent):
     def observe(self, obs, action, reward, next_obs, done, info):
         self.buffer.add(obs, next_obs, action, reward, done, info)
 
-        if not self.popart:
+    def _critic_input(self, obs: torch.Tensor, act: torch.Tensor):
+        return torch.cat([obs, act.to(dtype=obs.dtype)], dim=1)
+
+    @torch.no_grad()
+    def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
+        x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
+        self.obs_rms.update(x64)
+        norm_next_obs = self.obs_rms.normalize(next_obs).to(torch.float32)
+        
+        if self.Beta <= 0.0 and not getattr(self, 'always_update_rnd', False):
             return
 
+        rnd_err = self.rnd(norm_next_obs).squeeze().detach()
+        if rnd_err.ndim == 0:
+            rnd_err = rnd_err.unsqueeze(0)
+        self.int_rms.update(rnd_err.to(dtype=torch.float64))
+
         with torch.no_grad():
-            o = torch.as_tensor(obs, dtype=torch.float32, device=self.actor.device)
-            a = torch.as_tensor(action, dtype=torch.float32, device=self.actor.device)
-            r = torch.as_tensor(reward, dtype=torch.float32, device=self.actor.device)
-            no = torch.as_tensor(next_obs, dtype=torch.float32, device=self.actor.device)
-            d = torch.as_tensor(done, dtype=torch.float32, device=self.actor.device)
-
-            self.update_running_stats(no, r)
-
-            target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
-            target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
-            target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
-            target_qf2_int = self.qf2_target_int if self.delayed_critics else self.qf2_int
-
+            o = next_obs.to(dtype=torch.float32, device=self.actor.device)
+            # Fetch a sample action to compute expected target distributions
+            mean, log_std = self.actor(o)
+            std = log_std.exp()
+            normal = torch.distributions.Normal(mean, std)
+            x_t = normal.rsample()
+            y_t = torch.tanh(x_t)
+            a = y_t * self.actor.action_scale + self.actor.action_bias
+            
+            d = torch.zeros_like(r)  # Dummy dones for running stats
             augmented_reward = r
 
-            int_r = 0.0
-            if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
-                norm_next_obs = self.obs_rms.normalize(no.to(dtype=torch.float64)).to(dtype=torch.float32)
-                rnd_errors = self.rnd(norm_next_obs)
-                int_r = self.int_rms.scale(rnd_errors.detach().to(dtype=torch.float64)).float()
-                int_r = torch.clamp(int_r, -5.0, 5.0)
-            else:
-                int_r = torch.zeros_like(r)
+            rnd_errors = self.rnd(norm_next_obs)
+            int_r = self.int_rms.scale(rnd_errors.detach().to(dtype=torch.float64)).float()
+            int_r = torch.clamp(int_r, -5.0, 5.0).squeeze()
 
             if self.munchausen:
-                mean, log_std = self.actor(o)
-                std = log_std.exp()
-                normal = torch.distributions.Normal(mean, std)
                 a_norm = (a - self.actor.action_bias) / self.actor.action_scale
                 a_norm = torch.clamp(a_norm, -0.9999, 0.9999)
                 x_pretanh = torch.atanh(a_norm)
@@ -466,145 +471,39 @@ class SACAgent(Agent):
                 m_r = self.munchausen_alpha * self.munchausen_tau * torch.clamp(log_pi_replay, min=self.l_clip)
                 augmented_reward = augmented_reward + m_r
 
-            next_state_actions, next_state_log_pi, _ = self.actor.get_action(no)
-            next_critic_input = self._critic_input(no, next_state_actions)
+            next_state_actions, next_state_log_pi, _ = self.actor.get_action(o)
+            next_critic_input = self._critic_input(o, next_state_actions)
             current_sigma = self.qf1.output_layer.sigma.detach()
 
-            if self.distributional:
-                target_taus = self._sample_taus(next_critic_input.shape[0], self.n_target_quantiles, self.actor.device)
-                qf1_next_quantiles = self._critic_quantiles(target_qf1, next_critic_input, target_taus, normalized=False)
-                qf2_next_quantiles = self._critic_quantiles(target_qf2, next_critic_input, target_taus, normalized=False)
-                min_qf_next_quantiles = torch.min(qf1_next_quantiles, qf2_next_quantiles)
-                next_q_quantiles = augmented_reward.unsqueeze(1) + (1 - d).unsqueeze(1) * self.gamma * (min_qf_next_quantiles - current_sigma * self.alpha * next_state_log_pi)
-                
-                qf1_next_quantiles_int = self._critic_quantiles(target_qf1_int, next_critic_input, target_taus, normalized=False)
-                qf2_next_quantiles_int = self._critic_quantiles(target_qf2_int, next_critic_input, target_taus, normalized=False)
-                min_qf_next_quantiles_int = torch.min(qf1_next_quantiles_int, qf2_next_quantiles_int)
-                next_q_quantiles_int = int_r.unsqueeze(1) + self.gamma * min_qf_next_quantiles_int
-
-                self.qf1.output_layer.update_stats(next_q_quantiles)
-                self.qf2.output_layer.update_stats(next_q_quantiles)
-                self.qf1_int.output_layer.update_stats(next_q_quantiles_int)
-                self.qf2_int.output_layer.update_stats(next_q_quantiles_int)
-            else:
-                qf1_next_target = self._critic_scalar_value(target_qf1, next_critic_input, normalized=False)
-                qf2_next_target = self._critic_scalar_value(target_qf2, next_critic_input, normalized=False)
-                min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
-                target_for_stats = augmented_reward + (1 - d) * self.gamma * (min_qf_next_target - current_sigma * self.alpha * next_state_log_pi.view(-1))
-                
-                qf1_next_target_int = self._critic_scalar_value(target_qf1_int, next_critic_input, normalized=False)
-                qf2_next_target_int = self._critic_scalar_value(target_qf2_int, next_critic_input, normalized=False)
-                min_qf_next_target_int = torch.min(qf1_next_target_int, qf2_next_target_int)
-                target_for_stats_int = int_r + self.gamma * min_qf_next_target_int
-
-                self.qf1.output_layer.update_stats(target_for_stats)
-                self.qf2.output_layer.update_stats(target_for_stats)
-                self.qf1_int.output_layer.update_stats(target_for_stats_int)
-                self.qf2_int.output_layer.update_stats(target_for_stats_int)
-
+            next_q, next_q_int = self._compute_targets(
+                next_critic_input, augmented_reward, int_r, d, next_state_log_pi, current_sigma
+            )
+            
+            self.qf1.output_layer.update_stats(next_q)
+            self.qf2.output_layer.update_stats(next_q)
+            self.qf1_int.output_layer.update_stats(next_q_int)
+            self.qf2_int.output_layer.update_stats(next_q_int)
 
     def update_target(self):
         if not self.delayed_critics:
             return
-        for param, target_param in zip(
-            self.qf1.parameters(), self.qf1_target.parameters()
-        ):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
-        for param, target_param in zip(
-            self.qf2.parameters(), self.qf2_target.parameters()
-        ):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
-        for param, target_param in zip(
-            self.qf1_int.parameters(), self.qf1_target_int.parameters()
-        ):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
-        for param, target_param in zip(
-            self.qf2_int.parameters(), self.qf2_target_int.parameters()
-        ):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
-
-    def _sample_taus(self, batch_size: int, n: int, device: torch.device):
-        return torch.rand(batch_size, n, device=device)
-
-    def _quantile_huber_loss(
-        self,
-        pred: torch.Tensor,
-        target: torch.Tensor,
-        taus: torch.Tensor,
-        kappa: float = 1.0,
-    ) -> torch.Tensor:
-        td = target.unsqueeze(1) - pred.unsqueeze(2)
-        abs_td = torch.abs(td)
-        huber = torch.where(
-            abs_td <= kappa, 0.5 * td.pow(2), kappa * (abs_td - 0.5 * kappa)
-        )
-        I_ = (td < 0).float()
-        taus_expanded = taus.unsqueeze(2)
-        return (torch.abs(taus_expanded - I_) * huber).mean()
-
-    def _critic_input(self, obs: torch.Tensor, act: torch.Tensor):
-        return torch.cat([obs, act.to(dtype=obs.dtype)], dim=1)
-
-    def _critic_scalar_value(
-        self, critic, critic_input: torch.Tensor, normalized: bool = False
-    ):
-        q = critic(critic_input, normalized=normalized)
-        return q.view(-1)
-
-    def _critic_quantiles(
-        self,
-        critic,
-        critic_input: torch.Tensor,
-        taus: torch.Tensor,
-        normalized: bool = False,
-    ):
-        q = critic(critic_input, taus, normalized=normalized)
-        return q.view(q.shape[0], q.shape[1])
-
-    @torch.no_grad()
-    def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
-        with torch.no_grad():
-            x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
-            self.obs_rms.update(x64)
-            norm_next_obs = self.obs_rms.normalize(next_obs).to(torch.float32)
-            rnd_errors = self.rnd(norm_next_obs)
-        """Update observation and intrinsic reward running stats with a single env step."""
-        if self.Beta <= 0.0 and not getattr(self, 'always_update_rnd', False):
-            return
-        x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
-        self.obs_rms.update(x64)
-        norm_x64 = self.obs_rms.normalize(x64)
-        if norm_x64.ndim == 1:
-            norm_x64 = norm_x64.unsqueeze(0)
-        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze().detach()
-        self.int_rms.update(rnd_err.to(dtype=torch.float64))
+        for param, target_param in zip(self.qf1.parameters(), self.qf1_target.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+        for param, target_param in zip(self.qf2.parameters(), self.qf2_target.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+        for param, target_param in zip(self.qf1_int.parameters(), self.qf1_target_int.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+        for param, target_param in zip(self.qf2_int.parameters(), self.qf2_target_int.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
     def update(self, batch_size: int, global_step: int):
         data = self.buffer.sample(batch_size)
         if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
-            self.Beta = self.start_Beta * (
-                0.5 ** (global_step / self.beta_half_life_steps)
-            )
+            self.Beta = self.start_Beta * (0.5 ** (global_step / self.beta_half_life_steps))
 
-        target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
-        target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
-
-        target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
-        target_qf2_int = self.qf2_target_int if self.delayed_critics else self.qf2_int
-
-        # === RND intrinsic reward augmentation ===
         augmented_rewards = data.rewards.flatten()
-        
         rnd_loss_val = 0.0
-        int_r = None
+        
         if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
             with torch.no_grad():
                 norm_next_obs = self.obs_rms.normalize(
@@ -616,15 +515,13 @@ class SACAgent(Agent):
             rnd_loss.backward()
             self.rnd_optim.step()
             rnd_loss_val = float(rnd_loss.item())
+            
             with torch.no_grad():
-                int_r = self.int_rms.scale(
-                    rnd_errors.detach().to(dtype=torch.float64)
-                ).float()
-                int_r = torch.clamp(int_r, -5.0, 5.0)
+                int_r = self.int_rms.scale(rnd_errors.detach().to(dtype=torch.float64)).float()
+                int_r = torch.clamp(int_r, -5.0, 5.0).squeeze()
         else:
             int_r = torch.zeros(data.rewards.shape[0], dtype=torch.float32, device=data.rewards.device)
 
-        # === Munchausen KL reward shaping ===
         m_r_val = 0.0
         if self.munchausen:
             with torch.no_grad():
@@ -635,216 +532,28 @@ class SACAgent(Agent):
                 a_norm = torch.clamp(a_norm, -0.9999, 0.9999)
                 x_pretanh = torch.atanh(a_norm)
                 log_prob = normal.log_prob(x_pretanh)
-                log_prob -= torch.log(
-                    self.actor.action_scale * (1 - a_norm.pow(2)) + 1e-6
-                )
+                log_prob -= torch.log(self.actor.action_scale * (1 - a_norm.pow(2)) + 1e-6)
                 log_pi_replay = log_prob.sum(1)
-                m_r = self.munchausen_alpha * self.munchausen_tau * torch.clamp(
-                    log_pi_replay, min=self.l_clip
-                )
+                m_r = self.munchausen_alpha * self.munchausen_tau * torch.clamp(log_pi_replay, min=self.l_clip)
                 m_r_val = float(m_r.mean().item())
             augmented_rewards = augmented_rewards + m_r
 
         with torch.no_grad():
-            next_state_actions, next_state_log_pi, _ = self.actor.get_action(
-                data.next_observations
+            next_state_actions, next_state_log_pi, _ = self.actor.get_action(data.next_observations)
+            next_critic_input = self._critic_input(data.next_observations, next_state_actions)
+            current_sigma = self.qf1.output_layer.sigma.detach()
+            
+            next_q, next_q_int = self._compute_targets(
+                next_critic_input, augmented_rewards, int_r, data.dones.flatten(), next_state_log_pi, current_sigma
             )
-            next_critic_input = self._critic_input(
-                data.next_observations, next_state_actions
-            )
-            current_sigma = self.qf1.output_layer.sigma.detach() if self.popart else 1.0
-            if self.distributional:
-                target_taus = self._sample_taus(
-                    next_critic_input.shape[0],
-                    self.n_target_quantiles,
-                    next_critic_input.device,
-                )
-                
-                # Extrinsic Target
-                qf1_next_quantiles = self._critic_quantiles(
-                    target_qf1, next_critic_input, target_taus, normalized=False
-                )
-                qf2_next_quantiles = self._critic_quantiles(
-                    target_qf2, next_critic_input, target_taus, normalized=False
-                )
-                min_qf_next_quantiles = torch.min(
-                    qf1_next_quantiles, qf2_next_quantiles
-                )
-                next_q_quantiles = augmented_rewards.unsqueeze(1) + (
-                    1 - data.dones.flatten()
-                ).unsqueeze(1) * self.gamma * (
-                    min_qf_next_quantiles - current_sigma * self.alpha * next_state_log_pi
-                )
-                
-                # Intrinsic Target (No entropy subtraction according to instructions, possibly 0.99 gamma instead of extrinsic gamma, but we'll use self.gamma for simplicity unless specified otherwise)
-                qf1_next_quantiles_int = self._critic_quantiles(
-                    target_qf1_int, next_critic_input, target_taus, normalized=False
-                )
-                qf2_next_quantiles_int = self._critic_quantiles(
-                    target_qf2_int, next_critic_input, target_taus, normalized=False
-                )
-                min_qf_next_quantiles_int = torch.min(
-                    qf1_next_quantiles_int, qf2_next_quantiles_int
-                )
-                next_q_quantiles_int = int_r.unsqueeze(1) + self.gamma * (
-                    min_qf_next_quantiles_int
-                )
-                
-            else:
-                # Extrinsic Target
-                qf1_next_target = self._critic_scalar_value(
-                    target_qf1, next_critic_input, normalized=False
-                )
-                qf2_next_target = self._critic_scalar_value(
-                    target_qf2, next_critic_input, normalized=False
-                )
-                min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
-                next_q_value = augmented_rewards + (
-                    1 - data.dones.flatten()
-                ) * self.gamma * (
-                    min_qf_next_target - current_sigma * self.alpha * next_state_log_pi.view(-1)
-                )
-                
-                # Intrinsic Target
-                qf1_next_target_int = self._critic_scalar_value(
-                    target_qf1_int, next_critic_input, normalized=False
-                )
-                qf2_next_target_int = self._critic_scalar_value(
-                    target_qf2_int, next_critic_input, normalized=False
-                )
-                min_qf_next_target_int = torch.min(qf1_next_target_int, qf2_next_target_int)
-                next_q_value_int = int_r + self.gamma * (
-                    min_qf_next_target_int
-                )
 
         critic_input = self._critic_input(data.observations, data.actions)
-        if self.distributional:
-            taus = self._sample_taus(
-                critic_input.shape[0], self.n_quantiles, critic_input.device
-            )
-            
-            if self.popart:
-                target_quantiles_1 = self.qf1.output_layer.normalize(
-                    next_q_quantiles  # type:ignore
-                )
-                target_quantiles_2 = self.qf2.output_layer.normalize(
-                    next_q_quantiles  # type:ignore
-                )
-                qf1_quantiles = self._critic_quantiles(
-                    self.qf1, critic_input, taus, normalized=True
-                )
-                qf2_quantiles = self._critic_quantiles(
-                    self.qf2, critic_input, taus, normalized=True
-                )
-                
-                # Intrinsic popart
-                target_quantiles_1_int = self.qf1_int.output_layer.normalize(
-                    next_q_quantiles_int  # type:ignore
-                )
-                target_quantiles_2_int = self.qf2_int.output_layer.normalize(
-                    next_q_quantiles_int  # type:ignore
-                )
-                qf1_quantiles_int = self._critic_quantiles(
-                    self.qf1_int, critic_input, taus, normalized=True
-                )
-                qf2_quantiles_int = self._critic_quantiles(
-                    self.qf2_int, critic_input, taus, normalized=True
-                )
-            else:
-                target_quantiles_1 = next_q_quantiles  # type:ignore
-                target_quantiles_2 = next_q_quantiles  # type:ignore
-                qf1_quantiles = self._critic_quantiles(
-                    self.qf1, critic_input, taus, normalized=False
-                )
-                qf2_quantiles = self._critic_quantiles(
-                    self.qf2, critic_input, taus, normalized=False
-                )
-                
-                target_quantiles_1_int = next_q_quantiles_int  # type:ignore
-                target_quantiles_2_int = next_q_quantiles_int  # type:ignore
-                qf1_quantiles_int = self._critic_quantiles(
-                    self.qf1_int, critic_input, taus, normalized=False
-                )
-                qf2_quantiles_int = self._critic_quantiles(
-                    self.qf2_int, critic_input, taus, normalized=False
-                )
-                
-            qf1_loss = self._quantile_huber_loss(
-                qf1_quantiles, target_quantiles_1.detach(), taus.detach()
-            )
-            qf2_loss = self._quantile_huber_loss(
-                qf2_quantiles, target_quantiles_2.detach(), taus.detach()
-            )
-            
-            qf1_int_loss = self._quantile_huber_loss(
-                qf1_quantiles_int, target_quantiles_1_int.detach(), taus.detach()
-            )
-            qf2_int_loss = self._quantile_huber_loss(
-                qf2_quantiles_int, target_quantiles_2_int.detach(), taus.detach()
-            )
-            
-            qf1_a_values = qf1_quantiles.mean(dim=1)
-            qf2_a_values = qf2_quantiles.mean(dim=1)
-            
-            qf1_a_values_int = qf1_quantiles_int.mean(dim=1)
-            qf2_a_values_int = qf2_quantiles_int.mean(dim=1)
-            
-        else:
-            if self.popart:
-                target_for_stats = next_q_value.unsqueeze(1)  # type:ignore
-                next_q_value_norm_1 = self.qf1.output_layer.normalize(
-                    target_for_stats
-                ).view(-1)
-                next_q_value_norm_2 = self.qf2.output_layer.normalize(
-                    target_for_stats
-                ).view(-1)
-                qf1_a_values = self._critic_scalar_value(
-                    self.qf1, critic_input, normalized=True
-                )
-                qf2_a_values = self._critic_scalar_value(
-                    self.qf2, critic_input, normalized=True
-                )
-                qf1_loss = torch.nn.functional.mse_loss(qf1_a_values, next_q_value_norm_1)
-                qf2_loss = torch.nn.functional.mse_loss(qf2_a_values, next_q_value_norm_2)
-                
-                # Intrinsic Popart
-                target_for_stats_int = next_q_value_int.unsqueeze(1)  # type:ignore
-                next_q_value_norm_1_int = self.qf1_int.output_layer.normalize(
-                    target_for_stats_int
-                ).view(-1)
-                next_q_value_norm_2_int = self.qf2_int.output_layer.normalize(
-                    target_for_stats_int
-                ).view(-1)
-                qf1_a_values_int = self._critic_scalar_value(
-                    self.qf1_int, critic_input, normalized=True
-                )
-                qf2_a_values_int = self._critic_scalar_value(
-                    self.qf2_int, critic_input, normalized=True
-                )
-                qf1_int_loss = torch.nn.functional.mse_loss(qf1_a_values_int, next_q_value_norm_1_int)
-                qf2_int_loss = torch.nn.functional.mse_loss(qf2_a_values_int, next_q_value_norm_2_int)
-            else:
-                qf1_a_values = self._critic_scalar_value(
-                    self.qf1, critic_input, normalized=False
-                )
-                qf2_a_values = self._critic_scalar_value(
-                    self.qf2, critic_input, normalized=False
-                )
-                qf1_loss = torch.nn.functional.mse_loss(qf1_a_values, next_q_value)  # type:ignore
-                qf2_loss = torch.nn.functional.mse_loss(qf2_a_values, next_q_value)  # type:ignore
-                
-                # Intrinsic Non-Popart
-                qf1_a_values_int = self._critic_scalar_value(
-                    self.qf1_int, critic_input, normalized=False
-                )
-                qf2_a_values_int = self._critic_scalar_value(
-                    self.qf2_int, critic_input, normalized=False
-                )
-                qf1_int_loss = torch.nn.functional.mse_loss(qf1_a_values_int, next_q_value_int)  # type:ignore
-                qf2_int_loss = torch.nn.functional.mse_loss(qf2_a_values_int, next_q_value_int)  # type:ignore
-
+        
+        qf1_loss, qf2_loss, qf1_int_loss, qf2_int_loss, critic_logs = self._compute_critic_losses(
+            critic_input, next_q, next_q_int
+        )
+        
         qf_loss = qf1_loss + qf2_loss
-
         self.q_optimizer.zero_grad()
         qf_loss.backward()
         self.q_optimizer.step()
@@ -856,47 +565,15 @@ class SACAgent(Agent):
 
         actor_loss = None
         alpha_loss = None
+        min_qf_pi = None
+        min_qf_pi_int = None
 
         if global_step % self.policy_frequency == 0:
             for _ in range(self.policy_frequency):
                 pi, log_pi, _ = self.actor.get_action(data.observations)
                 pi_critic_input = self._critic_input(data.observations, pi)
-                if self.distributional:
-                    pi_taus = self._sample_taus(
-                        pi_critic_input.shape[0],
-                        self.n_quantiles,
-                        pi_critic_input.device,
-                    )
-                    qf1_pi = self._critic_quantiles(
-                        self.qf1, pi_critic_input, pi_taus, normalized=True
-                    ).mean(dim=1, keepdim=True)
-                    qf2_pi = self._critic_quantiles(
-                        self.qf2, pi_critic_input, pi_taus, normalized=True
-                    ).mean(dim=1, keepdim=True)
-                    
-                    qf1_pi_int = self._critic_quantiles(
-                        self.qf1_int, pi_critic_input, pi_taus, normalized=True
-                    ).mean(dim=1, keepdim=True)
-                    qf2_pi_int = self._critic_quantiles(
-                        self.qf2_int, pi_critic_input, pi_taus, normalized=True
-                    ).mean(dim=1, keepdim=True)
-                else:
-                    qf1_pi = self._critic_scalar_value(
-                        self.qf1, pi_critic_input, normalized=True
-                    ).unsqueeze(1)
-                    qf2_pi = self._critic_scalar_value(
-                        self.qf2, pi_critic_input, normalized=True
-                    ).unsqueeze(1)
-                    
-                    qf1_pi_int = self._critic_scalar_value(
-                        self.qf1_int, pi_critic_input, normalized=True
-                    ).unsqueeze(1)
-                    qf2_pi_int = self._critic_scalar_value(
-                        self.qf2_int, pi_critic_input, normalized=True
-                    ).unsqueeze(1)
-                    
-                min_qf_pi = torch.min(qf1_pi, qf2_pi)
-                min_qf_pi_int = torch.min(qf1_pi_int, qf2_pi_int)
+                
+                min_qf_pi, min_qf_pi_int = self._get_actor_q_values(pi_critic_input)
                 
                 actor_loss = ((self.alpha * log_pi) - ((1.0 - self.Beta) * min_qf_pi + self.Beta * min_qf_pi_int)).mean()
 
@@ -904,17 +581,10 @@ class SACAgent(Agent):
                 actor_loss.backward()
                 self.actor_optimizer.step()
 
-                if (
-                    self.autotune
-                    and self.log_alpha is not None
-                    and self.a_optimizer is not None
-                ):
+                if self.autotune and self.log_alpha is not None and self.a_optimizer is not None:
                     with torch.no_grad():
                         _, log_pi, _ = self.actor.get_action(data.observations)
-                    alpha_loss = (
-                        -self.log_alpha.exp()
-                        * (log_pi + self.target_entropy)  # type:ignore
-                    ).mean()
+                    alpha_loss = (-self.log_alpha.exp() * (log_pi + self.target_entropy)).mean()  # type:ignore
 
                     self.a_optimizer.zero_grad()
                     alpha_loss.backward()
@@ -926,10 +596,10 @@ class SACAgent(Agent):
 
         self.step = global_step
         self.last_losses = {
-            "min_qf_pi": float(min_qf_pi.mean().item()) if 'min_qf_pi' in locals() else 0.0,
-            "min_qf_pi_int": float(min_qf_pi_int.mean().item()) if 'min_qf_pi_int' in locals() else 0.0,
-            "qf1_values": float(qf1_a_values.mean().item()),
-            "qf2_values": float(qf2_a_values.mean().item()),
+            "min_qf_pi": float(min_qf_pi.mean().item()) if min_qf_pi is not None else 0.0,
+            "min_qf_pi_int": float(min_qf_pi_int.mean().item()) if min_qf_pi_int is not None else 0.0,
+            "qf1_values": float(critic_logs["qf1_values"].mean().item()),
+            "qf2_values": float(critic_logs["qf2_values"].mean().item()),
             "qf1_loss": float(qf1_loss.item()),
             "qf2_loss": float(qf2_loss.item()),
             "qf_loss": float((qf_loss / 2.0).item()),
@@ -937,7 +607,6 @@ class SACAgent(Agent):
             "alpha": float(self.alpha),
             "alpha_loss": float(alpha_loss.item()) if alpha_loss is not None else 0.0,
             "distributional": float(self.distributional),
-            "popart": float(self.popart),
             "dueling": float(self.dueling),
             "delayed_critics": float(self.delayed_critics),
             "rnd_loss": rnd_loss_val,
@@ -945,17 +614,173 @@ class SACAgent(Agent):
             "Beta": float(self.Beta),
         }
 
-        if self.tb_writer is not None and global_step % 100 == 0:
+        if getattr(self, "tb_writer", None) is not None and global_step % 100 == 0:
             for k, v in self.last_losses.items():
-                self.tb_writer.add_scalar(
-                    f"{self.tb_prefix}/losses/{k}", v, global_step
-                )
+                self.tb_writer.add_scalar(f"{self.tb_prefix}/losses/{k}", v, global_step)
 
         return float(qf_loss.item())
 
 
-if __name__ == "__main__":
+class DistSAC(BaseSAC):
+    distributional = True
 
+    def _init_critics(self, qf1_kwargs, qf2_kwargs, qf1_target_kwargs, qf2_target_kwargs):
+        self.qf1 = IQN_Network(**qf1_kwargs)
+        self.qf2 = IQN_Network(**qf2_kwargs)
+        self.qf1_target = IQN_Network(**qf1_target_kwargs)
+        self.qf2_target = IQN_Network(**qf2_target_kwargs)
+
+        self.qf1_int = IQN_Network(**qf1_kwargs)
+        self.qf2_int = IQN_Network(**qf2_kwargs)
+        self.qf1_target_int = IQN_Network(**qf1_target_kwargs)
+        self.qf2_target_int = IQN_Network(**qf2_target_kwargs)
+
+    def _sample_taus(self, batch_size: int, n: int, device: torch.device):
+        return torch.rand(batch_size, n, device=device)
+
+    def _critic_quantiles(self, critic, critic_input: torch.Tensor, taus: torch.Tensor, normalized: bool = False):
+        q = critic(critic_input, taus, normalized=normalized)
+        return q.view(q.shape[0], q.shape[1])
+
+    def _quantile_huber_loss(self, pred: torch.Tensor, target: torch.Tensor, taus: torch.Tensor, kappa: float = 1.0) -> torch.Tensor:
+        td = target.unsqueeze(1) - pred.unsqueeze(2)
+        abs_td = torch.abs(td)
+        huber = torch.where(abs_td <= kappa, 0.5 * td.pow(2), kappa * (abs_td - 0.5 * kappa))
+        I_ = (td < 0).float()
+        taus_expanded = taus.unsqueeze(2)
+        return (torch.abs(taus_expanded - I_) * huber).mean()
+
+    def _compute_targets(self, next_critic_input, augmented_rewards, int_r, dones, next_state_log_pi, current_sigma):
+        target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
+        target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
+        target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
+        target_qf2_int = self.qf2_target_int if self.delayed_critics else self.qf2_int
+
+        target_taus = self._sample_taus(next_critic_input.shape[0], self.n_target_quantiles, self.actor.device)
+        
+        qf1_next = self._critic_quantiles(target_qf1, next_critic_input, target_taus, normalized=False)
+        qf2_next = self._critic_quantiles(target_qf2, next_critic_input, target_taus, normalized=False)
+        min_qf_next = torch.min(qf1_next, qf2_next)
+        
+        aug_r = augmented_rewards.unsqueeze(1)
+        dones_mask = (1 - dones).unsqueeze(1)
+        next_q = aug_r + dones_mask * self.gamma * (min_qf_next - current_sigma * self.alpha * next_state_log_pi)
+        
+        qf1_next_int = self._critic_quantiles(target_qf1_int, next_critic_input, target_taus, normalized=False)
+        qf2_next_int = self._critic_quantiles(target_qf2_int, next_critic_input, target_taus, normalized=False)
+        min_qf_next_int = torch.min(qf1_next_int, qf2_next_int)
+        
+        int_r_expanded = int_r.unsqueeze(1) if int_r.ndim == 1 else int_r
+        next_q_int = int_r_expanded + self.gamma * min_qf_next_int
+        
+        return next_q, next_q_int
+
+    def _compute_critic_losses(self, critic_input, next_q_quantiles, next_q_quantiles_int):
+        taus = self._sample_taus(critic_input.shape[0], self.n_quantiles, critic_input.device)
+        
+        target_1 = self.qf1.output_layer.normalize(next_q_quantiles)
+        target_2 = self.qf2.output_layer.normalize(next_q_quantiles)
+        target_1_int = self.qf1_int.output_layer.normalize(next_q_quantiles_int)
+        target_2_int = self.qf2_int.output_layer.normalize(next_q_quantiles_int)
+        
+        qf1_q = self._critic_quantiles(self.qf1, critic_input, taus, normalized=True)
+        qf2_q = self._critic_quantiles(self.qf2, critic_input, taus, normalized=True)
+        qf1_q_int = self._critic_quantiles(self.qf1_int, critic_input, taus, normalized=True)
+        qf2_q_int = self._critic_quantiles(self.qf2_int, critic_input, taus, normalized=True)
+            
+        qf1_loss = self._quantile_huber_loss(qf1_q, target_1.detach(), taus.detach())
+        qf2_loss = self._quantile_huber_loss(qf2_q, target_2.detach(), taus.detach())
+        qf1_int_loss = self._quantile_huber_loss(qf1_q_int, target_1_int.detach(), taus.detach())
+        qf2_int_loss = self._quantile_huber_loss(qf2_q_int, target_2_int.detach(), taus.detach())
+        
+        logs = {
+            "qf1_values": qf1_q.mean(dim=1),
+            "qf2_values": qf2_q.mean(dim=1)
+        }
+        return qf1_loss, qf2_loss, qf1_int_loss, qf2_int_loss, logs
+
+    def _get_actor_q_values(self, pi_critic_input):
+        taus = self._sample_taus(pi_critic_input.shape[0], self.n_quantiles, pi_critic_input.device)
+        qf1_pi = self._critic_quantiles(self.qf1, pi_critic_input, taus, normalized=True).mean(dim=1, keepdim=True)
+        qf2_pi = self._critic_quantiles(self.qf2, pi_critic_input, taus, normalized=True).mean(dim=1, keepdim=True)
+        
+        qf1_pi_int = self._critic_quantiles(self.qf1_int, pi_critic_input, taus, normalized=True).mean(dim=1, keepdim=True)
+        qf2_pi_int = self._critic_quantiles(self.qf2_int, pi_critic_input, taus, normalized=True).mean(dim=1, keepdim=True)
+        
+        return torch.min(qf1_pi, qf2_pi), torch.min(qf1_pi_int, qf2_pi_int)
+
+
+class EVSAC(BaseSAC):
+    distributional = False
+
+    def _init_critics(self, qf1_kwargs, qf2_kwargs, qf1_target_kwargs, qf2_target_kwargs):
+        self.qf1 = EV_Q_Network(**qf1_kwargs)
+        self.qf2 = EV_Q_Network(**qf2_kwargs)
+        self.qf1_target = EV_Q_Network(**qf1_target_kwargs)
+        self.qf2_target = EV_Q_Network(**qf2_target_kwargs)
+
+        self.qf1_int = EV_Q_Network(**qf1_kwargs)
+        self.qf2_int = EV_Q_Network(**qf2_kwargs)
+        self.qf1_target_int = EV_Q_Network(**qf1_target_kwargs)
+        self.qf2_target_int = EV_Q_Network(**qf2_target_kwargs)
+
+    def _critic_scalar_value(self, critic, critic_input: torch.Tensor, normalized: bool = False):
+        q = critic(critic_input, normalized=normalized)
+        return q.view(-1)
+
+    def _compute_targets(self, next_critic_input, augmented_rewards, int_r, dones, next_state_log_pi, current_sigma):
+        target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
+        target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
+        target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
+        target_qf2_int = self.qf2_target_int if self.delayed_critics else self.qf2_int
+
+        qf1_next = self._critic_scalar_value(target_qf1, next_critic_input, normalized=False)
+        qf2_next = self._critic_scalar_value(target_qf2, next_critic_input, normalized=False)
+        min_qf_next = torch.min(qf1_next, qf2_next)
+        
+        next_state_log_pi = next_state_log_pi.view(-1)
+        next_q = augmented_rewards + (1 - dones) * self.gamma * (min_qf_next - current_sigma * self.alpha * next_state_log_pi)
+        
+        qf1_next_int = self._critic_scalar_value(target_qf1_int, next_critic_input, normalized=False)
+        qf2_next_int = self._critic_scalar_value(target_qf2_int, next_critic_input, normalized=False)
+        min_qf_next_int = torch.min(qf1_next_int, qf2_next_int)
+        
+        next_q_int = int_r + self.gamma * min_qf_next_int
+        return next_q, next_q_int
+
+    def _compute_critic_losses(self, critic_input, next_q, next_q_int):
+        target_1 = self.qf1.output_layer.normalize(next_q.unsqueeze(1)).view(-1)
+        target_2 = self.qf2.output_layer.normalize(next_q.unsqueeze(1)).view(-1)
+        target_1_int = self.qf1_int.output_layer.normalize(next_q_int.unsqueeze(1)).view(-1)
+        target_2_int = self.qf2_int.output_layer.normalize(next_q_int.unsqueeze(1)).view(-1)
+        
+        qf1_v = self._critic_scalar_value(self.qf1, critic_input, normalized=True)
+        qf2_v = self._critic_scalar_value(self.qf2, critic_input, normalized=True)
+        qf1_v_int = self._critic_scalar_value(self.qf1_int, critic_input, normalized=True)
+        qf2_v_int = self._critic_scalar_value(self.qf2_int, critic_input, normalized=True)
+            
+        qf1_loss = F.mse_loss(qf1_v, target_1.detach())
+        qf2_loss = F.mse_loss(qf2_v, target_2.detach())
+        qf1_int_loss = F.mse_loss(qf1_v_int, target_1_int.detach())
+        qf2_int_loss = F.mse_loss(qf2_v_int, target_2_int.detach())
+        
+        logs = {
+            "qf1_values": qf1_v,
+            "qf2_values": qf2_v
+        }
+        return qf1_loss, qf2_loss, qf1_int_loss, qf2_int_loss, logs
+
+    def _get_actor_q_values(self, pi_critic_input):
+        qf1_pi = self._critic_scalar_value(self.qf1, pi_critic_input, normalized=True).unsqueeze(1)
+        qf2_pi = self._critic_scalar_value(self.qf2, pi_critic_input, normalized=True).unsqueeze(1)
+        
+        qf1_pi_int = self._critic_scalar_value(self.qf1_int, pi_critic_input, normalized=True).unsqueeze(1)
+        qf2_pi_int = self._critic_scalar_value(self.qf2_int, pi_critic_input, normalized=True).unsqueeze(1)
+        
+        return torch.min(qf1_pi, qf2_pi), torch.min(qf1_pi_int, qf2_pi_int)
+
+
+if __name__ == "__main__":
     args = tyro.cli(Args)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     writer = SummaryWriter(f"runs/{run_name}")
@@ -994,7 +819,9 @@ if __name__ == "__main__":
     ), "only continuous action space is supported"
 
     hidden_layer_sizes = hidden_layer_sizes_for_env_id(args.env_id)
-    agent = SACAgent(
+    
+    AgentClass = DistSAC if args.distributional else EVSAC
+    agent = AgentClass(
         envs,
         gamma=args.gamma,
         tau=args.tau,
@@ -1005,14 +832,13 @@ if __name__ == "__main__":
         alpha=args.alpha,
         autotune=args.autotune,
         entropy_coef_zero=args.entropy_coef_zero,
-        distributional=args.distributional,
         dueling=args.dueling,
-        popart=args.popart,
         delayed_critics=args.delayed_critics,
         hidden_layer_sizes=hidden_layer_sizes,
         n_quantiles=args.n_quantiles,
         n_target_quantiles=args.n_target_quantiles,
     ).to(device)
+    
     agent.attach_tensorboard(writer, prefix="agent")
 
     envs.single_observation_space.dtype = np.float32  # type:ignore
@@ -1081,8 +907,7 @@ if __name__ == "__main__":
             while updates_performed < target_updates:
                 if rb.size() < args.batch_size:
                     break
-                data = rb.sample(args.batch_size)
-                agent.update(data, env_steps)
+                agent.update(args.batch_size, env_steps)
                 updates_performed += 1
 
             if env_steps % 100 == 0:
