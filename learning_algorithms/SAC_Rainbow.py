@@ -235,8 +235,13 @@ class BaseSAC(Agent):
         rnd_lr: float = 1e-3,
         beta_half_life_steps: Optional[int] = None,
         buffer_size: int = int(1e5),
+        device: str = "cpu",
+        buffer_device: str = "cpu",
     ):
         super().__init__()
+        self.device = torch.device(device)
+        self.buffer_device = torch.device(buffer_device)
+
         self.gamma = gamma
         self.tau = tau
         self.policy_frequency = policy_frequency
@@ -255,11 +260,12 @@ class BaseSAC(Agent):
 
         self.buffer = ReplayBuffer(
             buffer_size,
-            envs.single_observation_space,
-            envs.single_action_space,
-            device if "device" in locals() else ("cuda" if torch.cuda.is_available() else "cpu"),
+            observation_space=envs.single_observation_space,
+            action_space=envs.single_action_space,
+            device=self.buffer_device,
             n_envs=envs.num_envs,
-            handle_timeout_termination=False,
+            handle_timeout_termination=True,
+            optimize_memory_usage=False
         )
 
         actor_encoder = encoder_factory() if encoder_factory is not None else None
@@ -348,7 +354,7 @@ class BaseSAC(Agent):
     def _init_critics(self, qf1_kwargs, qf2_kwargs, qf1_target_kwargs, qf2_target_kwargs):
         raise NotImplementedError
 
-    def _compute_targets(self, next_critic_input, augmented_rewards, int_r, dones, next_state_log_pi, current_sigma):
+    def _compute_targets(self, next_critic_input, augmented_rewards, int_r, terminations, next_state_log_pi, current_sigma):
         raise NotImplementedError
 
     def _compute_critic_losses(self, critic_input, next_q, next_q_int):
@@ -359,8 +365,12 @@ class BaseSAC(Agent):
 
     def to(self, device):
         device = torch.device(device)
+        self.device = device
+        
         if hasattr(self, 'buffer') and self.buffer is not None:
             self.buffer.device = device
+            self.buffer_device = device
+            
         self.actor.to(device)
         self.qf1.to(device)
         self.qf2.to(device)
@@ -398,6 +408,13 @@ class BaseSAC(Agent):
         rnd_lr = self.rnd_optim.param_groups[0]["lr"]
         self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         return self
+        
+    def buffer_to(self, device):
+        self.buffer_device = torch.device(device)
+        if hasattr(self, 'buffer') and self.buffer is not None:
+            self.buffer.device = self.buffer_device
+        if hasattr(self, "obs_rms") and hasattr(self.obs_rms, "to"): 
+            self.obs_rms.to(self.buffer_device)
 
     @torch.no_grad()
     def sample_action(self, obs, deterministic: bool = False):
@@ -424,65 +441,24 @@ class BaseSAC(Agent):
             return action_np[0]
         return action_np
 
-    def observe(self, obs, action, reward, next_obs, done, info):
-        self.buffer.add(obs, next_obs, action, reward, done, info)
+    def observe(self, obs, action, reward, next_obs, terminated, truncated, info=None):
+        if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
+            if isinstance(next_obs, np.ndarray):
+                b_next_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=self.buffer_device)
+            else:
+                b_next_obs = next_obs.clone().detach().to(device=self.buffer_device, dtype=torch.float32)
+                
+            if b_next_obs.ndim == len(self.buffer.obs_shape):
+                b_next_obs = b_next_obs.unsqueeze(0)
+                
+            self.obs_rms.update(b_next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device))
+            
+        self.buffer.add(
+            obs, next_obs, action, reward, terminated, truncated
+        )
 
     def _critic_input(self, obs: torch.Tensor, act: torch.Tensor):
         return torch.cat([obs, act.to(dtype=obs.dtype)], dim=1)
-
-    @torch.no_grad()
-    def update_running_stats(self, next_obs: torch.Tensor, r: torch.Tensor):
-        x64 = next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
-        self.obs_rms.update(x64)
-        norm_next_obs = self.obs_rms.normalize(next_obs).to(torch.float32)
-        
-        if self.Beta <= 0.0 and not getattr(self, 'always_update_rnd', False):
-            return
-
-        rnd_err = self.rnd(norm_next_obs).squeeze().detach()
-        if rnd_err.ndim == 0:
-            rnd_err = rnd_err.unsqueeze(0)
-        self.int_rms.update(rnd_err.to(dtype=torch.float64))
-
-        with torch.no_grad():
-            o = next_obs.to(dtype=torch.float32, device=self.actor.device)
-            # Fetch a sample action to compute expected target distributions
-            mean, log_std = self.actor(o)
-            std = log_std.exp()
-            normal = torch.distributions.Normal(mean, std)
-            x_t = normal.rsample()
-            y_t = torch.tanh(x_t)
-            a = y_t * self.actor.action_scale + self.actor.action_bias
-            
-            d = torch.zeros_like(r)  # Dummy dones for running stats
-            augmented_reward = r
-
-            rnd_errors = self.rnd(norm_next_obs)
-            int_r = self.int_rms.scale(rnd_errors.detach().to(dtype=torch.float64)).float()
-            int_r = torch.clamp(int_r, -5.0, 5.0).squeeze()
-
-            if self.munchausen:
-                a_norm = (a - self.actor.action_bias) / self.actor.action_scale
-                a_norm = torch.clamp(a_norm, -0.9999, 0.9999)
-                x_pretanh = torch.atanh(a_norm)
-                log_prob = normal.log_prob(x_pretanh)
-                log_prob -= torch.log(self.actor.action_scale * (1 - a_norm.pow(2)) + 1e-6)
-                log_pi_replay = log_prob.sum(1)
-                m_r = self.munchausen_alpha * self.munchausen_tau * torch.clamp(log_pi_replay, min=self.l_clip)
-                augmented_reward = augmented_reward + m_r
-
-            next_state_actions, next_state_log_pi, _ = self.actor.get_action(o)
-            next_critic_input = self._critic_input(o, next_state_actions)
-            current_sigma = self.qf1.output_layer.sigma.detach()
-
-            next_q, next_q_int = self._compute_targets(
-                next_critic_input, augmented_reward, int_r, d, next_state_log_pi, current_sigma
-            )
-            
-            self.qf1.output_layer.update_stats(next_q)
-            self.qf2.output_layer.update_stats(next_q)
-            self.qf1_int.output_layer.update_stats(next_q_int)
-            self.qf2_int.output_layer.update_stats(next_q_int)
 
     def update_target(self):
         if not self.delayed_critics:
@@ -502,6 +478,7 @@ class BaseSAC(Agent):
             self.Beta = self.start_Beta * (0.5 ** (global_step / self.beta_half_life_steps))
 
         augmented_rewards = data.rewards.flatten()
+        terminations = data.terminations.flatten()
         rnd_loss_val = 0.0
         
         if self.Beta > 0.0 or getattr(self, 'always_update_rnd', False):
@@ -517,6 +494,7 @@ class BaseSAC(Agent):
             rnd_loss_val = float(rnd_loss.item())
             
             with torch.no_grad():
+                self.int_rms.update(rnd_errors.detach().to(dtype=torch.float64))
                 int_r = self.int_rms.scale(rnd_errors.detach().to(dtype=torch.float64)).float()
                 int_r = torch.clamp(int_r, -5.0, 5.0).squeeze()
         else:
@@ -544,8 +522,14 @@ class BaseSAC(Agent):
             current_sigma = self.qf1.output_layer.sigma.detach()
             
             next_q, next_q_int = self._compute_targets(
-                next_critic_input, augmented_rewards, int_r, data.dones.flatten(), next_state_log_pi, current_sigma
+                next_critic_input, augmented_rewards, int_r, terminations, next_state_log_pi, current_sigma
             )
+            
+            # Apply PopArt updates immediately
+            self.qf1.output_layer.update_stats(next_q)
+            self.qf2.output_layer.update_stats(next_q)
+            self.qf1_int.output_layer.update_stats(next_q_int)
+            self.qf2_int.output_layer.update_stats(next_q_int)
 
         critic_input = self._critic_input(data.observations, data.actions)
         
@@ -650,7 +634,7 @@ class DistSAC(BaseSAC):
         taus_expanded = taus.unsqueeze(2)
         return (torch.abs(taus_expanded - I_) * huber).mean()
 
-    def _compute_targets(self, next_critic_input, augmented_rewards, int_r, dones, next_state_log_pi, current_sigma):
+    def _compute_targets(self, next_critic_input, augmented_rewards, int_r, terminations, next_state_log_pi, current_sigma):
         target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
         target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
         target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
@@ -663,7 +647,7 @@ class DistSAC(BaseSAC):
         min_qf_next = torch.min(qf1_next, qf2_next)
         
         aug_r = augmented_rewards.unsqueeze(1)
-        dones_mask = (1 - dones).unsqueeze(1)
+        dones_mask = (1 - terminations).unsqueeze(1)
         next_q = aug_r + dones_mask * self.gamma * (min_qf_next - current_sigma * self.alpha * next_state_log_pi)
         
         qf1_next_int = self._critic_quantiles(target_qf1_int, next_critic_input, target_taus, normalized=False)
@@ -728,7 +712,7 @@ class EVSAC(BaseSAC):
         q = critic(critic_input, normalized=normalized)
         return q.view(-1)
 
-    def _compute_targets(self, next_critic_input, augmented_rewards, int_r, dones, next_state_log_pi, current_sigma):
+    def _compute_targets(self, next_critic_input, augmented_rewards, int_r, terminations, next_state_log_pi, current_sigma):
         target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
         target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
         target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
@@ -739,7 +723,7 @@ class EVSAC(BaseSAC):
         min_qf_next = torch.min(qf1_next, qf2_next)
         
         next_state_log_pi = next_state_log_pi.view(-1)
-        next_q = augmented_rewards + (1 - dones) * self.gamma * (min_qf_next - current_sigma * self.alpha * next_state_log_pi)
+        next_q = augmented_rewards + (1 - terminations) * self.gamma * (min_qf_next - current_sigma * self.alpha * next_state_log_pi)
         
         qf1_next_int = self._critic_scalar_value(target_qf1_int, next_critic_input, normalized=False)
         qf2_next_int = self._critic_scalar_value(target_qf2_int, next_critic_input, normalized=False)
@@ -796,7 +780,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = "cuda" if torch.cuda.is_available() and args.cuda else "cpu"
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
@@ -819,6 +803,7 @@ if __name__ == "__main__":
     ), "only continuous action space is supported"
 
     hidden_layer_sizes = hidden_layer_sizes_for_env_id(args.env_id)
+    envs.single_observation_space.dtype = np.float32  # type:ignore
     
     AgentClass = DistSAC if args.distributional else EVSAC
     agent = AgentClass(
@@ -837,19 +822,12 @@ if __name__ == "__main__":
         hidden_layer_sizes=hidden_layer_sizes,
         n_quantiles=args.n_quantiles,
         n_target_quantiles=args.n_target_quantiles,
+        device=device,
+        buffer_device=device,
     ).to(device)
     
     agent.attach_tensorboard(writer, prefix="agent")
 
-    envs.single_observation_space.dtype = np.float32  # type:ignore
-    rb = ReplayBuffer(
-        args.buffer_size,
-        envs.single_observation_space,
-        envs.single_action_space,
-        device,
-        n_envs=args.num_envs,
-        handle_timeout_termination=False,
-    )
     start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
@@ -889,13 +867,9 @@ if __name__ == "__main__":
             for idx, trunc in enumerate(truncations):
                 if trunc and infos["_final_observation"][idx]:
                     real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)  # type:ignore
 
-        # update running stats
-        agent.update_running_stats(
-            torch.tensor(real_next_obs, dtype=torch.float32), 
-            torch.tensor(rewards, dtype=torch.float32)
-        )
+        # Use unified observer
+        agent.observe(obs, actions, rewards, real_next_obs, terminations, truncations, infos)
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
@@ -905,7 +879,7 @@ if __name__ == "__main__":
         if env_steps > args.learning_starts:
             target_updates = env_steps // 8
             while updates_performed < target_updates:
-                if rb.size() < args.batch_size:
+                if agent.buffer.size() < args.batch_size:
                     break
                 agent.update(args.batch_size, env_steps)
                 updates_performed += 1
