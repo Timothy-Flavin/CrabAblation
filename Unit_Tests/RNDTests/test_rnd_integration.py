@@ -9,6 +9,8 @@ import argparse
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from learning_algorithms.DQN_Rainbow import EVRainbowDQN
+from learning_algorithms.SAC_Rainbow import EVSAC
+from learning_algorithms.PG_Rainbow import StandardPPOAgent
 rng = np.random.default_rng()
 # Simple Deterministic N-Chain Environment
 class NChainEnv(gym.Env):
@@ -52,15 +54,13 @@ class NChainEnv(gym.Env):
 
 def train_dqn(use_rnd=False):
     env = NChainEnv(n=10)
-    envs = gym.vector.SyncVectorEnv([lambda: NChainEnv(n=10)])
     agent = EVRainbowDQN(
-        input_dim=10, 
-        n_action_dims=1, 
-        n_action_bins=2, 
-        envs=envs,
+        input_dim=10,
+        n_action_dims=1,
+        n_action_bins=2,
         Beta=1.0 if use_rnd else 0.0,
         lr=1e-3,
-        burn_in_updates=20, # Start updating right away
+        burn_in_updates=20,
         beta_half_life_steps=2500
     )
     
@@ -102,8 +102,6 @@ def train_dqn(use_rnd=False):
     return returns
 
 
-from learning_algorithms.SAC_Rainbow import SACAgent
-
 class ContinuousNChainEnv(NChainEnv):
     def __init__(self, n=10):
         super().__init__(n)
@@ -115,16 +113,15 @@ class ContinuousNChainEnv(NChainEnv):
 
 def train_sac(use_rnd=False):
     env = ContinuousNChainEnv(n=10)
-    envs = gym.vector.SyncVectorEnv([lambda: env])
-    agent = SACAgent(
+    envs = gym.vector.SyncVectorEnv([lambda: ContinuousNChainEnv(n=10)])
+    agent = EVSAC(
         envs=envs,
         beta_rnd=1.0 if use_rnd else 0.0,
         policy_lr=1e-3,
         q_lr=1e-3,
         munchausen=False,
-        alpha=0.0,
+        alpha=0.2,
         autotune=False,
-        popart=True,
         beta_half_life_steps=2500
     )
     
@@ -147,8 +144,7 @@ def train_sac(use_rnd=False):
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             
-            import numpy as np
-            agent.observe(obs, np.array([action], dtype=np.int32), reward, next_obs, terminated, truncated)
+            agent.observe(obs, np.array([action], dtype=np.float32), reward, next_obs, terminated, truncated)
             if agent.buffer.pos >= 1 or getattr(agent.buffer, "full", False):
                 agent.update(batch_size=1, global_step=global_step)
             
@@ -158,8 +154,6 @@ def train_sac(use_rnd=False):
         returns.append(episode_return)
         
     return returns
-
-from learning_algorithms.PG_Rainbow import PPOAgent
 
 class MockEnvPPO:
     def __init__(self, obs_shape, act_shape):
@@ -171,7 +165,7 @@ class MockEnvPPO:
 def train_ppo(use_rnd=False):
     env = NChainEnv(n=7)
     envs = MockEnvPPO((7,), ())
-    agent = PPOAgent(
+    agent = StandardPPOAgent(
         envs=envs,
         Beta=50.0 if use_rnd else 0.0,
         learning_rate=1e-3,

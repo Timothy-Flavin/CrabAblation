@@ -1,6 +1,11 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
 import torch
 import unittest
 from learning_algorithms.DQN_Rainbow import EVRainbowDQN
+from learning_algorithms.cleanrl_buffers import ReplayBufferSamples
 import numpy as np
 
 class DummyBanditEnv:
@@ -47,16 +52,16 @@ class TestScaleInvariance(unittest.TestCase):
                 # update agent
                 class MockBuffer:
                     def sample(self, *args, **kwargs):
-                        import types
-                        return types.SimpleNamespace(
+                        return ReplayBufferSamples(
                             observations=obs,
                             actions=act,
-                            rewards=r.unsqueeze(1),
                             next_observations=next_obs,
-                            dones=terms.unsqueeze(1)
+                            terminations=terms.unsqueeze(1),
+                            truncations=torch.zeros_like(terms).unsqueeze(1),
+                            rewards=r.unsqueeze(1),
                         )
                 agent.buffer = MockBuffer()
-                agent.update(batch_size=batch_size, step=step, extrinsic_only=True)
+                agent.update(batch_size=batch_size, step=step)
                 
                 # Check greedy action on state (1)
                 with torch.no_grad():

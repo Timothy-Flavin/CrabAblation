@@ -77,6 +77,11 @@ def get_obs_shape(
         raise NotImplementedError(f"{observation_space} observation space is not supported")
 
 
+def _pin(t: th.Tensor) -> th.Tensor:
+    """Pin tensor to page-locked memory only when a CUDA device is available."""
+    return t.pin_memory() if th.cuda.is_available() else t
+
+
 def get_device(device: th.device | str = "auto") -> th.device:
     if device == "auto":
         device = "cuda" if th.cuda.is_available() else "cpu"
@@ -177,14 +182,14 @@ class ReplayBuffer(BaseBuffer):
         self.handle_timeout_termination = handle_timeout_termination
 
         # Initialize Pinned Tensors
-        self.observations = th.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=th.float32).pin_memory()
+        self.observations = _pin(th.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=th.float32))
         if not optimize_memory_usage:
-            self.next_observations = th.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=th.float32).pin_memory()
+            self.next_observations = _pin(th.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=th.float32))
 
-        self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=self.action_dtype).pin_memory()
-        self.rewards = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.terms = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.truncs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+        self.actions = _pin(th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=self.action_dtype))
+        self.rewards = _pin(th.zeros((self.buffer_size, self.n_envs), dtype=th.float32))
+        self.terms = _pin(th.zeros((self.buffer_size, self.n_envs), dtype=th.float32))
+        self.truncs = _pin(th.zeros((self.buffer_size, self.n_envs), dtype=th.float32))
 
     def add(
         self,
@@ -254,15 +259,15 @@ class RolloutBuffer(BaseBuffer):
         self.reset()
 
     def reset(self) -> None:
-        self.observations = th.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=th.float32).pin_memory()
-        self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=self.action_dtype).pin_memory()
-        self.rewards = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.returns = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.terminations = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.truncations = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.values = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.log_probs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
-        self.advantages = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+        self.observations = _pin(th.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=th.float32))
+        self.actions = _pin(th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=self.action_dtype))
+        self.rewards = _pin(th.zeros((self.buffer_size, self.n_envs), dtype=th.float32))
+        self.returns = _pin(th.zeros((self.buffer_size, self.n_envs), dtype=th.float32))
+        self.terminations = _pin(th.zeros((self.buffer_size, self.n_envs), dtype=th.float32))
+        self.truncations = _pin(th.zeros((self.buffer_size, self.n_envs), dtype=th.float32))
+        self.values = _pin(th.zeros((self.buffer_size, self.n_envs), dtype=th.float32))
+        self.log_probs = _pin(th.zeros((self.buffer_size, self.n_envs), dtype=th.float32))
+        self.advantages = _pin(th.zeros((self.buffer_size, self.n_envs), dtype=th.float32))
         self.generator_ready = False
         super().reset()
 

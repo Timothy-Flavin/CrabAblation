@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
 import torch
 import unittest
 from learning_algorithms.RainbowNetworks import EV_Q_Network, IQN_Network

@@ -5,7 +5,7 @@ import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from learning_algorithms.PG_Rainbow import PPOAgent
+from learning_algorithms.PG_Rainbow import StandardPPOAgent
 
 class MockSpace:
     def __init__(self, shape):
@@ -22,7 +22,7 @@ def test_ppo_rnd_normalization():
     input_dim = 10
     mock_env = MockEnv((input_dim,), (2,))
     
-    agent = PPOAgent(envs=mock_env, Beta=1.0)
+    agent = StandardPPOAgent(envs=mock_env, Beta=1.0)
     
     huge_state = torch.ones((10, input_dim), dtype=torch.float32) * 1e6
     

@@ -424,7 +424,7 @@ class EVRainbowDQN(RainbowBase):
                 )
             b_r_int = rnd_errors.detach()
         else:
-            rnd_errors, rnd_loss, b_r_int = torch.zeros_like(b_r_ext), 0, 0
+            rnd_errors, rnd_loss, b_r_int = torch.zeros_like(b_r_ext), 0, torch.zeros_like(b_r_ext)
 
 
         logpi_now = None
@@ -754,7 +754,7 @@ class IQNRainbowDQN(RainbowBase):
                 )
             b_r_int = rnd_errors.detach()
         else:
-            rnd_errors, rnd_loss, b_r_int = torch.zeros_like(b_r_ext), 0, 0
+            rnd_errors, rnd_loss, b_r_int = torch.zeros_like(b_r_ext), 0, torch.zeros_like(b_r_ext)
 
         entropy_loss = 0.0
         current_sigma = self.ext_online.output_layer.sigma.detach()

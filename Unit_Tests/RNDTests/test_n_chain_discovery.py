@@ -23,9 +23,9 @@ def test_n_chain_discovery():
     state_1 = torch.zeros((10, input_dim), dtype=torch.float32)
     state_1[:, 1] = 1.0
 
-    # Burn-in RND on state 0 (supplying batch_norm=False directly to avoid unit test wiping out variance)
+    # Burn-in RND on state 0
     for _ in range(500):
-        agent._update_RND(state_0, batch_norm=False)
+        agent._update_RND(state_0)
 
     # Now verify the raw output of the RND model
     with torch.no_grad():
@@ -40,7 +40,7 @@ def test_n_chain_discovery():
 
     # Check Visitation Decay Test
     for _ in range(500):
-        agent._update_RND(state_1, batch_norm=False)
+        agent._update_RND(state_1)
         
     with torch.no_grad():
         r_int_1_decayed = agent.rnd(state_1).mean().item()
@@ -72,7 +72,7 @@ def test_full_chain():
         
         # Train until state_current RND decays
         for _ in range(300):
-            agent._update_RND(state_current, batch_norm=False)
+            agent._update_RND(state_current)
             
         with torch.no_grad():
             r_int_known = agent.rnd(state_current).mean().item()

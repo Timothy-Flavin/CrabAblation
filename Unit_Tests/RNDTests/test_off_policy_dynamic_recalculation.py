@@ -21,16 +21,14 @@ def test_off_policy_dynamic_recalc():
     state = torch.zeros((10, 10), dtype=torch.float32)
     state[:, 0] = 1.0
     
-    with torch.no_grad():
-        r_int_pre, _ = agent._update_RND(state, batch_norm=False)
-        r_int_pre = r_int_pre.mean().item()
-        
+    r_int_pre, _ = agent._update_RND(state)
+    r_int_pre = r_int_pre.mean().item()
+
     for _ in range(50):
-        agent._update_RND(state, batch_norm=False)
-        
-    with torch.no_grad():
-        r_int_post, _ = agent._update_RND(state, batch_norm=False)
-        r_int_post = r_int_post.mean().item()
+        agent._update_RND(state)
+
+    r_int_post, _ = agent._update_RND(state)
+    r_int_post = r_int_post.mean().item()
         
     assert r_int_pre != r_int_post, "Dynamic recalculation is yielding identical results! Normalization/RND update is broken."
     

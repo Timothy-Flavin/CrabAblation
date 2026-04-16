@@ -1,16 +1,17 @@
+import sys
+import os
 import torch
 import unittest
 import numpy as np
 import gymnasium as gym
 from collections import namedtuple
 import logging
-import os
-import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 from learning_algorithms.DQN_Rainbow import EVRainbowDQN
-from learning_algorithms.SAC_Rainbow import SACAgent
-from learning_algorithms.PG_Rainbow import PPOAgent
+from learning_algorithms.SAC_Rainbow import EVSAC
+from learning_algorithms.PG_Rainbow import StandardPPOAgent
+from learning_algorithms.cleanrl_buffers import ReplayBufferSamples
 
 # Ensure log dir exists
 log_dir = "Unit_Tests/PopArtTests/logs"
@@ -83,16 +84,16 @@ class TestPopartIntegration(unittest.TestCase):
 
                 class MockBuffer:
                     def sample(self, *args, **kwargs):
-                        import types
-                        return types.SimpleNamespace(
+                        return ReplayBufferSamples(
                             observations=obs,
                             actions=act,
-                            rewards=r.view(-1, 1),
                             next_observations=next_obs,
-                            dones=terms.view(-1, 1)
+                            terminations=terms.view(-1, 1),
+                            truncations=torch.zeros_like(terms).view(-1, 1),
+                            rewards=r.view(-1, 1),
                         )
                 agent.buffer = MockBuffer()
-                agent.update(batch_size=batch_size, step=step, extrinsic_only=True)
+                agent.update(batch_size=batch_size, step=step)
 
                 if check_stats and step == 10:
                     new_sigma = agent.ext_online.output_layer.sigma.item()
@@ -135,12 +136,9 @@ class TestPopartIntegration(unittest.TestCase):
             np.random.seed(seed)
             envs = DummyEnvs(continuous=True)
             envs.num_envs = 1
-            envs.num_envs = 1
-            agent = SACAgent(
+            agent = EVSAC(
                 envs,
                 hidden_layer_sizes=(32, 32),
-                popart=True,
-                distributional=False,
                 q_lr=0.05,
                 policy_lr=0.01,
             ).to(torch.device("cpu"))
@@ -185,7 +183,8 @@ class TestPopartIntegration(unittest.TestCase):
                             actions=acts,
                             rewards=r,
                             next_observations=next_obs,
-                            dones=dones
+                            terminations=dones,
+                            truncations=torch.zeros_like(dones),
                         )
                 agent.buffer = MockBuffer()
                 agent.update(batch_size=batch_size, global_step=step)
@@ -226,11 +225,10 @@ class TestPopartIntegration(unittest.TestCase):
             torch.manual_seed(seed)
             np.random.seed(seed)
             envs = DummyEnvs(continuous=False)
-            agent = PPOAgent(
+            agent = StandardPPOAgent(
                 envs,
                 learning_rate=0.05,
                 hidden_layer_sizes=(32, 32),
-                distributional=False,
                 popart=True,
                 num_envs=1,
                 num_steps=64,
