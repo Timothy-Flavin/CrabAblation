@@ -280,6 +280,9 @@ class BaseSAC(Agent):
         super().__init__()
         self.device = torch.device(device)
         self.buffer_device = torch.device(buffer_device)
+        if not torch.cuda.is_available():
+            self.device = "cpu"
+            self.buffer_device = "cpu"
         self.update_steps = 0
 
         self.gamma = gamma

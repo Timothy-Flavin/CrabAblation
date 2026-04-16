@@ -148,6 +148,7 @@ class BasePPOAgent(Agent):
         intrinsic_lr: float = 2.5e-4,
         use_gae: bool = True,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
+        device = "cpu",
     ):
         super().__init__()
         self.anneal_lr = anneal_lr
@@ -164,6 +165,9 @@ class BasePPOAgent(Agent):
         self.update_epochs = update_epochs
         self.num_minibatches = num_minibatches
         self.timing = {}
+        self.device = device
+        if not torch.cuda.is_available():
+            self.device = "cpu"
 
         self.popart = popart
         self.Beta = Beta
@@ -225,6 +229,7 @@ class BasePPOAgent(Agent):
             )
 
     def to(self, device):
+        self.device = device
         self.actor.to(device)
         self.rnd.to(device)
         self.obs_rms.to(device)
