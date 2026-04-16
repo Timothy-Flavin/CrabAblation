@@ -97,8 +97,6 @@ def get_args():
 
     args = parser.parse_args()
 
-    if args.algo == "sac" and args.update_every == 4:
-        args.update_every = 8
     if (
         args.env_name == "mujoco"
         and args.algo == "dqn"

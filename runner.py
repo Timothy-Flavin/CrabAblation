@@ -855,7 +855,7 @@ def rollout_offline_rl(
                     updates_performed += 1
                 steps_since_update -= args.update_every
         else: # SAC
-            while total_samples > batch_size and steps_since_update >= getattr(args, "policy_frequency", 1):
+            while steps_since_update >= args.update_every:
                 loss_val = agent.update(batch_size=batch_size, global_step=total_samples)
                 if loss_val is not None:
                     try:
@@ -863,8 +863,7 @@ def rollout_offline_rl(
                     except:
                         pass
                 updates_performed += 1
-                agent.update_target()
-                steps_since_update -= getattr(args, "policy_frequency", 1)
+                steps_since_update -= args.update_every
         time_taken_modular["update_agent"] += time.time() - t_
 
     train_time = time.time() - start_time
