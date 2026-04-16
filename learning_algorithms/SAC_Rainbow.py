@@ -635,6 +635,11 @@ class DistSAC(BaseSAC):
         return (torch.abs(taus_expanded - I_) * huber).mean()
 
     def _compute_targets(self, next_critic_input, augmented_rewards, int_r, terminations, next_state_log_pi, current_sigma):
+        batch_size = next_critic_input.shape[0]
+        assert augmented_rewards.shape == (batch_size,), f"Expected augmented_rewards shape ({batch_size},), got {augmented_rewards.shape}"
+        assert int_r.shape == (batch_size,), f"Expected int_r shape ({batch_size},), got {int_r.shape}"
+        assert terminations.shape == (batch_size,), f"Expected terminations shape ({batch_size},), got {terminations.shape}"
+
         target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
         target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
         target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
@@ -644,14 +649,17 @@ class DistSAC(BaseSAC):
         
         qf1_next = self._critic_quantiles(target_qf1, next_critic_input, target_taus, normalized=False)
         qf2_next = self._critic_quantiles(target_qf2, next_critic_input, target_taus, normalized=False)
+        assert qf1_next.shape == (batch_size, self.n_target_quantiles), f"Expected qf1_next shape ({batch_size}, {self.n_target_quantiles}), got {qf1_next.shape}"
         min_qf_next = torch.min(qf1_next, qf2_next)
         
         aug_r = augmented_rewards.unsqueeze(1)
         dones_mask = (1 - terminations).unsqueeze(1)
+        assert next_state_log_pi.shape == (batch_size, 1), f"Expected next_state_log_pi shape ({batch_size}, 1), got {next_state_log_pi.shape}"
         next_q = aug_r + dones_mask * self.gamma * (min_qf_next - current_sigma * self.alpha * next_state_log_pi)
         
         qf1_next_int = self._critic_quantiles(target_qf1_int, next_critic_input, target_taus, normalized=False)
         qf2_next_int = self._critic_quantiles(target_qf2_int, next_critic_input, target_taus, normalized=False)
+        assert qf1_next_int.shape == (batch_size, self.n_target_quantiles), f"Expected qf1_next_int shape ({batch_size}, {self.n_target_quantiles}), got {qf1_next_int.shape}"
         min_qf_next_int = torch.min(qf1_next_int, qf2_next_int)
         
         int_r_expanded = int_r.unsqueeze(1) if int_r.ndim == 1 else int_r
@@ -713,6 +721,11 @@ class EVSAC(BaseSAC):
         return q.view(-1)
 
     def _compute_targets(self, next_critic_input, augmented_rewards, int_r, terminations, next_state_log_pi, current_sigma):
+        batch_size = next_critic_input.shape[0]
+        assert augmented_rewards.shape == (batch_size,), f"Expected augmented_rewards shape ({batch_size},), got {augmented_rewards.shape}"
+        assert int_r.shape == (batch_size,), f"Expected int_r shape ({batch_size},), got {int_r.shape}"
+        assert terminations.shape == (batch_size,), f"Expected terminations shape ({batch_size},), got {terminations.shape}"
+
         target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
         target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
         target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
@@ -720,13 +733,16 @@ class EVSAC(BaseSAC):
 
         qf1_next = self._critic_scalar_value(target_qf1, next_critic_input, normalized=False)
         qf2_next = self._critic_scalar_value(target_qf2, next_critic_input, normalized=False)
+        assert qf1_next.shape == (batch_size,), f"Expected qf1_next shape ({batch_size},), got {qf1_next.shape}"
         min_qf_next = torch.min(qf1_next, qf2_next)
         
         next_state_log_pi = next_state_log_pi.view(-1)
+        assert next_state_log_pi.shape == (batch_size,), f"Expected next_state_log_pi shape ({batch_size},), got {next_state_log_pi.shape}"
         next_q = augmented_rewards + (1 - terminations) * self.gamma * (min_qf_next - current_sigma * self.alpha * next_state_log_pi)
         
         qf1_next_int = self._critic_scalar_value(target_qf1_int, next_critic_input, normalized=False)
         qf2_next_int = self._critic_scalar_value(target_qf2_int, next_critic_input, normalized=False)
+        assert qf1_next_int.shape == (batch_size,), f"Expected qf1_next_int shape ({batch_size},), got {qf1_next_int.shape}"
         min_qf_next_int = torch.min(qf1_next_int, qf2_next_int)
         
         next_q_int = int_r + self.gamma * min_qf_next_int

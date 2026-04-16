@@ -23,8 +23,8 @@ from environment_utils import (
 from learning_algorithms.cleanrl_buffers import ReplayBuffer
 from learning_algorithms.DQN_Rainbow import EVRainbowDQN, IQNRainbowDQN
 from learning_algorithms.MixedObservationEncoder import MixedObservationEncoder
-from learning_algorithms.PG_Rainbow import PPOAgent
-from learning_algorithms.SAC_Rainbow import SACAgent
+from learning_algorithms.PG_Rainbow import StandardPPOAgent, DistributionalPPOAgent
+from learning_algorithms.SAC_Rainbow import DistSAC, EVSAC
 
 
 def get_args():
@@ -302,11 +302,11 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
     # stays constant as num_envs changes. This keeps updates-per-individual-step
     # constant: update_epochs * num_minibatches / (num_steps * num_envs) = update_epochs / num_steps.
     rollout_steps = max(1, args.num_steps // int(vec_env.num_envs))
-    agent = PPOAgent(
+    AgentClass = DistributionalPPOAgent if cfg["distributional"] else StandardPPOAgent
+    agent = AgentClass(
         vec_env,
         clip_coef=cfg["clip_coef"],
         ent_coef=cfg["ent_coef"],
-        distributional=cfg["distributional"],
         Beta=cfg["Beta"],
         num_envs=int(vec_env.num_envs),
         num_steps=rollout_steps,
@@ -344,7 +344,8 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
     hidden_layer_sizes = tuple(
         get_env_benchmark_spec(args.env_name)["hidden_layer_sizes"]
     )
-    agent = SACAgent(
+    AgentClass = DistSAC if cfg["distributional"] else EVSAC
+    agent = AgentClass(
         _agent_spec_from_vec_env(vec_env),
         gamma=args.gamma,
         tau=args.tau,
@@ -355,9 +356,7 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         alpha=args.alpha,
         autotune=args.autotune,
         entropy_coef_zero=cfg["entropy_coef_zero"],
-        distributional=cfg["distributional"],
         dueling=cfg["dueling"],
-        
         delayed_critics=cfg["delayed_critics"],
         hidden_layer_sizes=hidden_layer_sizes,
         n_quantiles=args.n_quantiles,
