@@ -22,7 +22,12 @@ from learning_algorithms.agent import Agent
 from learning_algorithms.RainbowNetworks import EV_Q_Network, IQN_Network
 from learning_algorithms.RandomDistilation import RNDModel, RunningMeanStd
 from environment_utils import make_env_thunk
-
+import sys
+import platform
+if sys.platform == "darwin" and platform.machine() == "x86_64":
+    # This makes all @torch.compile calls return the original function
+    import torch._dynamo
+    torch._dynamo.config.disable = True
 
 @dataclass
 class Args:
