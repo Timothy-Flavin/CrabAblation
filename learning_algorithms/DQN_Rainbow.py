@@ -337,7 +337,7 @@ class EVRainbowDQN(RainbowBase):
         int_r_clip=5,
         ext_r_clip=5,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
-        min_std: float = 1e-8,
+        min_std: float = 0.01,
     ):
         super().__init__(
             input_dim=input_dim, n_action_dims=n_action_dims, n_action_bins=n_action_bins, n_envs=n_envs, buffer_size=buffer_size,
@@ -658,7 +658,7 @@ class IQNRainbowDQN(RainbowBase):
         norm_obs: bool = True,
         burn_in_updates: int = 0,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
-        min_std: float = 1e-8,
+        min_std: float = 0.01,
     ):
         super().__init__(
             input_dim=input_dim, n_action_dims=n_action_dims, n_action_bins=n_action_bins, n_envs=n_envs, buffer_size=buffer_size,

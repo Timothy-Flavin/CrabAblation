@@ -25,7 +25,7 @@ class EV_Q_Network(nn.Module):
         popart: bool = False,
         encoder: Optional[nn.Module] = None,
         encoder_out_dim: Optional[int] = None,
-        min_std: float =0.001
+        min_std: float =0.01
     ):
         super().__init__()
         self.dueling = dueling
@@ -120,7 +120,7 @@ class IQN_Network(nn.Module):
         popart: bool = False,
         encoder: Optional[nn.Module] = None,
         encoder_out_dim: Optional[int] = None,
-        min_std: float = 0.001
+        min_std: float = 0.01
     ):
         super().__init__()
         self.dueling = dueling

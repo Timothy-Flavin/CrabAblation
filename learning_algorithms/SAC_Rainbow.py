@@ -276,7 +276,7 @@ class BaseSAC(Agent):
         buffer_size: int = int(1e5),
         device: str = "cpu",
         buffer_device: str = "cpu",
-        min_std: float = 1e-8,
+        min_std: float = 0.01,
     ):
         super().__init__()
         self.device = torch.device(device)
