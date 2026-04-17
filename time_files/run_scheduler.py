@@ -7,7 +7,7 @@ def solve_scheduling_problem():
     # ---------------------------------------------------
     # 1. Data Setup
     # ---------------------------------------------------
-    devices = ["timpc", "mac", "laptop"]
+    devices = ["timpc", "mac", "laptop", "white-machine"]
     envs = ["minigrid", "cartpole", "mujoco"]
     models = ["dqn", "ppo", "sac"]
     ablations = [0, 1, 2, 3, 4, 5]
@@ -28,6 +28,7 @@ def solve_scheduling_problem():
 
     # Load env_config.yaml for max_steps
     import yaml
+
     with open(os.path.join(os.path.dirname(__file__), "../env_config.yaml"), "r") as f:
         ENV_CONFIG = yaml.safe_load(f)
 
