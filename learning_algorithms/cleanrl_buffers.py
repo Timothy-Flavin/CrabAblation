@@ -126,6 +126,7 @@ class BaseBuffer(ABC):
         self.buffer_size = buffer_size
         self.device = get_device(device)
         self.n_envs = n_envs
+        self.action_dtype = action_dtype
         # 1. Auto-infer integer dtype if the action space is discrete/binary
         if action_space is not None and isinstance(action_space, (spaces.Discrete, spaces.MultiDiscrete, spaces.MultiBinary)):
             if self.action_dtype == th.float32: # Override the default float32
