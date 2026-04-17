@@ -90,6 +90,25 @@ def get_device(device: th.device | str = "auto") -> th.device:
         return th.device("cpu")
     return device
 
+def supports_int32_gather():
+    x = th.randn(2, 3, device='cpu')
+    idx = th.tensor([[0, 1, 2], [2, 1, 0]], dtype=th.int32, device='cpu')
+    try:
+        th.gather(x, 1, idx)
+    except RuntimeError:
+        print("Torch does not support int32 gather, switching to 64")
+        return False
+        
+    if th.cuda.is_available():
+        x = x.to('cuda')
+        idx = idx.to('cuda')
+        try:
+            th.gather(x, 1, idx)
+        except RuntimeError:
+            print("Torch does not support int32 gather on cuda, switching to 64")
+            return False
+            
+    return True
 
 class BaseBuffer(ABC):
     def __init__(
@@ -107,7 +126,15 @@ class BaseBuffer(ABC):
         self.buffer_size = buffer_size
         self.device = get_device(device)
         self.n_envs = n_envs
-        self.action_dtype = action_dtype
+        # 1. Auto-infer integer dtype if the action space is discrete/binary
+        if action_space is not None and isinstance(action_space, (spaces.Discrete, spaces.MultiDiscrete, spaces.MultiBinary)):
+            if self.action_dtype == th.float32: # Override the default float32
+                self.action_dtype = th.int32
+
+        # 2. Apply your fallback with the correct 'th' namespace
+        if self.action_dtype == th.int32:
+            if not supports_int32_gather():
+                self.action_dtype = th.int64
 
         # Use custom dim if provided, else parse from space
         if obs_shape is not None:
