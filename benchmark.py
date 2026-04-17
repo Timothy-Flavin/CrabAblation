@@ -96,6 +96,8 @@ def get_args():
     parser.add_argument("--hide_seek_bins_per_dim", type=int, default=3)
 
     args = parser.parse_args()
+    if not torch.cuda.is_available():
+        args.device="cpu"
 
     if (
         args.env_name == "mujoco"
