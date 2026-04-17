@@ -26,6 +26,11 @@ def solve_scheduling_problem():
     num_experiments = len(experiments)
     num_devices = len(devices)
 
+    # Load env_config.yaml for max_steps
+    import yaml
+    with open(os.path.join(os.path.dirname(__file__), "../env_config.yaml"), "r") as f:
+        ENV_CONFIG = yaml.safe_load(f)
+
     # Function to get steps per sec handling missing data gracefully
     def get_runtime_minutes(device, experiment):
         env = experiment["env"]
@@ -48,7 +53,8 @@ def solve_scheduling_problem():
         except Exception:
             steps_per_sec = default_sps
 
-        total_steps = 1000000 if env == "mujoco" else 300000
+        # Use max_steps from env_config.yaml, fallback to 300000 if missing
+        total_steps = int(ENV_CONFIG.get(env, {}).get("max_steps", 300000))
         # return runtime in minutes
         return (total_steps / steps_per_sec) / 60.0
 

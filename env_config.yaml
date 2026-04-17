@@ -1,0 +1,18 @@
+cartpole:
+  hidden_layer_sizes: [32, 32]
+  max_steps: 300000
+  buffer_size: 10000
+  n_action_dims: 1
+  n_action_bins: 2
+mujoco:
+  hidden_layer_sizes: [128, 128]
+  max_steps: 2000000
+  buffer_size: 20000
+  n_action_dims: 6
+  n_action_bins: 3
+minigrid:
+  hidden_layer_sizes: [128, 128]
+  max_steps: 1000000
+  buffer_size: 10000
+  n_action_dims: 1
+  n_action_bins: 3

@@ -16,7 +16,6 @@ from environment_utils import (
     ActionTransformHandler,
     _proxy_action_space,
     extract_mixed_observation_shapes,
-    get_env_benchmark_spec,
     make_hide_and_seek_vec_env,
     make_env_thunk,
 )
@@ -25,6 +24,11 @@ from learning_algorithms.DQN_Rainbow import EVRainbowDQN, IQNRainbowDQN
 from learning_algorithms.MixedObservationEncoder import MixedObservationEncoder
 from learning_algorithms.PG_Rainbow import StandardPPOAgent, DistributionalPPOAgent
 from learning_algorithms.SAC_Rainbow import DistSAC, EVSAC
+import yaml
+
+# Load environment config from YAML
+with open("env_config.yaml", "r") as f:
+    ENV_CONFIG = yaml.safe_load(f)
 
 
 def get_args():
@@ -50,7 +54,7 @@ def get_args():
     parser.add_argument("--run", type=int, default=1)
     parser.add_argument("--num_envs", type=int, default=4)
     parser.add_argument("--num_steps", type=int, default=2048)
-    parser.add_argument("--total_steps", type=int, default=1000000)
+    parser.add_argument("--total_steps", type=int, default=None)
     parser.add_argument(
         "--total_steps_override",
         type=int,
@@ -71,13 +75,13 @@ def get_args():
     )
 
     # DQN knobs
-    parser.add_argument("--dqn_buffer_size", type=int, default=10000)
+    parser.add_argument("--dqn_buffer_size", type=int, default=None)
     parser.add_argument("--dqn_batch_size", type=int, default=64)
     parser.add_argument("--update_every", type=int, default=4)
     parser.add_argument("--rnd_burn_in", type=int, default=1000)
 
     # SAC knobs
-    parser.add_argument("--buffer_size", type=int, default=20000)
+    parser.add_argument("--buffer_size", type=int, default=None)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--batch_size", type=int, default=128)
@@ -99,9 +103,20 @@ def get_args():
 
     args = parser.parse_args()
 
+    # Load config for this environment
+    env_cfg = ENV_CONFIG.get(args.env_name, {})
+    # Set max_steps/total_steps from config if not overridden
+    if args.total_steps is None:
+        args.total_steps = int(env_cfg.get("max_steps", 1000000))
+    # Set buffer sizes from config if not overridden
+    if args.dqn_buffer_size is None:
+        args.dqn_buffer_size = int(env_cfg.get("buffer_size", 10000))
+    if args.buffer_size is None:
+        args.buffer_size = int(env_cfg.get("buffer_size", 20000))
     if args.algo == "sac":
         args.update_every = 4
-
+    if args.env_name == "cartpole" and args.total_steps == 1000000:
+        args.total_steps = 300000
     if args.env_name == "mujoco" and args.total_steps == 1000000:
         args.total_steps = 2000000
     if (
@@ -181,10 +196,23 @@ def _agent_spec_from_vec_env(vec_env):
 
 
 def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
+    env_cfg = ENV_CONFIG.get(args.env_name, {})
+    if isinstance(vec_env.single_action_space, gym.spaces.Discrete):
+        n_action_dims = int(env_cfg.get("n_action_dims", 1))
+        n_action_bins = int(env_cfg.get("n_action_bins", vec_env.single_action_space.n))
+    else:
+        n_action_dims = int(env_cfg.get("n_action_dims", 1))
+        n_action_bins = int(env_cfg.get("n_action_bins", 2))
+    hidden_layer_sizes = env_cfg.get("hidden_layer_sizes", [128, 128])
+
+    # Calculate beta decay schedule
+    total_steps = int(getattr(args, "total_steps", 1000000))
+    update_every = int(getattr(args, "update_every", 4))
+    beta_half_life_steps = max(1, (total_steps // update_every) // 5)
     cfg = {
         "munchausen": True,
         "soft": True,
-        "Beta": 0.7, # if args.ablation != 4 else 0.1
+        "Beta": 1.0,  # Start fully intrinsic
         "dueling": True,
         "distributional": True,
         "ent_reg_coef": 0.05,
@@ -192,6 +220,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         "popart": True,
         "tau": 0.03,
         "alpha": 0.9,
+        "beta_half_life_steps": beta_half_life_steps,
     }
 
     if args.ablation == 1:
@@ -207,15 +236,6 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         cfg["ent_reg_coef"] = 0.005
     elif args.ablation == 5:
         cfg["delayed"] = False
-
-    env_spec = get_env_benchmark_spec(args.env_name)
-    if isinstance(vec_env.single_action_space, gym.spaces.Discrete):
-        n_action_dims = 1
-        n_action_bins = int(vec_env.single_action_space.n)
-    else:
-        n_action_dims = int(env_spec["n_action_dims"])
-        n_action_bins = int(env_spec["n_action_bins"])
-    hidden_layer_sizes = env_spec["hidden_layer_sizes"]
 
     AgentClass = IQNRainbowDQN if cfg["distributional"] else EVRainbowDQN
     soft = bool(cfg["soft"])
@@ -245,7 +265,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             tau=tau,
             polyak_tau=0.005,
             alpha=alpha,
-            beta_half_life_steps=50000,
+            beta_half_life_steps=cfg["beta_half_life_steps"],
             norm_obs=False,
             burn_in_updates=1000,
             encoder_factory=encoder_factory,
@@ -268,7 +288,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             tau=tau,
             polyak_tau=0.005,
             alpha=alpha,
-            beta_half_life_steps=50000,
+            beta_half_life_steps=cfg["beta_half_life_steps"],
             norm_obs=False,
             burn_in_updates=1000,
             encoder_factory=encoder_factory,
@@ -277,12 +297,19 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
 
 
 def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
+    env_cfg = ENV_CONFIG.get(args.env_name, {})
+    hidden_layer_sizes = tuple(env_cfg.get("hidden_layer_sizes", [128, 128]))
+    # Calculate beta decay schedule
+    total_steps = int(getattr(args, "total_steps", 1000000))
+    update_every = int(getattr(args, "update_every", 4))
+    beta_half_life_steps = max(1, (total_steps // update_every) // 5)
     cfg = {
         "clip_coef": 0.2,
         "ent_coef": 0.01,
-        "Beta": 0.01,
+        "Beta": 1.0,  # Start fully intrinsic
         "distributional": True,
         "use_gae": True,
+        "beta_half_life_steps": beta_half_life_steps,
     }
     if args.ablation == 1:
         cfg["clip_coef"] = 100.0
@@ -295,12 +322,6 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
     elif args.ablation == 5:
         cfg["use_gae"] = False
 
-    hidden_layer_sizes = tuple(
-        get_env_benchmark_spec(args.env_name)["hidden_layer_sizes"]
-    )
-    # num_minibatches scales with num_envs so that minibatch_size = num_steps
-    # stays constant as num_envs changes. This keeps updates-per-individual-step
-    # constant: update_epochs * num_minibatches / (num_steps * num_envs) = update_epochs / num_steps.
     rollout_steps = max(1, args.num_steps // int(vec_env.num_envs))
     AgentClass = DistributionalPPOAgent if cfg["distributional"] else StandardPPOAgent
     agent = AgentClass(
@@ -314,11 +335,18 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
         hidden_layer_sizes=hidden_layer_sizes,
         use_gae=cfg["use_gae"],
         encoder_factory=encoder_factory,
+        beta_half_life_steps=cfg["beta_half_life_steps"],
     )
     return agent, cfg
 
 
 def _sac_agent_from_args(args, vec_env, encoder_factory=None):
+    env_cfg = ENV_CONFIG.get(args.env_name, {})
+    hidden_layer_sizes = tuple(env_cfg.get("hidden_layer_sizes", [128, 128]))
+    # Calculate beta decay schedule
+    total_steps = int(getattr(args, "total_steps", 1000000))
+    update_every = int(getattr(args, "update_every", 4))
+    beta_half_life_steps = max(1, (total_steps // update_every) // 5)
     cfg = {
         "entropy_coef_zero": False,
         "distributional": True,
@@ -326,7 +354,8 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         "popart": True,
         "delayed_critics": True,
         "munchausen": True,   # ablation 1 removes this
-        "Beta": 0.5,         # ablation 3 sets this to 0.0
+        "Beta": 1.0,         # Start fully intrinsic
+        "beta_half_life_steps": beta_half_life_steps,
     }
 
     if args.ablation == 1:
@@ -341,9 +370,6 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
     elif args.ablation == 5:
         cfg["delayed_critics"] = False
 
-    hidden_layer_sizes = tuple(
-        get_env_benchmark_spec(args.env_name)["hidden_layer_sizes"]
-    )
     AgentClass = DistSAC if cfg["distributional"] else EVSAC
     agent = AgentClass(
         _agent_spec_from_vec_env(vec_env),
@@ -364,6 +390,7 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         encoder_factory=encoder_factory,
         munchausen=cfg["munchausen"],
         beta_rnd=cfg["Beta"],
+        beta_half_life_steps=cfg["beta_half_life_steps"],
     )
     return agent, cfg
 
@@ -415,16 +442,16 @@ def build_buffer(args, vec_env, device):
 
 
 def evaluate_agent(agent, args, device, step=0, n_steps=1000000):
+    env_cfg = ENV_CONFIG.get(args.env_name, {})
     if args.env_name == "hide-and-seek-engine":
         vec_env = create_vec_env(args)
         try:
-            env_spec = get_env_benchmark_spec(args.env_name)
             action_transform = ActionTransformHandler(
                 args.env_name,
                 args.algo,
                 vec_env.single_action_space,
                 bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
-                discrete_bins=int(env_spec["n_action_bins"]),
+                discrete_bins=int(env_cfg.get("n_action_bins", 2)),
                 batched=True,
             )
             obs, _ = vec_env.reset()
@@ -467,13 +494,12 @@ def evaluate_agent(agent, args, device, step=0, n_steps=1000000):
     obs, _ = env.reset()
     done = False
     reward = 0.0
-    env_spec = get_env_benchmark_spec(args.env_name)
     action_transform = ActionTransformHandler(
         args.env_name,
         args.algo,
         env.action_space,
         bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
-        discrete_bins=int(env_spec["n_action_bins"]),
+        discrete_bins=int(env_cfg.get("n_action_bins", 2)),
         batched=False,
     )
 
@@ -523,13 +549,13 @@ def rollout_online_rl(
     total_steps_override=None,
 ):
     obs_raw, _ = vec_env.reset()
-    env_spec = get_env_benchmark_spec(args.env_name)
+    env_cfg = ENV_CONFIG.get(args.env_name, {})
     action_transform = ActionTransformHandler(
         args.env_name,
         "ppo",
         vec_env.single_action_space,
         bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
-        discrete_bins=int(env_spec["n_action_bins"]),
+        discrete_bins=int(env_cfg.get("n_action_bins", 2)),
         batched=True,
     )
 
@@ -743,13 +769,13 @@ def rollout_offline_rl(
     steps_since_update = 0
     updates_performed = 0
 
-    env_spec = get_env_benchmark_spec(args.env_name)
+    env_cfg = ENV_CONFIG.get(args.env_name, {})
     action_transform = ActionTransformHandler(
         args.env_name,
         args.algo,
         vec_env.single_action_space,
         bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
-        discrete_bins=int(env_spec["n_action_bins"]),
+        discrete_bins=int(env_cfg.get("n_action_bins", 2)),
         batched=True,
     )
     
@@ -918,7 +944,6 @@ def main():
                 agent,
                 args,
                 device,
-                buffer,
                 max_wall_time_seconds=max_wall,
                 total_steps_override=step_override,
             )
