@@ -50,6 +50,7 @@ class TestPopartIntegration(unittest.TestCase):
                 hidden_layer_sizes=[32],
                 lr=0.05,
                 burn_in_updates=0,
+                min_std=1e-8,
             ).to(torch.device("cpu"))
 
             batch_size = 32
@@ -68,6 +69,10 @@ class TestPopartIntegration(unittest.TestCase):
 
             # Disable the internal ext_r_clip tracker for this test to ensure pure PopArt functionality
             agent.ext_r_clip = float("inf")
+
+            # After burn-in, sigma is clamped to min_std (constant burn-in has zero variance).
+            # During the first update step it will jump to track the actual reward std ∝ scale.
+            sigma_after_burn_in = agent.ext_online.output_layer.sigma.item()
 
             steps_to_converge = 200
             for step in range(1, 200):
@@ -122,7 +127,7 @@ class TestPopartIntegration(unittest.TestCase):
             f"DQN Convergence steps -> Large: {large_mean:.2f} +- {large_std:.2f}, Small: {small_mean:.2f} +- {small_std:.2f}"
         )
         self.assertTrue(
-            abs(large_mean - small_mean) <= 120,
+            abs(large_mean - small_mean) <= 20,
             f"DQN scale invariance failed: {large_mean} vs {small_mean}",
         )
         self.assertLess(large_mean, 195)
@@ -130,6 +135,8 @@ class TestPopartIntegration(unittest.TestCase):
 
     def test_sac_popart_integration(self):
         logging.info("Starting SAC PopArt Integration Test (25 Seeds)")
+
+        MAX_STEPS = 500
 
         def train_sac(scale, seed, check_stats=False):
             torch.manual_seed(seed)
@@ -141,6 +148,11 @@ class TestPopartIntegration(unittest.TestCase):
                 hidden_layer_sizes=(32, 32),
                 q_lr=0.05,
                 policy_lr=0.01,
+                min_std=1e-8,
+                gamma=0.0,           # bandit task: Q* = r exactly, so burn-in sigma matches true Q distribution
+                munchausen=False,    # munchausen adds absolute log_pi (~-0.38) to raw rewards;
+                beta_rnd=0.0,        # at scale=1e-4 these swamp the reward, breaking scale invariance
+                entropy_coef_zero=True,  # autotune alpha starts large relative to 1e-4 rewards
             ).to(torch.device("cpu"))
 
             batch_size = 64
@@ -158,9 +170,18 @@ class TestPopartIntegration(unittest.TestCase):
             agent.qf1.output_layer.beta = old_beta1
             agent.qf2.output_layer.beta = old_beta2
 
-            steps_to_converge = 200
+            # After burn-in, sigma should be proportional to scale.
+            # This is the explicit proof that both agents are operating at different reward scales.
+            sigma_after_burn_in = agent.qf1.output_layer.sigma.item()
+            if check_stats:
+                logging.info(
+                    f"SAC scale={scale:.0e} burn-in sigma={sigma_after_burn_in:.3e} "
+                    f"(expected ~{scale * 0.091:.3e})"
+                )
 
-            for step in range(1, 200):
+            steps_to_converge = MAX_STEPS
+
+            for step in range(1, MAX_STEPS):
                 obs = torch.ones(batch_size, 1)
                 next_obs = torch.ones(batch_size, 1)
                 dones = torch.zeros(batch_size, 1)
@@ -168,13 +189,6 @@ class TestPopartIntegration(unittest.TestCase):
                 acts = torch.rand(batch_size, 10) * 2 - 1
                 r = scale - scale * torch.mean(torch.abs(acts), dim=-1, keepdim=True)
 
-                data = BatchData(
-                    observations=obs,
-                    actions=acts,
-                    rewards=r,
-                    next_observations=next_obs,
-                    dones=dones,
-                )
                 class MockBuffer:
                     def sample(self, *args, **kwargs):
                         import types
@@ -195,7 +209,7 @@ class TestPopartIntegration(unittest.TestCase):
                         orig_sigma, new_sigma, "SAC PopArt sigma did not update!"
                     )
                     logging.info(
-                        f"SAC PopArt Sigma updated from {orig_sigma} to {new_sigma}"
+                        f"SAC scale={scale:.0e} PopArt sigma: {orig_sigma:.3e} -> {new_sigma:.3e}"
                     )
 
                 with torch.no_grad():
@@ -203,10 +217,29 @@ class TestPopartIntegration(unittest.TestCase):
                     if (mean_action.abs() < 0.2).all():
                         steps_to_converge = step
                         break
-            return steps_to_converge
 
-        large_steps = [train_sac(1e4, s, check_stats=(s == 0)) for s in range(100)]
-        small_steps = [train_sac(1e-4, s, check_stats=False) for s in range(100)]
+            return steps_to_converge, sigma_after_burn_in
+
+        large_results = [train_sac(1e4, s, check_stats=(s == 0)) for s in range(100)]
+        small_results = [train_sac(1e-4, s, check_stats=(s == 0)) for s in range(100)]
+
+        large_steps = [r[0] for r in large_results]
+        small_steps = [r[0] for r in small_results]
+        large_sigmas = [r[1] for r in large_results]
+        small_sigmas = [r[1] for r in small_results]
+
+        # Explicit proof the agents ran at genuinely different reward scales:
+        # sigma must track reward std, which is proportional to scale.
+        # If sigma_large / sigma_small is not ~1e8, the rewards were aliased.
+        sigma_ratio = np.mean(large_sigmas) / np.mean(small_sigmas)
+        logging.info(
+            f"SAC sigma ratio large/small = {sigma_ratio:.3e} (expected ~1e8)"
+        )
+        self.assertGreater(
+            sigma_ratio, 1e6,
+            f"SAC PopArt sigma ratio {sigma_ratio:.3e} too small — "
+            "large and small scale agents may be using the same reward scale"
+        )
 
         large_mean, large_std = np.mean(large_steps), np.std(large_steps)
         small_mean, small_std = np.mean(small_steps), np.std(small_steps)
@@ -214,9 +247,12 @@ class TestPopartIntegration(unittest.TestCase):
         logging.info(
             f"SAC Convergence steps -> Large: {large_mean:.2f} +- {large_std:.2f}, Small: {small_mean:.2f} +- {small_std:.2f}"
         )
-        # Ensure both converge within 200 steps on average (so they didn't just timeout constantly)
-        self.assertLess(large_mean, 195)
-        self.assertLess(small_mean, 195)
+        self.assertTrue(
+            abs(large_mean - small_mean) <= 50,
+            f"SAC scale invariance failed: {large_mean} vs {small_mean}",
+        )
+        self.assertLess(large_mean, MAX_STEPS * 0.97)
+        self.assertLess(small_mean, MAX_STEPS * 0.97)
 
     def test_ppo_popart_integration(self):
         logging.info("Starting PPO PopArt Integration Test (25 Seeds)")

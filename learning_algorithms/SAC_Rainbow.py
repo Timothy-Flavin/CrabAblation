@@ -276,6 +276,7 @@ class BaseSAC(Agent):
         buffer_size: int = int(1e5),
         device: str = "cpu",
         buffer_device: str = "cpu",
+        min_std: float = 1e-8,
     ):
         super().__init__()
         self.device = torch.device(device)
@@ -325,6 +326,7 @@ class BaseSAC(Agent):
             "hidden_layer_sizes": [hidden1, hidden2],
             "dueling": self.dueling,
             "popart": True,
+            "min_std": min_std,
         }
 
         def _critic_encoder_kwargs():

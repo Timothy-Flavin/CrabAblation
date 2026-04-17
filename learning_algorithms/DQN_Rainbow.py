@@ -337,6 +337,7 @@ class EVRainbowDQN(RainbowBase):
         int_r_clip=5,
         ext_r_clip=5,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
+        min_std: float = 1e-8,
     ):
         super().__init__(
             input_dim=input_dim, n_action_dims=n_action_dims, n_action_bins=n_action_bins, n_envs=n_envs, buffer_size=buffer_size,
@@ -360,11 +361,11 @@ class EVRainbowDQN(RainbowBase):
 
         self.ext_online = EV_Q_Network(
             input_dim, n_action_dims, n_action_bins, hidden_layer_sizes=hidden_layer_sizes,
-            dueling=dueling, popart=True, **ext_online_kwargs,
+            dueling=dueling, popart=True, min_std=min_std, **ext_online_kwargs,
         ).float()
         self.ext_target = EV_Q_Network(
             input_dim, n_action_dims, n_action_bins, hidden_layer_sizes=hidden_layer_sizes,
-            dueling=dueling, popart=True, **ext_target_kwargs,
+            dueling=dueling, popart=True, min_std=min_std, **ext_target_kwargs,
         ).float()
         self.int_online = EV_Q_Network(
             input_dim, n_action_dims, n_action_bins, hidden_layer_sizes=hidden_layer_sizes,
@@ -657,6 +658,7 @@ class IQNRainbowDQN(RainbowBase):
         norm_obs: bool = True,
         burn_in_updates: int = 0,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
+        min_std: float = 1e-8,
     ):
         super().__init__(
             input_dim=input_dim, n_action_dims=n_action_dims, n_action_bins=n_action_bins, n_envs=n_envs, buffer_size=buffer_size,
@@ -680,11 +682,11 @@ class IQNRainbowDQN(RainbowBase):
 
         self.ext_online = IQN_Network(
             input_dim, n_action_dims, n_action_bins, hidden_layer_sizes=hidden_layer_sizes,
-            dueling=dueling,  popart=True,**ext_online_kwargs,
+            dueling=dueling, popart=True, min_std=min_std, **ext_online_kwargs,
         ).float()
         self.ext_target = IQN_Network(
             input_dim, n_action_dims, n_action_bins, hidden_layer_sizes=hidden_layer_sizes,
-            dueling=dueling,  popart=True,**ext_target_kwargs,
+            dueling=dueling, popart=True, min_std=min_std, **ext_target_kwargs,
         ).float()
         self.int_online = IQN_Network(
             input_dim, n_action_dims, n_action_bins, hidden_layer_sizes=hidden_layer_sizes,
