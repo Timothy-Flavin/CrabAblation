@@ -182,7 +182,7 @@ def main():
 
     results_root = Path("all_results")
     if not results_root.exists():
-        print("Error: 'results/' directory not found.")
+        print("Error: 'all_results/' directory not found.")
         return
 
     # Iterate through each algorithm folder

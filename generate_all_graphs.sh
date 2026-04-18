@@ -6,7 +6,7 @@ set -e
 
 # Algorithms and environments to process
 ALGORITHMS=(dqn sac ppo)
-ENVIRONMENTS=(cartpole minigrid mujoco hide-and-seek)
+ENVIRONMENTS=(cartpole minigrid mujoco)
 XAXES=(episodes steps time)
 
 # Default runs and smoothing weight (edit as needed)
