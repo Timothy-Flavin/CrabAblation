@@ -13,3 +13,5 @@ all_results
 # Consolidated results
 all_results/
 timing_*.json
+results copy
+all_results_old
