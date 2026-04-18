@@ -612,7 +612,7 @@ def rollout_online_rl(
     for iteration in range(1, num_iterations + 1):
         for step in range(rollout_steps):
             if global_step > 0 and global_step % 10000 == 0:
-                print(f"[PPO] Step {global_step}/{total_step_budget} (Iteration {iteration}/{num_iterations})")
+                print(f"[PPO] Step {global_step}/{total_step_budget} (Iteration {iteration}/{num_iterations}) beta {agent.Beta}")
             if (
                 max_wall_time_seconds is not None
                 and max_wall_time_seconds > 0
