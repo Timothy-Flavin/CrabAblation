@@ -651,18 +651,28 @@ def rollout_online_rl(
             np_action = action.cpu().numpy()
             step_action = action_transform.transform_action(np_action)
 
-            next_obs_np, reward, terminations, truncations, _ = vec_env.step(
+
+            next_obs_np, reward, terminations, truncations, infos = vec_env.step(
                 step_action
             )
             ep_len += 1
             truncations = np.logical_or(truncations, ep_len >= 2000)
-            next_done_np = np.logical_or(terminations, truncations)
+
+            # 1. Do NOT merge truncations for GAE. Use only strict terminations.
+            next_done_np = terminations
             agent_rewards[step] = torch.as_tensor(reward, device=device).view(-1)
 
+            # 2. Extract final observations for bootstrapping
+            real_next_obs = next_obs_np.copy() if not isinstance(next_obs_np, torch.Tensor) else next_obs_np.clone()
+            for idx, trunc in enumerate(truncations):
+                if trunc and "final_observation" in infos:
+                    real_next_obs[idx] = infos["final_observation"][idx]
+
             next_obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=device)
-            next_done = torch.as_tensor(
-                next_done_np, dtype=torch.float32, device=device
-            )
+            next_done = torch.as_tensor(next_done_np, dtype=torch.float32, device=device)
+
+            # Save the true next state of the final boundary step to pass to the agent
+            last_real_next_obs = torch.as_tensor(real_next_obs, dtype=torch.float32, device=device)
 
             for env_i in range(args.num_envs):
                 r_ep[env_i] += float(reward[env_i])
@@ -707,8 +717,9 @@ def rollout_online_rl(
             agent_dones,
             agent_ext_values,
             agent_int_values,
-            next_obs,
+            last_real_next_obs, # passed explicitly for the GAE bootstrap
             next_done,
+            global_step=global_step, # pass global_step for beta decay
         )
         updates_performed += int(agent.update_epochs * agent.num_minibatches)
         lhist.append(float(loss))
