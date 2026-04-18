@@ -271,7 +271,7 @@ class BasePPOAgent(Agent):
         if r is not None:
             self.ext_rms.update(r.reshape(-1).to(dtype=torch.float64))
 
-    def update(self, obs, actions, logprobs, rewards, dones, ext_values, int_values, next_obs, next_done):
+    def update(self, obs, actions, logprobs, rewards, dones, ext_values, int_values, next_obs, next_done, global_step=None):
         device = obs.device
         if self.anneal_lr:
             frac = 1.0 - (self.step - 1.0) / (self.update_epochs * 1000)
@@ -279,7 +279,10 @@ class BasePPOAgent(Agent):
             self.optimizer.param_groups[0]["lr"] = lrnow
             self.int_optim.param_groups[0]["lr"] = lrnow
 
-        if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
+        # Use global_step for beta decay if provided
+        if self.beta_half_life_steps is not None and self.beta_half_life_steps > 0 and global_step is not None:
+            self.Beta = self.start_Beta * (0.5 ** (global_step / self.beta_half_life_steps))
+        elif self.beta_half_life_steps is not None and self.beta_half_life_steps > 0:
             self.Beta = self.start_Beta * (0.5 ** (self.step / self.beta_half_life_steps))
 
         # --- Shared RND Processing ---
@@ -289,18 +292,11 @@ class BasePPOAgent(Agent):
 
         with torch.no_grad():
             norm_next_obs = self.obs_rms.normalize(flat_next_obs.to(torch.float64)).to(torch.float32)
-
-        rnd_errors = self.rnd(norm_next_obs)
-
-        with torch.no_grad():
+            rnd_errors = self.rnd(norm_next_obs)
             int_rewards_flat = rnd_errors.detach()
             norm_int_rewards_flat = self.int_rms.scale(int_rewards_flat.to(torch.float64)).to(torch.float32)
             int_rewards = norm_int_rewards_flat.view(self.num_steps, self.batch_size // self.num_steps)
-
-        rnd_loss = rnd_errors.mean()
-        self.rnd_optim.zero_grad()
-        rnd_loss.backward()
-        self.rnd_optim.step()
+        # RND optimization moved to minibatch loop below
 
         # --- Shared GAE Calculation ---
         with torch.no_grad():
@@ -353,12 +349,23 @@ class BasePPOAgent(Agent):
         with torch.no_grad():
             self._update_popart_stats(b_ext_returns, b_int_returns)
 
+
         # --- Shared Epoch Loop ---
         for epoch in range(self.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, self.batch_size, self.minibatch_size):
                 end = start + self.minibatch_size
                 mb_inds = b_inds[start:end]
+
+                # --- RND Predictor Update ---
+                with torch.no_grad():
+                    norm_mb_obs = self.obs_rms.normalize(b_obs[mb_inds]).float()
+                mb_rnd_errors = self.rnd(norm_mb_obs)
+                rnd_loss = mb_rnd_errors.mean()
+                self.rnd_optim.zero_grad()
+                rnd_loss.backward()
+                self.rnd_optim.step()
+                # -----------------------------
 
                 _, newlogprob, entropy, new_ext_value, new_int_value = self.get_action_and_values(
                     b_obs[mb_inds], b_actions.long()[mb_inds]
@@ -562,19 +569,28 @@ class DistributionalPPOAgent(BasePPOAgent):
         return loss
 
     def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, device):
-        norm_ext_returns = self.ext_critic.output_layer.normalize(b_ext_returns[mb_inds]) if self.popart else b_ext_returns[mb_inds]
-        norm_int_returns = self.int_critic.output_layer.normalize(b_int_returns[mb_inds]) if self.popart else b_int_returns[mb_inds]
+        # Calculate scalar advantages for the shift
+        mb_ext_advantages = b_ext_returns[mb_inds] - b_ext_values[mb_inds]
+        mb_int_advantages = b_int_returns[mb_inds] - b_int_values[mb_inds]
 
+        # --- Extrinsic Critic ---
         ext_taus = torch.rand(len(mb_inds), self.n_quantiles, device=device)
+        with torch.no_grad():
+            old_ext_quantiles = self.ext_critic(b_obs[mb_inds], ext_taus, normalized=False).view(len(mb_inds), self.n_quantiles)
+            ext_targets = old_ext_quantiles + mb_ext_advantages.unsqueeze(-1)
+        
+        norm_ext_targets = self.ext_critic.output_layer.normalize(ext_targets) if self.popart else ext_targets
         ext_quantiles_norm = self.ext_critic(b_obs[mb_inds], ext_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
-        
-        assert ext_quantiles_norm.shape[0] == norm_ext_returns.shape[0], f"Shape mismatch: ext_quantiles {ext_quantiles_norm.shape}, returns {norm_ext_returns.shape}"
-        v_loss_ext = self._quantile_huber_loss(ext_quantiles_norm, norm_ext_returns, ext_taus)
+        v_loss_ext = self._quantile_huber_loss(ext_quantiles_norm, norm_ext_targets, ext_taus)
 
+        # --- Intrinsic Critic ---
         int_taus = torch.rand(len(mb_inds), self.n_quantiles, device=device)
-        int_quantiles_norm = self.int_critic(b_obs[mb_inds], int_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
+        with torch.no_grad():
+            old_int_quantiles = self.int_critic(b_obs[mb_inds], int_taus, normalized=False).view(len(mb_inds), self.n_quantiles)
+            int_targets = old_int_quantiles + mb_int_advantages.unsqueeze(-1)
         
-        assert int_quantiles_norm.shape[0] == norm_int_returns.shape[0], f"Shape mismatch: int_quantiles {int_quantiles_norm.shape}, returns {norm_int_returns.shape}"
-        v_loss_int = self._quantile_huber_loss(int_quantiles_norm, norm_int_returns, int_taus)
+        norm_int_targets = self.int_critic.output_layer.normalize(int_targets) if self.popart else int_targets
+        int_quantiles_norm = self.int_critic(b_obs[mb_inds], int_taus, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
+        v_loss_int = self._quantile_huber_loss(int_quantiles_norm, norm_int_targets, int_taus)
 
         return v_loss_ext, v_loss_int
