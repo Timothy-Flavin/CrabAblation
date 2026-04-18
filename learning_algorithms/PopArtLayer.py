@@ -31,7 +31,7 @@ class PopArtLayer(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # PopArt layers typically initialize the final projection to zero 
+        # PopArt layers typically initialize the final projection to zero
         # so that the unnormalized outputs naturally start exactly at mu
         nn.init.zeros_(self.weight)
         if self.bias is not None:
@@ -62,6 +62,7 @@ class PopArtLayer(nn.Module):
         """
         # Calculate batch statistics (Scalar)
         targets_flat = targets.reshape(-1)
+        targets_flat = torch.clamp(targets_flat, min=-1e5, max=1e5)
         batch_mean = targets_flat.mean()
         batch_sq_mean = (targets_flat**2).mean()
 
@@ -71,7 +72,7 @@ class PopArtLayer(nn.Module):
 
         # Calculate new sigma = sqrt(E[x^2] - E[x]^2)
         new_sigma = torch.sqrt(torch.clamp(new_nu - new_mu**2, min=self.epsilon**2))
-        new_sigma = torch.clamp(new_sigma, min=self.epsilon)
+        new_sigma = torch.clamp(new_sigma, min=self.epsilon, max=1e5)
 
         # Update weights and biases to preserve unnormalized outputs
         # W_new = W_old * (sigma_old / sigma_new)

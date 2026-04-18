@@ -30,7 +30,7 @@ class PopArtDuelingHead(nn.Module):
         nn.init.zeros_(self.fc_V.weight)
         if self.fc_V.bias is not None:
             nn.init.zeros_(self.fc_V.bias)
-            
+
         nn.init.zeros_(self.fc_A.weight)
         if self.fc_A.bias is not None:
             nn.init.zeros_(self.fc_A.bias)
@@ -54,6 +54,7 @@ class PopArtDuelingHead(nn.Module):
         """
         Updates mu/sigma and adjusts V and A weights to preserve outputs.
         """
+        target_q_unnormalized = torch.clamp(target_q_unnormalized, min=-1e5, max=1e5)
         # --- 1. Update Statistics (Same as standard PopArt) ---
         old_mu = self.mu.clone()
         old_sigma = self.sigma.clone()
