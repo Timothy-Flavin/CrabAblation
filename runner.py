@@ -302,8 +302,8 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
     hidden_layer_sizes = tuple(env_cfg.get("hidden_layer_sizes", [128, 128]))
     # Calculate beta decay schedule
     total_steps = int(getattr(args, "total_steps", 1000000))
-    update_every = int(getattr(args, "update_every", 4))
-    beta_half_life_steps = max(1, (total_steps // update_every) // 5)
+    update_every = 1
+    beta_half_life_steps = max(1, (total_steps) // 5)
     cfg = {
         "clip_coef": 0.2,
         "ent_coef": 0.01,
@@ -557,7 +557,7 @@ def rollout_online_rl(
     max_wall_time_seconds=None,
     total_steps_override=None,
 ):
-    obs_raw, _ = vec_env.reset()
+    obs, _ = vec_env.reset()
     env_cfg = ENV_CONFIG.get(args.env_name, {})
     action_transform = ActionTransformHandler(
         args.env_name,
@@ -569,8 +569,6 @@ def rollout_online_rl(
     )
 
     total_step_budget = _compute_rollout_budget(args, total_steps_override)
-    rollout_steps = max(1, args.num_steps // args.num_envs)
-    num_iterations = max(1, total_step_budget // (args.num_envs * rollout_steps))
 
     rhist = []
     smooth_rhist = []
@@ -597,22 +595,10 @@ def rollout_online_rl(
         if hasattr(agent, "attach_tensorboard"):
             agent.attach_tensorboard(writer, prefix="agent")
 
-    obs_shape = vec_env.single_observation_space.shape
-    act_shape = vec_env.single_action_space.shape
-
-    agent_obs = torch.zeros((rollout_steps, args.num_envs) + obs_shape).to(device)
-    agent_actions = torch.zeros((rollout_steps, args.num_envs) + act_shape).to(device)
-    agent_logprobs = torch.zeros((rollout_steps, args.num_envs)).to(device)
-    agent_rewards = torch.zeros((rollout_steps, args.num_envs)).to(device)
-    agent_dones = torch.zeros((rollout_steps, args.num_envs)).to(device)
-    agent_ext_values = torch.zeros((rollout_steps, args.num_envs)).to(device)
-    agent_int_values = torch.zeros((rollout_steps, args.num_envs)).to(device)
-
     global_step = 0
-    next_obs = torch.as_tensor(obs_raw, dtype=torch.float32, device=device)
-    next_done = torch.zeros(args.num_envs, device=device)
     updates_performed = 0
     timed_out = False
+<<<<<<< HEAD
 
     eval_every_episodes = getattr(args, "eval_every_episodes", 25)
     if max_wall_time_seconds is None:
@@ -647,45 +633,68 @@ def rollout_online_rl(
             agent_int_values[step] = int_v
             agent_actions[step] = action
             agent_logprobs[step] = logprob
+=======
+    eval_every_episodes = getattr(args, 'eval_every_episodes', 25)
 
-            np_action = action.cpu().numpy()
-            step_action = action_transform.transform_action(np_action)
+    if max_wall_time_seconds is None:
+        max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
 
+    while global_step < total_step_budget:
+        if global_step > 0 and global_step % 10000 == 0:
+            print(f"[PPO] Step {global_step}/{total_step_budget} beta {agent.Beta}")
+        
+        if (
+            max_wall_time_seconds is not None
+            and max_wall_time_seconds > 0
+            and (time.time() - start_time) >= max_wall_time_seconds
+        ):
+            timed_out = True
+            break
+>>>>>>> 264c2522ed45e4a0cafdfab0a38916b54c75406b
 
-            next_obs_np, reward, terminations, truncations, infos = vec_env.step(
-                step_action
-            )
-            ep_len += 1
-            truncations = np.logical_or(truncations, ep_len >= 2000)
+        with torch.no_grad():
+            tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
+            # Ext/Int values are no longer needed here since we batch them in update()
+            action, logprob = agent.sample_action(tobs) 
 
-            # 1. Do NOT merge truncations for GAE. Use only strict terminations.
-            next_done_np = terminations
-            agent_rewards[step] = torch.as_tensor(reward, device=device).view(-1)
+        np_action = action.cpu().numpy()
+        step_action = action_transform.transform_action(np_action)
 
-            # 2. Extract final observations for bootstrapping
-            real_next_obs = next_obs_np.copy() if not isinstance(next_obs_np, torch.Tensor) else next_obs_np.clone()
-            for idx, trunc in enumerate(truncations):
-                if trunc and "final_observation" in infos:
-                    real_next_obs[idx] = infos["final_observation"][idx]
+        next_obs, reward, terminations, truncations, infos = vec_env.step(step_action)
+        ep_len += 1
 
-            next_obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=device)
-            next_done = torch.as_tensor(next_done_np, dtype=torch.float32, device=device)
+        # Funnel strictly into observe. Observe now handles the final_observation extraction.
+        agent.observe(
+            obs,
+            action, 
+            logprob, 
+            reward, 
+            next_obs, 
+            terminations, 
+            truncations,
+            infos  # Pass infos so the agent can catch truncations
+        )
 
-            # Save the true next state of the final boundary step to pass to the agent
-            last_real_next_obs = torch.as_tensor(real_next_obs, dtype=torch.float32, device=device)
+        for env_i in range(args.num_envs):
+            r_ep[env_i] += float(reward[env_i])
+            if terminations[env_i] or truncations[env_i]:
+                smooth_r = (
+                    r_ep[env_i]
+                    if smooth_r == 0.0
+                    else 0.99 * smooth_r + 0.01 * r_ep[env_i]
+                )
+                rhist.append(float(r_ep[env_i]))
+                smooth_rhist.append(float(smooth_r))
+                ep += 1
+                
+                if writer:
+                    writer.add_scalar("charts/episodic_return", float(r_ep[env_i]), global_step)
 
-            for env_i in range(args.num_envs):
-                r_ep[env_i] += float(reward[env_i])
-                if next_done_np[env_i]:
-                    smooth_r = (
-                        r_ep[env_i]
-                        if smooth_r == 0.0
-                        else 0.99 * smooth_r + 0.01 * r_ep[env_i]
-                    )
-                    rhist.append(float(r_ep[env_i]))
-                    smooth_rhist.append(float(smooth_r))
-                    ep += 1
+                if ep % eval_every_episodes == 0 and ep > 0:
+                    eval_res = evaluate_agent(agent, args, device, step=global_step, n_steps=total_step_budget)
+                    eval_hist.append(eval_res)
                     if writer:
+<<<<<<< HEAD
                         writer.add_scalar(
                             "charts/episodic_return", float(r_ep[env_i]), global_step
                         )
@@ -708,33 +717,21 @@ def rollout_online_rl(
 
         if timed_out:
             break
+=======
+                        writer.add_scalar("charts/eval_return", eval_res, global_step)
+                
+                r_ep[env_i] = 0.0
+                ep_len[env_i] = 0
+>>>>>>> 264c2522ed45e4a0cafdfab0a38916b54c75406b
 
-        loss = agent.update(
-            agent_obs,
-            agent_actions,
-            agent_logprobs,
-            agent_rewards,
-            agent_dones,
-            agent_ext_values,
-            agent_int_values,
-            last_real_next_obs, # passed explicitly for the GAE bootstrap
-            next_done,
-            global_step=global_step, # pass global_step for beta decay
-        )
-        updates_performed += int(agent.update_epochs * agent.num_minibatches)
-        lhist.append(float(loss))
+        obs = next_obs
+        global_step += args.num_envs
 
-        if iteration % 5 == 0:
-            eval_r = evaluate_agent(
-                agent,
-                args,
-                device,
-                step=global_step,
-                n_steps=total_step_budget,
-            )
-            eval_hist.append(float(eval_r))
-            if writer:
-                writer.add_scalar("charts/eval_return", float(eval_r), global_step)
+        if agent.step_idx >= agent.num_steps:
+            loss = agent.update(global_step=global_step)
+            if loss is not None:
+                lhist.append(float(loss))
+                updates_performed += int(agent.update_epochs * agent.num_minibatches)
 
     train_time = time.time() - start_time
     steps_per_sec = (global_step / train_time) if train_time > 0 else 0.0
@@ -756,7 +753,6 @@ def rollout_online_rl(
         "timed_out": bool(timed_out),
         "train_time": float(train_time),
     }
-
 
 def rollout_offline_rl(
     vec_env,

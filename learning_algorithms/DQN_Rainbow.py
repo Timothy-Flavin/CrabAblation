@@ -937,7 +937,8 @@ class IQNRainbowDQN(RainbowBase):
             ) * self.gamma * (mixed_target + current_sigma * self.tau * ent_bonus)
 
         # Apply PopArt stats tracking over target distributions
-        self.ext_online.output_layer.update_stats(target_values.detach())
+        # Mean to get the expected value and stop popart from thinking taus are
+        self.ext_online.output_layer.update_stats(target_values.detach().mean(-1))
         if self.delayed_target:
             self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
             self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
@@ -1023,7 +1024,10 @@ class IQNRainbowDQN(RainbowBase):
                 ), f"Shape mismatch: b_r_int {b_r_int.unsqueeze(1).shape}, mixed_target_int {mixed_target_int.shape}"
                 int_target_values = b_r_int.unsqueeze(1) + self.gamma * mixed_target_int
 
-            self.int_online.output_layer.update_stats(int_target_values.detach())
+            # Mean -1 to get expected value so popart tracks target variance not env varaince
+            self.int_online.output_layer.update_stats(
+                int_target_values.detach().mean(-1)
+            )
             if self.delayed_target:
                 self.int_target.output_layer.sigma.copy_(
                     self.int_online.output_layer.sigma
