@@ -608,7 +608,8 @@ def rollout_online_rl(
 
         with torch.no_grad():
             tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
-            action, logprob, ext_v, int_v = agent.sample_action(tobs)
+            # Ext/Int values are no longer needed here since we batch them in update()
+            action, logprob = agent.sample_action(tobs) 
 
         np_action = action.cpu().numpy()
         step_action = action_transform.transform_action(np_action)
@@ -616,23 +617,16 @@ def rollout_online_rl(
         next_obs, reward, terminations, truncations, infos = vec_env.step(step_action)
         ep_len += 1
 
-        # Extract true terminal states for accurate value bootstrapping
-        real_next_obs = next_obs.copy() if not isinstance(next_obs, torch.Tensor) else next_obs.clone()
-        for idx, trunc in enumerate(truncations):
-            if trunc and "final_observation" in infos:
-                real_next_obs[idx] = infos["final_observation"][idx]
-
-        # Funnel strictly into observe
+        # Funnel strictly into observe. Observe now handles the final_observation extraction.
         agent.observe(
             obs,
             action, 
             logprob, 
-            ext_v, 
-            int_v, 
             reward, 
-            real_next_obs, 
+            next_obs, 
             terminations, 
-            truncations
+            truncations,
+            infos  # Pass infos so the agent can catch truncations
         )
 
         for env_i in range(args.num_envs):
