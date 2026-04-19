@@ -183,6 +183,7 @@ class BasePPOAgent(Agent):
             self.n_action_dims = 1
             self.n_action_bins = envs.single_action_space.n
 
+        self.num_envs = num_envs
         self.batch_size = int(num_envs * num_steps)
         self.minibatch_size = int(self.batch_size // self.num_minibatches)
         self.num_steps = num_steps
@@ -211,22 +212,23 @@ class BasePPOAgent(Agent):
         )
         self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.step = 0
+        self.step_idx = 0
+        self._init_buffers()
 
-    def _build_actor(self, encoder_factory, hidden_layer_sizes):
-        hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
-        if encoder_factory is None:
-            self.actor = nn.Sequential(
-                layer_init(nn.Linear(self.input_dim, hidden1)), nn.Tanh(),
-                layer_init(nn.Linear(hidden1, hidden2)), nn.Tanh(),
-                layer_init(nn.Linear(hidden2, self.n_action_dims * self.n_action_bins), std=0.01),
-            )
-        else:
-            actor_encoder = encoder_factory()
-            actor_out_dim = infer_encoder_out_dim(actor_encoder, int(self.input_dim))
-            self.actor = nn.Sequential(
-                actor_encoder,
-                layer_init(nn.Linear(actor_out_dim, self.n_action_dims * self.n_action_bins), std=0.01),
-            )
+    def _init_buffers(self):
+        """Initializes internal memory buffers on the correct device"""
+        self.agent_obs = torch.zeros((self.num_steps, self.num_envs) + self.obs_shape, device=self.device)
+        self.agent_actions = torch.zeros((self.num_steps, self.num_envs) + self.action_shape, device=self.device)
+        self.agent_logprobs = torch.zeros((self.num_steps, self.num_envs), device=self.device)
+        self.agent_rewards = torch.zeros((self.num_steps, self.num_envs), device=self.device)
+        self.agent_ext_values = torch.zeros((self.num_steps, self.num_envs), device=self.device)
+        self.agent_int_values = torch.zeros((self.num_steps, self.num_envs), device=self.device)
+        self.agent_terminations = torch.zeros((self.num_steps, self.num_envs), device=self.device)
+        self.agent_truncations = torch.zeros((self.num_steps, self.num_envs), device=self.device)
+
+        self.last_next_obs = torch.zeros((self.num_envs,) + self.obs_shape, device=self.device)
+        self.last_next_term = torch.zeros((self.num_envs,), device=self.device)
+        self.last_next_trunc = torch.zeros((self.num_envs,), device=self.device)
 
     def to(self, device):
         self.device = device
@@ -236,6 +238,7 @@ class BasePPOAgent(Agent):
         self.int_rms.to(device)
         self.ext_rms.to(device)
         self._critics_to(device)
+        self._init_buffers()
         return self
 
     def get_action_and_values(self, obs, action=None):
@@ -263,16 +266,12 @@ class BasePPOAgent(Agent):
     @torch.no_grad()
     def update_running_stats(self, next_obs, r=None):
         obs_flat = next_obs.view(-1, *self.obs_shape)
-        x64 = obs_flat.to(dtype=torch.float64, device=self.obs_rms.mean.device)
-        self.obs_rms.update(x64)
+        self.obs_rms.update(obs_flat)
         norm_x64 = self.obs_rms.normalize(x64)
-        rnd_err = self.rnd(norm_x64.to(dtype=torch.float32)).squeeze().detach()
-        self.int_rms.update(rnd_err.to(dtype=torch.float64))
-        if r is not None:
-            self.ext_rms.update(r.reshape(-1).to(dtype=torch.float64))
-
-    def update(self, obs, actions, logprobs, rewards, dones, terminations, ext_values, int_values, next_obs, next_done, next_termination, global_step=None):
-        device = obs.device
+    def update(self, global_step=None):
+        if self.step_idx < self.num_steps:
+            return None # Buffer not yet full
+        device = self.device
         if self.anneal_lr:
             frac = 1.0 - (self.step - 1.0) / (self.update_epochs * 1000)
             lrnow = frac * self.optimizer.param_groups[0]["lr"]
@@ -286,49 +285,44 @@ class BasePPOAgent(Agent):
             self.Beta = self.start_Beta * (0.5 ** (self.step / self.beta_half_life_steps))
 
         # --- Shared RND Processing ---
-        next_obs_batch = torch.cat([obs[1:], next_obs.unsqueeze(0)], dim=0)
+        next_obs_batch = torch.cat([self.agent_obs[1:], self.last_next_obs.unsqueeze(0)], dim=0)
         flat_next_obs = next_obs_batch.reshape(-1, *self.obs_shape)
-        self.update_running_stats(flat_next_obs, rewards)
+        self.update_running_stats(flat_next_obs, self.agent_rewards)
 
         with torch.no_grad():
             norm_next_obs = self.obs_rms.normalize(flat_next_obs.to(torch.float64)).to(torch.float32)
             rnd_errors = self.rnd(norm_next_obs)
             int_rewards_flat = rnd_errors.detach()
-            norm_int_rewards_flat = self.int_rms.scale(int_rewards_flat.to(torch.float64)).to(torch.float32)
-            int_rewards = norm_int_rewards_flat.view(self.num_steps, self.batch_size // self.num_steps)
-        # RND optimization moved to minibatch loop below
 
         # --- Shared GAE Calculation ---
         with torch.no_grad():
-            next_ext_value, next_int_value = self._get_values(next_obs)
+            next_ext_value, next_int_value = self._get_values(self.last_next_obs)
             next_ext_value, next_int_value = next_ext_value.view(1, -1), next_int_value.view(1, -1)
 
-            ext_advantages = torch.zeros_like(rewards).to(device)
-            int_advantages = torch.zeros_like(rewards).to(device)
+            ext_advantages = torch.zeros_like(self.agent_rewards).to(device)
+            int_advantages = torch.zeros_like(self.agent_rewards).to(device)
             lastgaelam_ext, lastgaelam_int = 0, 0
 
             for t in reversed(range(self.num_steps)):
                 if t == self.num_steps - 1:
-                    next_is_done = next_done
-                    next_is_terminal = next_termination
+                    next_is_term = self.last_next_term
+                    next_is_trunc = self.last_next_trunc
                     next_ext_v = next_ext_value
                     next_int_v = next_int_value
                 else:
-                    next_is_done = dones[t + 1]
-                    next_is_terminal = terminations[t + 1]
-                    next_ext_v = ext_values[t + 1]
-                    next_int_v = int_values[t + 1]
+                    next_is_term = self.agent_terminations[t + 1]
+                    next_is_trunc = self.agent_truncations[t + 1]
+                    next_ext_v = self.agent_ext_values[t + 1]
+                    next_int_v = self.agent_int_values[t + 1]
 
-                # Prevent GAE leakage across any episode boundary
-                nextnonterminal_gae = 1.0 - next_is_done
+                # Prevent GAE leakage across an episode boundary (terminated or truncated)
+                nextnonterminal_gae = 1.0 - torch.clamp(next_is_term + next_is_trunc, 0.0, 1.0)
                 
                 # Bootstrap value if truncated, zero out if genuinely terminated
-                nextnonterminal_value = 1.0 - next_is_terminal
+                nextnonterminal_value = 1.0 - next_is_term
 
-                delta_ext = rewards[t] + self.gamma * next_ext_v * nextnonterminal_value - ext_values[t]
-                
-                # Intrinsic reward streams are typically modeled as a continuous non-episodic MDP
-                delta_int = int_rewards[t] + self.gamma * next_int_v - int_values[t]
+                delta_ext = self.agent_rewards[t] + self.gamma * next_ext_v * nextnonterminal_value - self.agent_ext_values[t]
+                delta_int = int_rewards[t] + self.gamma * next_int_v - self.agent_int_values[t]
 
                 if self.use_gae:
                     ext_advantages[t] = lastgaelam_ext = delta_ext + self.gamma * self.gae_lambda * nextnonterminal_gae * lastgaelam_ext
@@ -336,25 +330,24 @@ class BasePPOAgent(Agent):
                 else:
                     ext_advantages[t] = lastgaelam_ext = delta_ext + self.gamma * nextnonterminal_gae * lastgaelam_ext
                     int_advantages[t] = lastgaelam_int = delta_int + self.gamma * lastgaelam_int
-
             assert ext_advantages.shape == ext_values.shape, f"Shape mismatch: {ext_advantages.shape}, {ext_values.shape}"
             assert int_advantages.shape == int_values.shape, f"Shape mismatch: {int_advantages.shape}, {int_values.shape}"
-            ext_returns = ext_advantages + ext_values
-            int_returns = int_advantages + int_values
+            ext_returns = ext_advantages + self.agent_ext_values
+            int_returns = int_advantages + self.agent_int_values
 
             sigma_ext, sigma_int = self._get_advantages_scaling()
             assert ext_advantages.shape == int_advantages.shape, f"Shape mismatch: {ext_advantages.shape}, {int_advantages.shape}"
             combined_advantages = (ext_advantages / sigma_ext) + self.Beta * (int_advantages / sigma_int)
 
         # Batch Flattening
-        b_obs = obs.reshape((-1,) + self.obs_shape)
-        b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1,) + self.action_shape)
+        b_obs = self.agent_obs.reshape((-1,) + self.obs_shape)
+        b_logprobs = self.agent_logprobs.reshape(-1)
+        b_actions = self.agent_actions.reshape((-1,) + self.action_shape)
         b_combined_advantages = combined_advantages.reshape(-1)
         b_ext_returns = ext_returns.reshape(-1)
         b_int_returns = int_returns.reshape(-1)
-        b_ext_values = ext_values.reshape(-1)
-        b_int_values = int_values.reshape(-1)
+        b_ext_values = self.agent_ext_values.reshape(-1)
+        b_int_values = self.agent_int_values.reshape(-1)
         b_inds = np.arange(self.batch_size)
 
         clipfracs = []
@@ -364,7 +357,6 @@ class BasePPOAgent(Agent):
         with torch.no_grad():
             self._update_popart_stats(b_ext_returns, b_int_returns)
 
-
         # --- Shared Epoch Loop ---
         for epoch in range(self.update_epochs):
             np.random.shuffle(b_inds)
@@ -372,7 +364,7 @@ class BasePPOAgent(Agent):
                 end = start + self.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                # --- RND Predictor Update ---
+                # RND Predictor Update
                 with torch.no_grad():
                     norm_mb_obs = self.obs_rms.normalize(b_obs[mb_inds]).float()
                 mb_rnd_errors = self.rnd(norm_mb_obs)
@@ -380,10 +372,9 @@ class BasePPOAgent(Agent):
                 self.rnd_optim.zero_grad()
                 rnd_loss.backward()
                 self.rnd_optim.step()
-                # -----------------------------
 
                 _, newlogprob, entropy, new_ext_value, new_int_value = self.get_action_and_values(
-                    b_obs[mb_inds], b_actions.long()[mb_inds]
+                    b_obs[mb_inds], b_actions.long()[mb_inds] if self.n_action_dims == 1 else b_actions[mb_inds]
                 )
 
                 logratio = newlogprob - b_logprobs[mb_inds]
@@ -399,13 +390,11 @@ class BasePPOAgent(Agent):
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std(unbiased=False) + 1e-8)
 
                 assert mb_advantages.shape == ratio.shape, f"Shape mismatch: mb_advantages {mb_advantages.shape}, ratio {ratio.shape}"
-
                 # Policy Loss
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_coef, 1 + self.clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
                 entropy_loss = entropy.mean()
-
                 # Value Loss (Delegated to Subclass)
                 v_loss_ext, v_loss_int = self._compute_value_losses(
                     b_obs, mb_inds, b_ext_returns, b_int_returns, 
@@ -451,8 +440,37 @@ class BasePPOAgent(Agent):
             "Beta": float(self.Beta),
         }
         self.step += 1
+        # Reset the buffer index directly here
+        self.step_idx = 0
         return pg_loss_total
 
+        
+    def observe(self, obs, action, logprob, ext_v, int_v, reward, next_obs, term, trunc):
+        """Stores a transition in the rollout buffer."""
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
+        action_t = torch.as_tensor(action, device=self.device)
+        logprob_t = torch.as_tensor(logprob, device=self.device)
+        ext_v_t = torch.as_tensor(ext_v, device=self.device)
+        int_v_t = torch.as_tensor(int_v, device=self.device)
+        reward_t = torch.as_tensor(reward, dtype=torch.float32, device=self.device)
+        term_t = torch.as_tensor(term, dtype=torch.float32, device=self.device)
+        trunc_t = torch.as_tensor(trunc, dtype=torch.float32, device=self.device)
+        next_obs_t = torch.as_tensor(next_obs, dtype=torch.float32, device=self.device)
+
+        self.agent_obs[self.step_idx] = obs_t
+        self.agent_actions[self.step_idx] = action_t
+        self.agent_logprobs[self.step_idx] = logprob_t
+        self.agent_ext_values[self.step_idx] = ext_v_t
+        self.agent_int_values[self.step_idx] = int_v_t
+        self.agent_rewards[self.step_idx] = reward_t
+        self.agent_terminations[self.step_idx] = term_t
+        self.agent_truncations[self.step_idx] = trunc_t
+
+        self.last_next_obs = next_obs_t
+        self.last_next_term = term_t
+        self.last_next_trunc = trunc_t
+
+        self.step_idx += 1
     # =======================================================
     # Abstract Methods for Subclasses
     # =======================================================
