@@ -215,6 +215,22 @@ class BasePPOAgent(Agent):
         self.step_idx = 0
         self._init_buffers()
 
+    def _build_actor(self, encoder_factory, hidden_layer_sizes):
+        hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
+        if encoder_factory is None:
+            self.actor = nn.Sequential(
+                layer_init(nn.Linear(self.input_dim, hidden1)), nn.Tanh(),
+                layer_init(nn.Linear(hidden1, hidden2)), nn.Tanh(),
+                layer_init(nn.Linear(hidden2, self.n_action_dims * self.n_action_bins), std=0.01),
+            )
+        else:
+            actor_encoder = encoder_factory()
+            actor_out_dim = infer_encoder_out_dim(actor_encoder, int(self.input_dim))
+            self.actor = nn.Sequential(
+                actor_encoder,
+                layer_init(nn.Linear(actor_out_dim, self.n_action_dims * self.n_action_bins), std=0.01),
+            )
+
     def _init_buffers(self):
         """Initializes internal memory buffers on the correct device"""
         self.agent_obs = torch.zeros((self.num_steps, self.num_envs) + self.obs_shape, device="cpu")
@@ -242,7 +258,7 @@ class BasePPOAgent(Agent):
         self._init_buffers()
         return self
 
-    def _get_action(entropy=False):
+    def _get_action(self, obs, entropy=False):
         logits = self.actor(obs)
         if self.n_action_dims > 1:
             logits = logits.view(-1, self.n_action_dims, self.n_action_bins)
@@ -252,10 +268,10 @@ class BasePPOAgent(Agent):
         if action is None:
             action = probs.sample()
         log_prob = probs.log_prob(action).sum(dim=-1) if self.n_action_dims > 1 else probs.log_prob(action)
-        entropy=None
+        entropy_calc=None
         if entropy:
-            entropy = probs.entropy().sum(dim=-1) if self.n_action_dims > 1 else probs.entropy()
-        return action, log_prob, entropy
+            entropy_calc = probs.entropy().sum(dim=-1) if self.n_action_dims > 1 else probs.entropy()
+        return action, log_prob, entropy_calc
 
     # Getting action and values for training with gradient's attached
     def get_action_and_values(self, obs, action=None):
