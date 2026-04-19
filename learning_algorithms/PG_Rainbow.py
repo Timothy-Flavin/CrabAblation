@@ -271,7 +271,7 @@ class BasePPOAgent(Agent):
         if r is not None:
             self.ext_rms.update(r.reshape(-1).to(dtype=torch.float64))
 
-    def update(self, obs, actions, logprobs, rewards, dones, ext_values, int_values, next_obs, next_done, global_step=None):
+    def update(self, obs, actions, logprobs, rewards, dones, terminations, ext_values, int_values, next_obs, next_done, next_termination, global_step=None):
         device = obs.device
         if self.anneal_lr:
             frac = 1.0 - (self.step - 1.0) / (self.update_epochs * 1000)
@@ -308,19 +308,34 @@ class BasePPOAgent(Agent):
             lastgaelam_ext, lastgaelam_int = 0, 0
 
             for t in reversed(range(self.num_steps)):
-                nextnonterminal = 1.0 - next_done if t == self.num_steps - 1 else 1.0 - dones[t + 1]
-                next_ext_values = next_ext_value if t == self.num_steps - 1 else ext_values[t + 1]
-                next_int_values = next_int_value if t == self.num_steps - 1 else int_values[t + 1]
+                if t == self.num_steps - 1:
+                    next_is_done = next_done
+                    next_is_terminal = next_termination
+                    next_ext_v = next_ext_value
+                    next_int_v = next_int_value
+                else:
+                    next_is_done = dones[t + 1]
+                    next_is_terminal = terminations[t + 1]
+                    next_ext_v = ext_values[t + 1]
+                    next_int_v = int_values[t + 1]
 
-                delta_ext = rewards[t] + self.gamma * next_ext_values * nextnonterminal - ext_values[t]
-                delta_int = int_rewards[t] + self.gamma * next_int_values - int_values[t]
+                # Prevent GAE leakage across any episode boundary
+                nextnonterminal_gae = 1.0 - next_is_done
+                
+                # Bootstrap value if truncated, zero out if genuinely terminated
+                nextnonterminal_value = 1.0 - next_is_terminal
+
+                delta_ext = rewards[t] + self.gamma * next_ext_v * nextnonterminal_value - ext_values[t]
+                
+                # Intrinsic reward streams are typically modeled as a continuous non-episodic MDP
+                delta_int = int_rewards[t] + self.gamma * next_int_v - int_values[t]
 
                 if self.use_gae:
-                    ext_advantages[t] = lastgaelam_ext = delta_ext + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam_ext
+                    ext_advantages[t] = lastgaelam_ext = delta_ext + self.gamma * self.gae_lambda * nextnonterminal_gae * lastgaelam_ext
                     int_advantages[t] = lastgaelam_int = delta_int + self.gamma * self.gae_lambda * lastgaelam_int
                 else:
-                    ext_advantages[t] = lastgaelam_ext = delta_ext + self.gamma * nextnonterminal * lastgaelam_ext
-                    int_advantages[t] = lastgaelam_int = delta_int + self.gamma * nextnonterminal * lastgaelam_int
+                    ext_advantages[t] = lastgaelam_ext = delta_ext + self.gamma * nextnonterminal_gae * lastgaelam_ext
+                    int_advantages[t] = lastgaelam_int = delta_int + self.gamma * lastgaelam_int
 
             assert ext_advantages.shape == ext_values.shape, f"Shape mismatch: {ext_advantages.shape}, {ext_values.shape}"
             assert int_advantages.shape == int_values.shape, f"Shape mismatch: {int_advantages.shape}, {int_values.shape}"

@@ -301,8 +301,8 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
     hidden_layer_sizes = tuple(env_cfg.get("hidden_layer_sizes", [128, 128]))
     # Calculate beta decay schedule
     total_steps = int(getattr(args, "total_steps", 1000000))
-    update_every = int(getattr(args, "update_every", 4))
-    beta_half_life_steps = max(1, (total_steps // update_every) // 5)
+    update_every = 1
+    beta_half_life_steps = max(1, (total_steps) // 5)
     cfg = {
         "clip_coef": 0.2,
         "ent_coef": 0.01,
@@ -595,13 +595,15 @@ def rollout_online_rl(
     agent_actions = torch.zeros((rollout_steps, args.num_envs) + act_shape).to(device)
     agent_logprobs = torch.zeros((rollout_steps, args.num_envs)).to(device)
     agent_rewards = torch.zeros((rollout_steps, args.num_envs)).to(device)
-    agent_dones = torch.zeros((rollout_steps, args.num_envs)).to(device)
     agent_ext_values = torch.zeros((rollout_steps, args.num_envs)).to(device)
     agent_int_values = torch.zeros((rollout_steps, args.num_envs)).to(device)
+    agent_term = torch.zeros((rollout_steps, args.num_envs)).to(device)
+    agent_trunc = torch.zeros((rollout_steps, args.num_envs)).to(device)
 
     global_step = 0
     next_obs = torch.as_tensor(obs_raw, dtype=torch.float32, device=device)
-    next_done = torch.zeros(args.num_envs, device=device)
+    next_term = torch.zeros(args.num_envs, device=device)
+    next_trunc = torch.zeros(args.num_envs, device=device)
     updates_performed = 0
     timed_out = False
 
@@ -645,10 +647,6 @@ def rollout_online_rl(
                 step_action
             )
             ep_len += 1
-            truncations = np.logical_or(truncations, ep_len >= 2000)
-
-            # 1. Do NOT merge truncations for GAE. Use only strict terminations.
-            next_done_np = terminations
             agent_rewards[step] = torch.as_tensor(reward, device=device).view(-1)
 
             # 2. Extract final observations for bootstrapping
@@ -658,14 +656,15 @@ def rollout_online_rl(
                     real_next_obs[idx] = infos["final_observation"][idx]
 
             next_obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=device)
-            next_done = torch.as_tensor(next_done_np, dtype=torch.float32, device=device)
+            next_trunc = torch.as_tensor(truncations, dtype=torch.float32, device=device)
+            next_term = torch.as_tensor(terminations, dtype=torch.float32, device=device)
 
             # Save the true next state of the final boundary step to pass to the agent
             last_real_next_obs = torch.as_tensor(real_next_obs, dtype=torch.float32, device=device)
 
             for env_i in range(args.num_envs):
                 r_ep[env_i] += float(reward[env_i])
-                if next_done_np[env_i]:
+                if next_term[env_i] or next_trunc[env_i]:
                     smooth_r = (
                         r_ep[env_i]
                         if smooth_r == 0.0
@@ -702,6 +701,20 @@ def rollout_online_rl(
             next_done,
             global_step=global_step, # pass global_step for beta decay
         )
+        loss=agent.update(
+            obs=agent_obs, 
+            actions=agent_actions, 
+            logprobs=agent_logprobs, 
+            rewards=agent_rewards, 
+            dones=, 
+            terminations, 
+            ext_values, 
+            int_values, 
+            next_obs, 
+            next_done, 
+            next_termination, 
+            global_step=global_step):
+
         updates_performed += int(agent.update_epochs * agent.num_minibatches)
         lhist.append(float(loss))
 
