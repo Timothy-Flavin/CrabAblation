@@ -151,14 +151,33 @@ class RainbowBase(Agent):
     def observe(self, obs, action, reward, next_obs, terminated, truncated, info=None):
         # Update random network distillation running mean and std norm
         # if we are using intrinsic rewards.
+        
+        real_next_obs = next_obs
+        if info is not None and "final_observation" in info:
+            if isinstance(next_obs, torch.Tensor):
+                real_next_obs = next_obs.clone()
+            elif isinstance(next_obs, np.ndarray):
+                real_next_obs = next_obs.copy()
+            else:
+                real_next_obs = next_obs  # Fallback
+            if "_final_observation" in info:
+                # Vectorized environment handling
+                for idx, is_final in enumerate(info["_final_observation"]):
+                    if is_final:
+                        real_next_obs[idx] = info["final_observation"][idx]
+            elif "final_observation" in info:
+                # Single environment handling
+                if terminated or truncated:
+                    real_next_obs = info["final_observation"]
+
         if self.Beta > 0.0:
             if isinstance(next_obs, np.ndarray):
                 b_next_obs = torch.as_tensor(
-                    next_obs, dtype=torch.float32, device=self.buffer_device
+                    real_next_obs, dtype=torch.float32, device=self.buffer_device
                 )
             else:
                 b_next_obs = (
-                    next_obs.clone()
+                    real_next_obs.clone()
                     .detach()
                     .to(device=self.buffer_device, dtype=torch.float32)
                 )
@@ -171,7 +190,7 @@ class RainbowBase(Agent):
         # The buffer natively handles the shapes and tensor casting for memory efficiency
         self.buffer.add(
             obs=obs,
-            next_obs=next_obs,
+            next_obs=real_next_obs,
             action=action,
             reward=reward,
             term=terminated,  # Fixed to match function signature
@@ -1128,6 +1147,7 @@ class IQNRainbowDQN(RainbowBase):
             ),
             "last_eps": float(self.last_eps),
         }
+        print(self.last_losses)
         return float(extrinsic_loss.item())
 
     def sample_action(

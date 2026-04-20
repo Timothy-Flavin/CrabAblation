@@ -21,7 +21,6 @@ from environment_utils import (
 )
 from learning_algorithms.cleanrl_buffers import ReplayBuffer
 from learning_algorithms.DQN_Rainbow import EVRainbowDQN, IQNRainbowDQN
-from learning_algorithms.MixedObservationEncoder import MixedObservationEncoder
 from learning_algorithms.PG_Rainbow import StandardPPOAgent, DistributionalPPOAgent
 from learning_algorithms.SAC_Rainbow import DistSAC, EVSAC
 import yaml
@@ -223,8 +222,8 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         "ent_reg_coef": 0.05,
         "delayed": True,
         "popart": True,
-        "tau": 0.03,
-        "alpha": 0.9,
+        "tau": 0.9,
+        "alpha": 0.03,
         "beta_half_life_steps": beta_half_life_steps,
     }
 
@@ -242,12 +241,12 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     elif args.ablation == 5:
         cfg["delayed"] = False
     elif args.ablation == 6:
-        cfg["munchausen"] = False
-        cfg["soft"] = False
-        cfg["ent_reg_coef"] = 0.00
+        cfg["munchausen"] = True
+        cfg["soft"] = True
+        cfg["ent_reg_coef"] = 0.01
         cfg["Beta"] = 0.0
-        cfg["distributional"] = False
-        cfg["dueling"] = False
+        cfg["distributional"] = True
+        cfg["dueling"] = True
         cfg["delayed"] = True
 
     AgentClass = IQNRainbowDQN if cfg["distributional"] else EVRainbowDQN
@@ -831,34 +830,36 @@ def rollout_offline_rl(
         next_obs, rewards, terminations, truncations, infos = vec_env.step(step_action)
         time_taken_modular["env_step"] += time.time() - t_
 
-        for env_i in range(args.num_envs):
-            if ep_len[env_i] + 1 >= getattr(args, "max_frames_per_ep", 2000):
-                truncations[env_i] = True
-
         real_next_obs = (
             next_obs.clone() if isinstance(next_obs, torch.Tensor) else next_obs.copy()
         )
-        for idx, trunc in enumerate(truncations):
-            if trunc and "final_observation" in infos:
-                real_next_obs[idx] = infos["final_observation"][idx]
 
-        # term_or_trunc = np.logical_or(terminations, truncations)
+        # 1. Properly extract final observations for BOTH terminations and truncations
+        if "final_observation" in infos:
+            # Safely get the boolean mask of environments that actually finished
+            _final_masks = infos.get("_final_observation", np.logical_or(terminations, truncations))
+            for idx, is_final in enumerate(_final_masks):
+                if is_final:
+                    real_next_obs[idx] = infos["final_observation"][idx]
+
+        # 2. Add manual runner-level truncations AFTER true env resets have been processed
+        for env_i in range(args.num_envs):
+            if ep_len[env_i] + 1 >= getattr(args, "max_frames_per_ep", 2000):
+                truncations[env_i] = True
 
         actions_arr = np.asarray(actions)
         if args.algo == "dqn" and actions_arr.ndim == 1:
             actions_arr = actions_arr.reshape(-1, 1)
 
-        # Unified Observe (Buffer addition & Stat tracking inside agent)
+        # Unified Observe (Buffer addition & Stat tracking inside agent). Info passed to align with PPO API
         agent.observe(
-            obs, actions_arr, rewards, real_next_obs, terminations, truncations
+            obs, actions_arr, rewards, real_next_obs, terminations, truncations, infos
         )
 
         # Logging & Housekeeping
         for env_i in range(args.num_envs):
             total_samples += 1
-            r_ep[env_i] += float(
-                rewards[env_i] if args.algo == "dqn" else rewards[env_i]
-            )
+            r_ep[env_i] += float(rewards[env_i])
             ep_len[env_i] += 1
             if terminations[env_i] or truncations[env_i]:
                 rhist.append(float(r_ep[env_i]))

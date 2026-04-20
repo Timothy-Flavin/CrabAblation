@@ -3,10 +3,10 @@
 set -euo pipefail
 
 # Default parameters
-ALGOS=("dqn")
-ENVS=("cartpole") 
+ALGOS=("ppo")
+ENVS=("cartpole" "mujoco" "cartpole" "minigrid") 
 #"mujoco" "cartpole" "minigrid"
-ABLATIONS=(6) #0 1 2 3 4 5 
+ABLATIONS=(0 1 2 3 4 5 6) #0 1 2 3 4 5 
 RUNS=5
 DEVICE="cuda"
 DEVICE_NAME="timpc"
