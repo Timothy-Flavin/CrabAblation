@@ -4,9 +4,9 @@ set -euo pipefail
 
 # Default parameters
 ALGOS=("ppo")
-ENVS=("cartpole" "mujoco" "minigrid") 
+ENVS=("cartpole") 
 #"mujoco" "cartpole" "minigrid"
-ABLATIONS=(0 3 4)
+ABLATIONS=(0 1 2 3 4 5)
 RUNS=3
 DEVICE="gpu"
 DEVICE_NAME="timpc"

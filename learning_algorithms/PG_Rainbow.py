@@ -644,7 +644,10 @@ class StandardPPOAgent(BasePPOAgent):
     def _get_ext_critic_params(self): return list(self.ext_critic_base.parameters()) + list(self.ext_critic_head.parameters())
     def _get_int_critic_params(self): return list(self.int_critic_base.parameters()) + list(self.int_critic_head.parameters())
     def _get_values(self,obs,norm=False):
-        return self.ext_critic(obs,normalized=norm).squeeze(-1), self.int_critic(obs,normalized=norm).squeeze(-1)
+        exv = self.ext_critic(obs,normalized=norm).squeeze(-1)
+        ixv = self.int_critic(obs,normalized=norm).squeeze(-1)
+        input(f"exv shape: {exv.shape}, ixv shape: {ixv.shape}")
+        return exv, ixv
     def _get_raw_values(self,obs, norm=False):
         return self.ext_critic(obs, normalized=norm).squeeze(-1), self.int_critic(obs, normalized=norm).squeeze(-1)
     def _values_ev_from_raw(self,values):
@@ -725,7 +728,10 @@ class DistributionalPPOAgent(BasePPOAgent):
     def _get_int_critic_params(self): return list(self.int_critic.parameters())
     def _get_values(self,obs, norm=False):
         taus = torch.rand(obs.shape[0], self.n_quantiles, device=obs.device)
-        return self.ext_critic(obs, taus, normalized=norm).mean(-1), self.int_critic(obs, taus, normalized=norm).mean(-1)
+        exv = self.ext_critic(obs, taus, normalized=norm)
+        ixv = self.int_critic(obs, taus, normalized=norm)
+        input(f"obs: {obs.shape} exv shape: {exv.shape}, ixv shape: {ixv.shape}")
+        return exv, ixv
     def _get_raw_values(self,obs, norm=False):
         taus = torch.rand(obs.shape[0], self.n_quantiles, device=obs.device)
         return self.ext_critic(obs, taus, normalized=norm), self.int_critic(obs, taus, normalized=norm)
