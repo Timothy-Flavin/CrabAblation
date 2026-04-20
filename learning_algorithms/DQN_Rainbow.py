@@ -891,6 +891,7 @@ class IQNRainbowDQN(RainbowBase):
         # Extrinsic Q update
         # ========================================================
         with torch.no_grad():
+            dist_q_shape = (batch_size,self.n_quantiles,self.n_action_dims,self.n_action_bins)
             taus = self._sample_taus(batch_size, self.n_quantiles, self.device)
             target_taus = self._sample_taus(
                 batch_size, self.n_target_quantiles, self.device
@@ -899,20 +900,24 @@ class IQNRainbowDQN(RainbowBase):
             # Online Next Q -> For action selection
             online_next_q_norm = self.ext_online(
                 b_next_obs, taus, normalized=True
-            ).mean(dim=1)
+            )
+            print(online_next_q_norm.shape)
+            online_next_q_norm = online_next_q_norm.view(dist_q_shape).mean(dim=1)
+            print(f"online next q nrm [0] {online_next_q_norm[0]}")
 
             # Target Net Quantiles -> For target values
             t_net = self.ext_target if self.delayed_target else self.ext_online
             target_quantiles_all = t_net(
                 b_next_obs, target_taus, normalized=False
             )  # [B, Nt, D, Bins]
+            print(f"Target quantils shape: {target_quantiles_all.shape}")
 
             m_r = 0.0
             ent_bonus = 0.0
 
             if self.munchausen or self.soft:
                 logpi_next = torch.clamp(
-                    torch.log_softmax(online_next_q_norm / self.tau, dim=-1), min=-1e8
+                    torch.log_softmax(online_next_q_norm / self.tau, dim=-1), min=self.l_clip
                 )
                 pi_next = torch.exp(logpi_next)
                 # Entropy bonus: sum over D
@@ -923,6 +928,9 @@ class IQNRainbowDQN(RainbowBase):
                     )  # sum over D, then [B, 1]
                 else:
                     ent_bonus = ent_bonus.unsqueeze(1)
+                print(f"pi next: {pi_next.shape} logpinext: {logpi_next.shape}, ")
+                if self.soft:
+                    print(f"ent: {ent_bonus.shape}")
                 # Mixed target values
                 mixed_target = (pi_next.unsqueeze(1) * target_quantiles_all).sum(
                     dim=-1
@@ -944,30 +952,41 @@ class IQNRainbowDQN(RainbowBase):
                 if mixed_target.ndim > 2:
                     mixed_target = mixed_target.sum(dim=-1)  # sum over D -> [B, Nt]
 
+            print(f"mixed target dim: {mixed_target.shape}")
             if self.munchausen:
-                q_ext_norm_now = self.ext_online(b_obs, taus, normalized=True).mean(
+                t_expected = torch.linspace(0.01,0.99,self.n_quantiles)
+                q_ext_norm_now = self.ext_online(b_obs, t_expected, normalized=True).mean(
                     dim=1
                 )
-                logpi_now = torch.clamp(
-                    torch.log_softmax(q_ext_norm_now / self.tau, dim=-1), min=-1e8
-                )
+                print(q_ext_norm_now.shape)
+                print(q_ext_norm_now[0])
+                logpi_now = torch.log_softmax(q_ext_norm_now / self.tau, dim=-1)
+                print(f"logpi now: {logpi_now[0]} pi now: {torch.exp(logpi_now[0])}")
+                print(f"logpi shape: {logpi_now.shape} actions shape: {b_actions_idx.shape}")
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(-1)
-
+                print(f"actins: {b_actions_idx[0]} \nselected {selected_logpi[0]} \nlogpis {logpi_now[0]}")
+                print(selected_logpi.shape)
                 # sum r_kl over D if needed
-                r_kl = torch.clamp(selected_logpi, min=self.l_clip)
-                if r_kl.ndim > 1:
-                    r_kl = r_kl.sum(dim=-1)
-                m_r = current_sigma * self.alpha * self.tau * r_kl
-
-            b_r_final = b_r_ext + m_r
+                
+                if selected_logpi.ndim > 1:
+                    print("summed dim 1 logpis for multiple action dims")
+                    r_kl = selected_logpi.sum(dim=-1).view(-1)
+                else:
+                    r_kl = selected_logpi.view(-1)
+                m_r = (current_sigma * self.alpha * self.tau * r_kl).view(-1)
+                print(f"munchausen reward: {m_r} from {current_sigma}*{self.alpha}*{self.tau}")
+            b_r_final = b_r_ext.view(-1) + m_r
             # Target Q-distribution
             assert (
                 b_r_final.shape == b_term.shape
             ), f"Shape mismatch: b_r_final {b_r_final.shape}, b_term {b_term.shape}"
+            assert b_term.ndim == mixed_target.ndim-1, "mixed target is going to broadcast bad"
             target_values = b_r_final.unsqueeze(1) + (1 - b_term).unsqueeze(
                 1
             ) * self.gamma * (mixed_target + current_sigma * self.tau * ent_bonus)
-
+        print(f"We made it past the target calculation br {b_r_final.unsqueeze(1).shape} bterm {(1 - b_term).unsqueeze(1).shape} mix_target {mixed_target.shape}, ")
+        if self.soft:
+            print(f"ent: {ent_bonus.shape}")
         # Apply PopArt stats tracking over target distributions
         # Mean to get the expected value and stop popart from thinking taus are
         self.ext_online.output_layer.update_stats(target_values.detach().mean(-1))
