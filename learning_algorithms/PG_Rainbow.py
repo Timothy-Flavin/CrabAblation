@@ -484,7 +484,7 @@ class BasePPOAgent(Agent):
                 self.rnd_optim.step()
 
                 _, newlogprob, entropy, new_ext_value, new_int_value = self.get_action_and_values(
-                    b_obs[mb_inds], b_actions.long()[mb_inds] if self.n_action_dims == 1 else b_actions[mb_inds]
+                    b_obs[mb_inds], b_actions.long()[mb_inds]
                 )
 
                 logratio = newlogprob - b_logprobs[mb_inds]
@@ -558,7 +558,12 @@ class BasePPOAgent(Agent):
             "clipfrac": np.mean(clipfracs) if clipfracs else 0.0,
             "explained_variance": explained_var,
             "Beta": float(self.Beta),
+            "ext_returns": ext_returns.detach().to('cpu').mean().item(),
+            "int_returns": int_returns.detach().to('cpu').mean().item(),
+            "ext_adv": ext_advantages.detach().to('cpu').mean().item(),
+            "int_adv": int_advantages.detach().to('cpu').mean().item(),
         }
+        print(self.last_losses)
         self.step += 1
         # Reset the buffer index directly here
         self.step_idx = 0
@@ -773,12 +778,12 @@ class DistributionalPPOAgent(BasePPOAgent):
         quantile_loss = torch.abs(taus_expanded - (td < 0).float()) * huber / kappa
         # 4. Correct Reduction: 
         # Average over target quantiles (dim 2), then sum/average over pred quantiles (dim 1)
-        return quantile_loss.mean(dim=2).sum(dim=1).mean()
+        return quantile_loss.mean(dim=2).mean(dim=1).mean()
 
     def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, b_ext_advantages, b_int_advantages, device):
         # Calculate scalar advantages for the shift
-        mb_ext_advantages = b_ext_returns[mb_inds] - b_ext_values[mb_inds]
-        mb_int_advantages = b_int_returns[mb_inds] - b_int_values[mb_inds]
+        mb_ext_advantages = b_ext_advantages[mb_inds] 
+        mb_int_advantages = b_int_advantages[mb_inds]
         # shape [BatchSize]
         # --- Extrinsic Critic ---
         ext_taus_target = torch.rand(len(mb_inds), self.n_quantiles, device=device)
