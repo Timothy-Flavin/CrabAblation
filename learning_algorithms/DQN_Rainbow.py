@@ -496,7 +496,7 @@ class EVRainbowDQN(RainbowBase):
                 next_head_vals = (
                     pi_next
                     * (q_next_target_raw - current_sigma * self.tau * logpi_next)
-                ).sum(-1)
+                ).mean(-1)
             # Next value with no entropy or weighted sum, using argmax policy
             else:
                 target_actions_next = q_next_online_norm.argmax(
@@ -507,7 +507,7 @@ class EVRainbowDQN(RainbowBase):
                 ).squeeze(-1)
             # vdn sum the vals
             if next_head_vals.ndim > 1:
-                next_head_vals = next_head_vals.sum(-1)
+                next_head_vals = next_head_vals.mean(-1)
             assert (
                 b_r_ext.shape == b_term.shape == next_head_vals.shape
             ), f"Shape mismatch: {b_r_ext.shape}, {b_term.shape}, {next_head_vals.shape}"
@@ -525,7 +525,7 @@ class EVRainbowDQN(RainbowBase):
             -1
         )  # [B, D]
         if q_selected_norm.ndim > 1:
-            q_selected_norm = q_selected_norm.sum(-1)
+            q_selected_norm = q_selected_norm.mean(-1)
         assert (
             q_selected_norm.shape == td_target_norm.shape
         ), f"Shape mismatch: q_selected_norm {q_selected_norm.shape}, td_target_norm {td_target_norm.shape}"
@@ -566,7 +566,7 @@ class EVRainbowDQN(RainbowBase):
                 -1
             )
             if int_q_next_target.ndim > 1:
-                int_q_next_target = int_q_next_target.sum(-1)
+                int_q_next_target = int_q_next_target.mean(-1)
             assert (
                 b_r_int.view(-1).shape == int_q_next_target.shape
             ), f"Shape mismatch: b_r_int {b_r_int.view(-1).shape}, int_q_next_target {int_q_next_target.shape}"
@@ -586,7 +586,7 @@ class EVRainbowDQN(RainbowBase):
             -1
         )
         if int_q_selected_norm.ndim > 1:
-            int_q_selected_norm = int_q_selected_norm.sum(-1)
+            int_q_selected_norm = int_q_selected_norm.mean(-1)
         assert (
             int_q_selected_norm.shape == int_td_target_norm.shape
         ), f"Shape mismatch: int_q_selected_norm {int_q_selected_norm.shape}, int_td_target_norm {int_td_target_norm.shape}"
@@ -636,7 +636,7 @@ class EVRainbowDQN(RainbowBase):
             ),
             "last_eps": float(self.last_eps),
         }
-        print(self.last_losses)
+        #print(self.last_losses)
 
         return float(extrinsic_loss.item())
 
@@ -936,7 +936,7 @@ class IQNRainbowDQN(RainbowBase):
                     dim=-1
                 )  # sum over bins -> [B, Nt, D]
                 if mixed_target.ndim > 2:
-                    mixed_target = mixed_target.sum(dim=-1)  # sum over D -> [B, Nt]
+                    mixed_target = mixed_target.mean(dim=-1)  # sum over D -> [B, Nt]
             else:
                 target_actions = online_next_q_norm.argmax(dim=-1)
                 action_idx = (
@@ -950,11 +950,12 @@ class IQNRainbowDQN(RainbowBase):
                     -1
                 )  # [B, Nt, D]
                 if mixed_target.ndim > 2:
-                    mixed_target = mixed_target.sum(dim=-1)  # sum over D -> [B, Nt]
+                    mixed_target = mixed_target.mean(dim=-1)  # sum over D -> [B, Nt]
 
             print(f"mixed target dim: {mixed_target.shape}")
             if self.munchausen:
-                t_expected = torch.linspace(0.01,0.99,self.n_quantiles)
+                t_expected = torch.linspace(0.01,0.99,self.n_quantiles,device=self.device)
+                t_expected = t_expected.unsqueeze(0).expand(batch_size, -1)
                 q_ext_norm_now = self.ext_online(b_obs, t_expected, normalized=True).mean(
                     dim=1
                 )
@@ -1010,7 +1011,7 @@ class IQNRainbowDQN(RainbowBase):
             -1
         )  # [B, N, D]
         if pred_chosen.ndim > 2:
-            pred_chosen = pred_chosen.sum(dim=-1)  # [B, N]
+            pred_chosen = pred_chosen.mean(dim=-1)  # [B, N]
         assert (
             pred_chosen.shape[0] == target_values_norm.shape[0]
             and pred_chosen.ndim == target_values_norm.ndim == 2
@@ -1067,7 +1068,7 @@ class IQNRainbowDQN(RainbowBase):
                     -1
                 )  # [B, Nt, D]
                 if mixed_target_int.ndim > 2:
-                    mixed_target_int = mixed_target_int.sum(dim=-1)  # [B, Nt]
+                    mixed_target_int = mixed_target_int.mean(dim=-1)  # [B, Nt]
 
                 # No terminal mask for intrinsic reward
                 assert (
@@ -1100,7 +1101,7 @@ class IQNRainbowDQN(RainbowBase):
                 -1
             )  # [B, N, D]
             if int_pred_chosen.ndim > 2:
-                int_pred_chosen = int_pred_chosen.sum(dim=-1)  # [B, N]
+                int_pred_chosen = int_pred_chosen.mean(dim=-1)  # [B, N]
 
             assert (
                 int_pred_chosen.shape[0] == int_target_values_norm.shape[0]
