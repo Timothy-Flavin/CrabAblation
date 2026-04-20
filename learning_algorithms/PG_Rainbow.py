@@ -525,9 +525,11 @@ class BasePPOAgent(Agent):
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(
-                    list(self.actor.parameters()) + self._get_ext_critic_params(), self.max_grad_norm
-                )
+
+                # Clip actor and critic separately to prevent global norm squashing
+                nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+                nn.utils.clip_grad_norm_(self._get_ext_critic_params(), self.max_grad_norm)
+
                 self.optimizer.step()
 
                 self.int_optim.zero_grad()
@@ -563,7 +565,7 @@ class BasePPOAgent(Agent):
             "ext_adv": ext_advantages.detach().to('cpu').mean().item(),
             "int_adv": int_advantages.detach().to('cpu').mean().item(),
         }
-        print(self.last_losses)
+        #print(self.last_losses)
         self.step += 1
         # Reset the buffer index directly here
         self.step_idx = 0
@@ -740,13 +742,18 @@ class DistributionalPPOAgent(BasePPOAgent):
 
     def _get_ext_critic_params(self): return list(self.ext_critic.parameters())
     def _get_int_critic_params(self): return list(self.int_critic.parameters())
-    def _get_values(self,obs, norm=False):
-        taus = torch.rand(obs.shape[0], self.n_quantiles, device=obs.device)
+    def _get_values(self,obs, norm=False, deterministic=True):
+        if deterministic:
+            # Create a fixed grid from 1% to 99%
+            taus = torch.linspace(0.01, 0.99, self.n_quantiles, device=obs.device)
+            taus = taus.unsqueeze(0).expand(obs.shape[0], -1)
+        else:
+            taus = torch.rand(obs.shape[0], self.n_quantiles, device=obs.device)
         exv = self.ext_critic(obs, taus, normalized=norm).view(obs.shape[0],self.n_quantiles).mean(-1)
         ixv = self.int_critic(obs, taus, normalized=norm).view(obs.shape[0],self.n_quantiles).mean(-1)
         #input(f"obs: {obs.shape} exv shape: {exv.shape}, ixv shape: {ixv.shape}")
         return exv, ixv
-    def _get_raw_values(self,obs, norm=False):
+    def _get_raw_values(self,obs, norm=False, deterministic=True):
         taus = torch.rand(obs.shape[0], self.n_quantiles, device=obs.device)
         return self.ext_critic(obs, taus, normalized=norm).view(obs.shape[0],self.n_quantiles), self.int_critic(obs, taus, normalized=norm).view(obs.shape[0],self.n_quantiles)
     def _values_ev_from_raw(self, values):
@@ -778,19 +785,17 @@ class DistributionalPPOAgent(BasePPOAgent):
         quantile_loss = torch.abs(taus_expanded - (td < 0).float()) * huber / kappa
         # 4. Correct Reduction: 
         # Average over target quantiles (dim 2), then sum/average over pred quantiles (dim 1)
-        return quantile_loss.mean(dim=2).mean(dim=1).mean()
+        return quantile_loss.mean(dim=2).sum(dim=1).mean()
 
     def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, b_ext_advantages, b_int_advantages, device):
-        # Calculate scalar advantages for the shift
-        mb_ext_advantages = b_ext_advantages[mb_inds] 
-        mb_int_advantages = b_int_advantages[mb_inds]
-        # shape [BatchSize]
         # --- Extrinsic Critic ---
         ext_taus_target = torch.rand(len(mb_inds), self.n_quantiles, device=device)
         with torch.no_grad():
             old_ext_quantiles = self.ext_critic_frozen(b_obs[mb_inds], ext_taus_target, normalized=False).view(len(mb_inds), self.n_quantiles)
-            ext_targets = old_ext_quantiles + mb_ext_advantages.unsqueeze(-1)
-        
+            # Center using the same tau samples to avoid bias from mismatched tau sets,
+            # then shift to the GAE return target so mean(ext_targets) == R_GAE exactly.
+            ext_targets = self.gamma*(old_ext_quantiles - old_ext_quantiles.mean(dim=-1, keepdim=True)) + b_ext_returns[mb_inds].unsqueeze(-1)
+
         ext_taus_online = torch.rand(len(mb_inds), self.n_quantiles, device=device)
         norm_ext_targets = self.ext_critic.output_layer.normalize(ext_targets) if self.popart else ext_targets
         ext_quantiles_norm = self.ext_critic(b_obs[mb_inds], ext_taus_online, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
@@ -800,8 +805,8 @@ class DistributionalPPOAgent(BasePPOAgent):
         int_taus_target = torch.rand(len(mb_inds), self.n_quantiles, device=device)
         with torch.no_grad():
             old_int_quantiles = self.int_critic_frozen(b_obs[mb_inds], int_taus_target, normalized=False).view(len(mb_inds), self.n_quantiles)
-            int_targets = old_int_quantiles + mb_int_advantages.unsqueeze(-1)
-        
+            int_targets = self.gamma*(old_int_quantiles - old_int_quantiles.mean(dim=-1, keepdim=True)) + b_int_returns[mb_inds].unsqueeze(-1)
+
         int_taus_online = torch.rand(len(mb_inds), self.n_quantiles, device=device)
         norm_int_targets = self.int_critic.output_layer.normalize(int_targets) if self.popart else int_targets
         int_quantiles_norm = self.int_critic(b_obs[mb_inds], int_taus_online, normalized=self.popart).view(len(mb_inds), self.n_quantiles)
