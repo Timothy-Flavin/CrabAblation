@@ -225,18 +225,29 @@ class RainbowBase(Agent):
             self.obs_rms.to(device)
 
     def update_target(self):
-        """Polyak averaging: target = (1 - tau) * target + tau * online."""
+        """Hard update: copy online to target every K steps."""
         if not self.delayed_target:
             return
-        with torch.no_grad():
-            for tp, op in zip(
-                self.ext_target.parameters(), self.ext_online.parameters()
-            ):
-                tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
-            for tp, op in zip(
-                self.int_target.parameters(), self.int_online.parameters()
-            ):
-                tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
+        
+        # Assuming you trigger this every K steps instead of every frame
+        self.ext_target.load_state_dict(self.ext_online.state_dict())
+        self.int_target.load_state_dict(self.int_online.state_dict())
+        self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
+        self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
+        self.int_target.output_layer.sigma.copy_(self.int_online.output_layer.sigma)
+        self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
+        #"""Polyak averaging: target = (1 - tau) * target + tau * online."""
+        # if not self.delayed_target:
+        #     return
+        # with torch.no_grad():
+        #     for tp, op in zip(
+        #         self.ext_target.parameters(), self.ext_online.parameters()
+        #     ):
+        #         tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
+        #     for tp, op in zip(
+        #         self.int_target.parameters(), self.int_online.parameters()
+        #     ):
+        #         tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
 
     def _update_RND(self, next_obs: torch.Tensor):
         with torch.no_grad():
@@ -487,9 +498,8 @@ class EVRainbowDQN(RainbowBase):
 
         target_for_stats_ext = online_ext_target.detach()  # maintain [B, D]
         self.ext_online.output_layer.update_stats(target_for_stats_ext)
-        if self.delayed_target:
-            self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
-            self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
+        #if self.delayed_target:
+            
         td_target_norm = self.ext_online.output_layer.normalize(target_for_stats_ext)
         q_ext_now_norm = self.ext_online(b_obs, normalized=True)
         q_selected_norm = torch.gather(q_ext_now_norm, -1, b_actions_idx).squeeze(
@@ -545,9 +555,9 @@ class EVRainbowDQN(RainbowBase):
 
         target_for_stats_int = int_td_target.detach()
         self.int_online.output_layer.update_stats(target_for_stats_int)
-        if self.delayed_target:
-            self.int_target.output_layer.sigma.copy_(self.int_online.output_layer.sigma)
-            self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
+        #if self.delayed_target:
+        #    self.int_target.output_layer.sigma.copy_(self.int_online.output_layer.sigma)
+        #    self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
 
         int_td_target_norm = self.int_online.output_layer.normalize(
             target_for_stats_int
@@ -569,7 +579,7 @@ class EVRainbowDQN(RainbowBase):
         intrinsic_loss.backward()
 
         # Update target network
-        if self.delayed_target:
+        if self.delayed_target and self.step%200==0:
             self.update_target()
 
         # tracking
@@ -596,6 +606,7 @@ class EVRainbowDQN(RainbowBase):
             "entropy_reg": entropy_val,
             "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
             "target_mean": float(target_for_stats_ext.mean().item()),
+            "td_target_norm_mean": float(td_target_norm.abs().mean().detach().item()),
             "entropy_loss": entropy_val,
             "Beta": float(self.Beta),
             "Q_ext_mean": float(q_ext_now_norm.mean().item()),
@@ -606,6 +617,8 @@ class EVRainbowDQN(RainbowBase):
             ),
             "last_eps": float(self.last_eps),
         }
+        print(self.last_losses)
+
         return float(extrinsic_loss.item())
 
     def sample_action(
@@ -939,9 +952,9 @@ class IQNRainbowDQN(RainbowBase):
         # Apply PopArt stats tracking over target distributions
         # Mean to get the expected value and stop popart from thinking taus are
         self.ext_online.output_layer.update_stats(target_values.detach().mean(-1))
-        if self.delayed_target:
-            self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
-            self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
+        #if self.delayed_target:
+        #    self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
+        #    self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
         target_values_norm = self.ext_online.output_layer.normalize(
             target_values.detach()
         )
@@ -1028,11 +1041,11 @@ class IQNRainbowDQN(RainbowBase):
             self.int_online.output_layer.update_stats(
                 int_target_values.detach().mean(-1)
             )
-            if self.delayed_target:
-                self.int_target.output_layer.sigma.copy_(
-                    self.int_online.output_layer.sigma
-                )
-                self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
+            #if self.delayed_target:
+                # self.int_target.output_layer.sigma.copy_(
+                #     self.int_online.output_layer.sigma
+                # )
+                # self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
             int_target_values_norm = self.int_online.output_layer.normalize(
                 int_target_values.detach()
             )
@@ -1068,7 +1081,7 @@ class IQNRainbowDQN(RainbowBase):
             intrinsic_loss = torch.tensor(0.0)
 
         # Update target network
-        if self.delayed_target:
+        if self.delayed_target and self.step%200==0:
             self.update_target()
 
         # ========================================================
