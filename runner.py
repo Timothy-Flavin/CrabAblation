@@ -476,7 +476,7 @@ def evaluate_agent(agent, args, device, step=0, n_steps=1000000):
                 with torch.no_grad():
                     if args.algo == "ppo":
                         tobs = torch.from_numpy(np.asarray(obs)).float().to(device)
-                        action, _, _, _ = agent.sample_action(tobs)
+                        action, _ = agent.sample_action(tobs)
                         raw_action = action.cpu().numpy()
                     elif args.algo == "dqn":
                         raw_action = agent.sample_action(
@@ -521,7 +521,7 @@ def evaluate_agent(agent, args, device, step=0, n_steps=1000000):
         with torch.no_grad():
             if args.algo == "ppo":
                 tobs = torch.from_numpy(np.asarray(obs)).float().unsqueeze(0).to(device)
-                action, _, _, _ = agent.sample_action(tobs)
+                action, _ = agent.sample_action(tobs)
                 raw_action = action.cpu().numpy()[0]
             elif args.algo == "dqn":
                 raw_action = agent.sample_action(
@@ -598,42 +598,7 @@ def rollout_online_rl(
     global_step = 0
     updates_performed = 0
     timed_out = False
-<<<<<<< HEAD
 
-    eval_every_episodes = getattr(args, "eval_every_episodes", 25)
-    if max_wall_time_seconds is None:
-        max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
-
-    for iteration in range(1, num_iterations + 1):
-        for step in range(rollout_steps):
-            if global_step > 0 and global_step % 10000 == 0:
-                print(
-                    f"[PPO] Step {global_step}/{total_step_budget} (Iteration {iteration}/{num_iterations})"
-                )
-            if (
-                max_wall_time_seconds is not None
-                and max_wall_time_seconds > 0
-                and (time.time() - start_time) >= max_wall_time_seconds
-            ):
-                timed_out = True
-                break
-
-            if global_step >= total_step_budget:
-                timed_out = True
-                break
-
-            global_step += args.num_envs
-            agent_obs[step] = next_obs
-            agent_dones[step] = next_done
-
-            with torch.no_grad():
-                action, logprob, ext_v, int_v = agent.sample_action(next_obs)
-
-            agent_ext_values[step] = ext_v
-            agent_int_values[step] = int_v
-            agent_actions[step] = action
-            agent_logprobs[step] = logprob
-=======
     eval_every_episodes = getattr(args, 'eval_every_episodes', 25)
 
     if max_wall_time_seconds is None:
@@ -650,7 +615,7 @@ def rollout_online_rl(
         ):
             timed_out = True
             break
->>>>>>> 264c2522ed45e4a0cafdfab0a38916b54c75406b
+
 
         with torch.no_grad():
             tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
@@ -694,35 +659,12 @@ def rollout_online_rl(
                     eval_res = evaluate_agent(agent, args, device, step=global_step, n_steps=total_step_budget)
                     eval_hist.append(eval_res)
                     if writer:
-<<<<<<< HEAD
-                        writer.add_scalar(
-                            "charts/episodic_return", float(r_ep[env_i]), global_step
-                        )
 
-                    if ep % eval_every_episodes == 0 and ep > 0:
-                        eval_res = evaluate_agent(
-                            agent,
-                            args,
-                            device,
-                            step=global_step,
-                            n_steps=total_step_budget,
-                        )
-                        eval_hist.append(eval_res)
-                        if writer:
-                            writer.add_scalar(
-                                "charts/eval_return", eval_res, global_step
-                            )
-                    r_ep[env_i] = 0.0
-                    ep_len[env_i] = 0
-
-        if timed_out:
-            break
-=======
                         writer.add_scalar("charts/eval_return", eval_res, global_step)
                 
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0
->>>>>>> 264c2522ed45e4a0cafdfab0a38916b54c75406b
+
 
         obs = next_obs
         global_step += args.num_envs
