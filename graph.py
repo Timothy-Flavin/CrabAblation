@@ -5,13 +5,14 @@ Updated for file structure: results/algorithm/env/...
 Saves to: results/{algorithm}_{env}_{xaxis}.png
 """
 
+
 import argparse
 import os
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any
-
 import numpy as np
 import matplotlib.pyplot as plt
+import yaml
 
 # Mapping for filenames and legends
 ABLATION_MAP = {
@@ -21,6 +22,7 @@ ABLATION_MAP = {
     3: "Optimism",
     4: "Dist-RL",
     5: "Delayed",
+    6: "Original",
 }
 
 
@@ -67,7 +69,7 @@ def collect_for_algo(
     """Collects stats for a specific algorithm + environment pair."""
     ablation_stats: Dict[int, Dict[str, Any]] = {}
 
-    for ablation in range(6):
+    for ablation in range(7):
         train_runs, eval_runs, train_times = [], [], []
         all_ok = True
 
@@ -170,6 +172,7 @@ def plot_algo_stats(
 
 
 def main():
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, required=True)
     parser.add_argument("--runs", type=int, nargs="*", default=[1, 2, 3])
@@ -178,11 +181,16 @@ def main():
         "--xaxis", type=str, default="episodes", choices=["episodes", "steps", "time"]
     )
     parser.add_argument("--max_steps", type=int, default=None)
+    parser.add_argument("--yaml", type=str, default="env_config.yaml", help="Path to env_config.yaml")
     args = parser.parse_args()
 
-    results_root = Path("all_results")
+    # Load YAML config for per-algo max_steps
+    with open(args.yaml, "r") as f:
+        env_config = yaml.safe_load(f)
+
+    results_root = Path("results")
     if not results_root.exists():
-        print("Error: 'all_results/' directory not found.")
+        print("Error: 'results/' directory not found.")
         return
 
     # Iterate through each algorithm folder
@@ -197,9 +205,19 @@ def main():
         if not env_dir.exists():
             continue
 
+        # Determine max_steps for this algo/env if needed
+        max_steps = args.max_steps
+        if args.xaxis == "steps" and max_steps is None:
+            env_cfg = env_config.get(args.env, {})
+            max_steps_cfg = env_cfg.get("max_steps", 1000000)
+            if isinstance(max_steps_cfg, dict):
+                max_steps = int(max_steps_cfg.get(algo_name, 1000000))
+            else:
+                max_steps = int(max_steps_cfg)
+
         print(f"Processing algorithm: {algo_name}...")
         stats = collect_for_algo(
-            env_dir, args.runs, args.weight, args.xaxis, args.max_steps
+            env_dir, args.runs, args.weight, args.xaxis, max_steps
         )
 
         if stats:

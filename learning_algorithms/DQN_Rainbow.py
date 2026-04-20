@@ -392,7 +392,7 @@ class EVRainbowDQN(RainbowBase):
 
         # Get batch data from buffer
         if batch_size is None:
-            batch_size = 128
+            batch_size = 256
         (b_obs, b_a, b_next_obs, b_term, b_trunc, b_r_ext) = self.buffer.sample(
             batch_size
         )
@@ -816,7 +816,7 @@ class IQNRainbowDQN(RainbowBase):
 
         # Get batch data from buffer
         if batch_size is None:
-            batch_size = 128
+            batch_size = 256
         (b_obs, b_a, b_next_obs, b_term, b_trunc, b_r_ext) = self.buffer.sample(
             batch_size
         )

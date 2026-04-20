@@ -49,7 +49,7 @@ def get_args():
         help="Optional explicit env id. Defaults to env_name.",
     )
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5])
+    parser.add_argument("--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5, 6])
     parser.add_argument("--fully_obs", action="store_true")
     parser.add_argument("--run", type=int, default=1)
     parser.add_argument("--num_envs", type=int, default=4)
@@ -106,8 +106,12 @@ def get_args():
     # Load config for this environment
     env_cfg = ENV_CONFIG.get(args.env_name, {})
     # Set max_steps/total_steps from config if not overridden
+    max_steps_cfg = env_cfg.get("max_steps", 1000000)
     if args.total_steps is None:
-        args.total_steps = int(env_cfg.get("max_steps", 1000000))
+        if isinstance(max_steps_cfg, dict):
+            args.total_steps = int(max_steps_cfg.get(args.algo, 1000000))
+        else:
+            args.total_steps = int(max_steps_cfg)
     # Set buffer sizes from config if not overridden
     if args.dqn_buffer_size is None:
         args.dqn_buffer_size = int(env_cfg.get("buffer_size", 10000))
@@ -237,6 +241,14 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         cfg["ent_reg_coef"] = 0.005
     elif args.ablation == 5:
         cfg["delayed"] = False
+    elif args.ablation == 6:
+        cfg["munchausen"] = False
+        cfg["soft"] = False
+        cfg["ent_reg_coef"] = 0.00
+        cfg["Beta"] = 0.0
+        cfg["distributional"] = False
+        cfg["dueling"] = False
+        cfg["delayed"] = True
 
     AgentClass = IQNRainbowDQN if cfg["distributional"] else EVRainbowDQN
     soft = bool(cfg["soft"])
@@ -322,6 +334,12 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
         cfg["distributional"] = False
     elif args.ablation == 5:
         cfg["use_gae"] = False
+    elif args.ablation == 6:
+        cfg["clip_coef"] = 0.2
+        cfg["ent_coef"] = 0.001
+        cfg["Beta"] = 0.0
+        cfg["distributional"] = False
+        cfg["use_gae"] = True
 
     rollout_steps = max(1, args.num_steps // int(vec_env.num_envs))
     AgentClass = DistributionalPPOAgent if cfg["distributional"] else StandardPPOAgent
@@ -370,6 +388,13 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         cfg["dueling"] = False
     elif args.ablation == 5:
         cfg["delayed_critics"] = False
+    elif args.ablation == 6:
+        cfg["munchausen"] = False
+        cfg["entropy_coef_zero"] = True
+        cfg["Beta"] = 0.0
+        cfg["distributional"] = False
+        cfg["dueling"] = True
+        cfg["delayed_critics"] = True
 
     AgentClass = DistSAC if cfg["distributional"] else EVSAC
     agent = AgentClass(

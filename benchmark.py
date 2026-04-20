@@ -75,8 +75,8 @@ def get_args():
 
     # DQN knobs
     parser.add_argument("--dqn_buffer_size", type=int, default=10000)
-    parser.add_argument("--dqn_batch_size", type=int, default=64)
-    parser.add_argument("--update_every", type=int, default=4)
+    parser.add_argument("--dqn_batch_size", type=int, default=256)
+    parser.add_argument("--update_every", type=int, default=8)
     parser.add_argument("--rnd_burn_in", type=int, default=10)
 
     # SAC knobs

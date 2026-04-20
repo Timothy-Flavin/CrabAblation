@@ -507,10 +507,19 @@ class BasePPOAgent(Agent):
                 entropy_loss = entropy.mean()
                 # Value Loss (Delegated to Subclass)
                 v_loss_ext, v_loss_int = self._compute_value_losses(
-                    b_obs, mb_inds, ext_returns.view(-1), int_returns.view(-1), 
-                    b_ext_advantages[mb_inds], b_int_advantages[mb_inds],
-                    new_ext_value, new_int_value, b_ext_values, b_int_values, device
+                    b_obs=b_obs, 
+                    mb_inds=mb_inds, 
+                    b_ext_returns=ext_returns.view(-1), 
+                    b_int_returns=int_returns.view(-1), 
+                    new_ext_value=new_ext_value, 
+                    new_int_value=new_int_value, 
+                    b_ext_values=b_ext_values, 
+                    b_int_values=b_int_values,
+                    b_ext_advantages=b_ext_advantages, 
+                    b_int_advantages=b_int_advantages, 
+                    device=device,
                 )
+                    
 
                 loss = pg_loss - self.ent_coef * entropy_loss + v_loss_ext * self.vf_coef
 
@@ -603,7 +612,7 @@ class BasePPOAgent(Agent):
     def _values_ev_from_raw(self, obs): raise NotImplementedError
     def _get_advantages_scaling(self): raise NotImplementedError
     def _update_popart_stats(self, b_ext_returns, b_int_returns): raise NotImplementedError
-    def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, device): raise NotImplementedError
+    def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, b_ext_advantages, b_int_advantages, device): raise NotImplementedError
 
 
     def _freeze_critics(self, device):
@@ -646,7 +655,7 @@ class StandardPPOAgent(BasePPOAgent):
     def _get_values(self,obs,norm=False):
         exv = self.ext_critic(obs,normalized=norm).squeeze(-1)
         ixv = self.int_critic(obs,normalized=norm).squeeze(-1)
-        input(f"exv shape: {exv.shape}, ixv shape: {ixv.shape}")
+        #input(f"exv shape: {exv.shape}, ixv shape: {ixv.shape}")
         return exv, ixv
     def _get_raw_values(self,obs, norm=False):
         return self.ext_critic(obs, normalized=norm).squeeze(-1), self.int_critic(obs, normalized=norm).squeeze(-1)
@@ -659,7 +668,7 @@ class StandardPPOAgent(BasePPOAgent):
             self.ext_critic_head.update_stats(b_ext_returns.unsqueeze(1))
             self.int_critic_head.update_stats(b_int_returns.unsqueeze(1))
 
-    def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, device):
+    def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, b_ext_advantages, b_int_advantages, device):
         # Extrinsic
         norm_ext_returns = self.ext_critic_head.normalize(b_ext_returns[mb_inds].unsqueeze(1)).view(-1) if self.popart else b_ext_returns[mb_inds]
         norm_ext_value = self.ext_critic(b_obs[mb_inds], normalized=True).view(-1) if self.popart else new_ext_value.view(-1)
@@ -728,13 +737,13 @@ class DistributionalPPOAgent(BasePPOAgent):
     def _get_int_critic_params(self): return list(self.int_critic.parameters())
     def _get_values(self,obs, norm=False):
         taus = torch.rand(obs.shape[0], self.n_quantiles, device=obs.device)
-        exv = self.ext_critic(obs, taus, normalized=norm)
-        ixv = self.int_critic(obs, taus, normalized=norm)
-        input(f"obs: {obs.shape} exv shape: {exv.shape}, ixv shape: {ixv.shape}")
+        exv = self.ext_critic(obs, taus, normalized=norm).view(obs.shape[0],self.n_quantiles).mean(-1)
+        ixv = self.int_critic(obs, taus, normalized=norm).view(obs.shape[0],self.n_quantiles).mean(-1)
+        #input(f"obs: {obs.shape} exv shape: {exv.shape}, ixv shape: {ixv.shape}")
         return exv, ixv
     def _get_raw_values(self,obs, norm=False):
         taus = torch.rand(obs.shape[0], self.n_quantiles, device=obs.device)
-        return self.ext_critic(obs, taus, normalized=norm), self.int_critic(obs, taus, normalized=norm)
+        return self.ext_critic(obs, taus, normalized=norm).view(obs.shape[0],self.n_quantiles), self.int_critic(obs, taus, normalized=norm).view(obs.shape[0],self.n_quantiles)
     def _values_ev_from_raw(self, values):
         return values.mean(dim=1).view(-1)
     
@@ -766,7 +775,7 @@ class DistributionalPPOAgent(BasePPOAgent):
         # Average over target quantiles (dim 2), then sum/average over pred quantiles (dim 1)
         return quantile_loss.mean(dim=2).sum(dim=1).mean()
 
-    def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, device):
+    def _compute_value_losses(self, b_obs, mb_inds, b_ext_returns, b_int_returns, new_ext_value, new_int_value, b_ext_values, b_int_values, b_ext_advantages, b_int_advantages, device):
         # Calculate scalar advantages for the shift
         mb_ext_advantages = b_ext_returns[mb_inds] - b_ext_values[mb_inds]
         mb_int_advantages = b_int_returns[mb_inds] - b_int_values[mb_inds]

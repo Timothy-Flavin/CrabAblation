@@ -10,7 +10,7 @@ ENVIRONMENTS=(cartpole minigrid mujoco)
 XAXES=(episodes steps time)
 
 # Default runs and smoothing weight (edit as needed)
-RUNS="1 2 3"
+RUNS="1 2 3 4 5"
 WEIGHT=0.95
 # Set max_steps for 'steps' xaxis (edit as needed)
 MAX_STEPS=1000000
