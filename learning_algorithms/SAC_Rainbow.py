@@ -86,8 +86,6 @@ class Args:
     """if True, force entropy coefficient alpha=0 and disable autotune"""
     distributional: bool = False
     """if True, use IQN critics; else use expected-value critics"""
-    dueling: bool = False
-    """if True, enable dueling critic heads"""
     delayed_critics: bool = True
     """if True, use delayed target critics; else use online critics as targets"""
     n_quantiles: int = 32
@@ -275,7 +273,6 @@ class BaseSAC(Agent):
         alpha: float = 0.2,
         autotune: bool = True,
         entropy_coef_zero: bool = False,
-        dueling: bool = False,
         delayed_critics: bool = True,
         hidden_layer_sizes: tuple[int, int] = (128, 128),
         n_quantiles: int = 32,
@@ -308,7 +305,6 @@ class BaseSAC(Agent):
         self.target_network_frequency = target_network_frequency
         self.autotune = autotune and (not entropy_coef_zero)
         self.entropy_coef_zero = entropy_coef_zero
-        self.dueling = dueling
         self.delayed_critics = delayed_critics
         hidden1, hidden2 = int(hidden_layer_sizes[0]), int(hidden_layer_sizes[1])
         self.n_quantiles = n_quantiles
@@ -340,7 +336,7 @@ class BaseSAC(Agent):
             "n_action_dims": 1,
             "n_action_bins": 1,
             "hidden_layer_sizes": [hidden1, hidden2],
-            "dueling": self.dueling,
+            "dueling": False,
             "popart": True,
             "min_std": min_std,
         }
@@ -756,19 +752,14 @@ class BaseSAC(Agent):
             "alpha": float(self.alpha),
             "alpha_loss": float(alpha_loss.item()) if alpha_loss is not None else 0.0,
             "distributional": float(self.distributional),
-            "dueling": float(self.dueling),
             "delayed_critics": float(self.delayed_critics),
             "rnd_loss": rnd_loss_val,
             "munchausen_r": m_r_val,
             "Beta": float(self.Beta),
+            "nextq":next_q.mean().cpu(),
+            "nextintq":next_q_int.mean().cpu(),
         }
-
-        if getattr(self, "tb_writer", None) is not None and global_step % 100 == 0:
-            for k, v in self.last_losses.items():
-                self.tb_writer.add_scalar(
-                    f"{self.tb_prefix}/losses/{k}", v, global_step
-                )
-
+        print(self.last_losses)
         return float(qf_loss.item())
 
 
@@ -1118,7 +1109,6 @@ if __name__ == "__main__":
         alpha=args.alpha,
         autotune=args.autotune,
         entropy_coef_zero=args.entropy_coef_zero,
-        dueling=args.dueling,
         delayed_critics=args.delayed_critics,
         hidden_layer_sizes=hidden_layer_sizes,
         n_quantiles=args.n_quantiles,

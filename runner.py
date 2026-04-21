@@ -245,8 +245,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         cfg["soft"] = False
         cfg["ent_reg_coef"] = 0.01
         cfg["Beta"] = 0.0
-        cfg["distributional"] = False
-        cfg["dueling"] = True
+        cfg["distributional"] = True
         cfg["delayed"] = True
 
     AgentClass = IQNRainbowDQN if cfg["distributional"] else EVRainbowDQN
@@ -368,7 +367,6 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
     cfg = {
         "entropy_coef_zero": False,
         "distributional": True,
-        "dueling": True,
         "popart": True,
         "delayed_critics": True,
         "munchausen": True,  # ablation 1 removes this
@@ -384,15 +382,13 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         cfg["Beta"] = 0.0
     elif args.ablation == 4:
         cfg["distributional"] = False
-        cfg["dueling"] = False
     elif args.ablation == 5:
         cfg["delayed_critics"] = False
     elif args.ablation == 6:
         cfg["munchausen"] = False
-        cfg["entropy_coef_zero"] = True
+        cfg["entropy_coef_zero"] = False
         cfg["Beta"] = 0.0
-        cfg["distributional"] = False
-        cfg["dueling"] = True
+        cfg["distributional"] = True
         cfg["delayed_critics"] = True
 
     AgentClass = DistSAC if cfg["distributional"] else EVSAC
@@ -407,7 +403,6 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         alpha=args.alpha,
         autotune=args.autotune,
         entropy_coef_zero=cfg["entropy_coef_zero"],
-        dueling=cfg["dueling"],
         delayed_critics=cfg["delayed_critics"],
         hidden_layer_sizes=hidden_layer_sizes,
         n_quantiles=args.n_quantiles,
