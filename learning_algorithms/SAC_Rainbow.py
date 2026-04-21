@@ -661,9 +661,13 @@ class BaseSAC(Agent):
 
             min_qf_pi, min_qf_pi_int = self._get_actor_q_values(pi_critic_input)
 
+            # actor_loss = (
+            #     (self.alpha * log_pi)
+            #     - ((1.0 - self.Beta) * min_qf_pi + self.Beta * min_qf_pi_int)
+            # ).mean()
             actor_loss = (
                 (self.alpha * log_pi)
-                - ((1.0 - self.Beta) * min_qf_pi + self.Beta * min_qf_pi_int)
+                - (min_qf_pi + self.Beta * min_qf_pi_int)
             ).mean()
             self.timing["actor forward and loss"] = self.timing.get(
                 "actor forward and loss", 0.0
@@ -738,7 +742,7 @@ class BaseSAC(Agent):
             "nextq": float(next_q.mean().item()),
             "nextintq": float(next_q_int.mean().item()),
         }
-        print(self.last_losses)
+        #print(self.last_losses)
         return float(qf_loss.item())
 
 
