@@ -12,7 +12,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.func import stack_module_state, functional_call, vmap
 import tyro
 from torch.utils.tensorboard import SummaryWriter
 
@@ -109,39 +108,6 @@ def fused_quantile_huber_loss(pred, target, taus, kappa=1.0):
     )
     I_ = (td < 0).float()
     return (torch.abs(taus.unsqueeze(2) - I_) * huber).mean()
-
-
-class VmapTwinCritic(nn.Module):
-    """
-    Wraps two separate critic modules into a single vectorized ensemble.
-    Leaves the original class code completely untouched.
-    """
-
-    def __init__(self, qf1: nn.Module, qf2: nn.Module):
-        super().__init__()
-        self.qf1 = qf1
-        self.qf2 = qf2
-        self.params, self.buffers = stack_module_state([qf1, qf2])
-        self.base_model = copy.deepcopy(qf1).requires_grad_(False)
-
-        def fcall(params, buffers, x, tau, normalized):
-            return functional_call(
-                self.base_model,
-                (params, buffers),
-                (x, tau),
-                kwargs={"normalized": normalized},
-            )
-
-        self.vmap_forward = vmap(fcall, in_dims=(0, 0, None, None, None))
-
-    def update_buffers(self):
-        self.params, self.buffers = stack_module_state([self.qf1, self.qf2])
-
-    def forward(
-        self, x: torch.Tensor, tau: torch.Tensor, normalized: bool = False
-    ) -> torch.Tensor:
-        q = self.vmap_forward(self.params, self.buffers, x, tau, normalized)
-        return q.view(2, q.shape[1], q.shape[2])
 
 
 class ObsActEncoder(nn.Module):
@@ -682,6 +648,13 @@ class BaseSAC(Agent):
 
         t0 = time.time()
         if self.update_steps % self.policy_frequency == 0:
+            
+            # Freeze critics to avoid unnecessary gradient computation during actor update
+            for p in self.qf1.parameters(): p.requires_grad = False
+            for p in self.qf2.parameters(): p.requires_grad = False
+            for p in self.qf1_int.parameters(): p.requires_grad = False
+            for p in self.qf2_int.parameters(): p.requires_grad = False
+
             t1 = time.time()
             pi, log_pi, _ = self.actor.get_action(data.observations)
             pi_critic_input = self._critic_input(data.observations, pi)
@@ -703,6 +676,12 @@ class BaseSAC(Agent):
             self.timing["actor backprop"] = self.timing.get("actor backprop", 0.0) + (
                 time.time() - t1
             )
+            
+            # Unfreeze critics
+            for p in self.qf1.parameters(): p.requires_grad = True
+            for p in self.qf2.parameters(): p.requires_grad = True
+            for p in self.qf1_int.parameters(): p.requires_grad = True
+            for p in self.qf2_int.parameters(): p.requires_grad = True
 
             t1 = time.time()
             if (
@@ -756,8 +735,8 @@ class BaseSAC(Agent):
             "rnd_loss": rnd_loss_val,
             "munchausen_r": m_r_val,
             "Beta": float(self.Beta),
-            "nextq":next_q.mean().cpu(),
-            "nextintq":next_q_int.mean().cpu(),
+            "nextq": float(next_q.mean().item()),
+            "nextintq": float(next_q_int.mean().item()),
         }
         print(self.last_losses)
         return float(qf_loss.item())
@@ -778,13 +757,6 @@ class DistSAC(BaseSAC):
         self.qf2_int = IQN_Network(**qf2_kwargs)
         self.qf1_target_int = IQN_Network(**qf1_target_kwargs)
         self.qf2_target_int = IQN_Network(**qf2_target_kwargs)
-
-        self.ext_ensemble = VmapTwinCritic(self.qf1, self.qf2)
-        self.int_ensemble = VmapTwinCritic(self.qf1_int, self.qf2_int)
-        self.target_ext_ensemble = VmapTwinCritic(self.qf1_target, self.qf2_target)
-        self.target_int_ensemble = VmapTwinCritic(
-            self.qf1_target_int, self.qf2_target_int
-        )
 
     def _sample_taus(self, batch_size: int, n: int, device: torch.device):
         return torch.rand(batch_size, n, device=device)
@@ -819,25 +791,20 @@ class DistSAC(BaseSAC):
             batch_size,
         ), f"Expected terminations shape ({batch_size},), got {terminations.shape}"
 
-        target_ext = (
-            self.target_ext_ensemble if self.delayed_critics else self.ext_ensemble
-        )
-        target_int = (
-            self.target_int_ensemble if self.delayed_critics else self.int_ensemble
-        )
+        target_qf1 = self.qf1_target if self.delayed_critics else self.qf1
+        target_qf2 = self.qf2_target if self.delayed_critics else self.qf2
+        target_qf1_int = self.qf1_target_int if self.delayed_critics else self.qf1_int
+        target_qf2_int = self.qf2_target_int if self.delayed_critics else self.qf2_int
 
         target_taus = self._sample_taus(
             next_critic_input.shape[0], self.n_target_quantiles, self.actor.device
         )
 
-        target_ext.update_buffers()
-        qf_next_both = target_ext(next_critic_input, target_taus, normalized=False)
-        assert qf_next_both.shape == (
-            2,
-            batch_size,
-            self.n_target_quantiles,
-        ), f"Expected qf_next_both shape (2, {batch_size}, {self.n_target_quantiles}), got {qf_next_both.shape}"
-        min_qf_next = torch.min(qf_next_both[0].mean(-1), qf_next_both[1].mean(-1))
+        qf1_next = self._critic_quantiles(target_qf1, next_critic_input, target_taus, normalized=False)
+        qf2_next = self._critic_quantiles(target_qf2, next_critic_input, target_taus, normalized=False)
+        
+        # Maintain quantiles, compute element-wise min across the ensemble
+        min_qf_next = torch.min(qf1_next, qf2_next)
 
         aug_r = augmented_rewards.unsqueeze(1)
         dones_mask = (1 - terminations).unsqueeze(1)
@@ -845,20 +812,19 @@ class DistSAC(BaseSAC):
             batch_size,
             1,
         ), f"Expected next_state_log_pi shape ({batch_size}, 1), got {next_state_log_pi.shape}"
+        
+        # next_state_log_pi properly broadcasts against min_qf_next (batch, target_quantiles)
         next_q = aug_r + dones_mask * self.gamma * (
             min_qf_next - current_sigma * self.alpha * next_state_log_pi
         )
 
-        target_int.update_buffers()
-        qf_next_int_both = target_int(next_critic_input, target_taus, normalized=False)
-        assert qf_next_int_both.shape == (
-            2,
-            batch_size,
-            self.n_target_quantiles,
-        ), f"Expected qf_next_int_both shape (2, {batch_size}, {self.n_target_quantiles}), got {qf_next_int_both.shape}"
-        min_qf_next_int = torch.min(qf_next_int_both[0], qf_next_int_both[1])
+        qf1_next_int = self._critic_quantiles(target_qf1_int, next_critic_input, target_taus, normalized=False)
+        qf2_next_int = self._critic_quantiles(target_qf2_int, next_critic_input, target_taus, normalized=False)
+        min_qf_next_int = torch.min(qf1_next_int, qf2_next_int)
 
         int_r_expanded = int_r.unsqueeze(1) if int_r.ndim == 1 else int_r
+        if int_r_expanded.shape[1] != 1:
+            int_r_expanded = int_r_expanded.unsqueeze(1)
         next_q_int = int_r_expanded + self.gamma * min_qf_next_int
 
         return next_q, next_q_int
@@ -875,13 +841,10 @@ class DistSAC(BaseSAC):
         target_1_int = self.qf1_int.output_layer.normalize(next_q_quantiles_int)
         target_2_int = self.qf2_int.output_layer.normalize(next_q_quantiles_int)
 
-        self.ext_ensemble.update_buffers()
-        q_both = self.ext_ensemble(critic_input, taus, normalized=True)
-        qf1_q, qf2_q = q_both[0], q_both[1]
-
-        self.int_ensemble.update_buffers()
-        q_int_both = self.int_ensemble(critic_input, taus, normalized=True)
-        qf1_q_int, qf2_q_int = q_int_both[0], q_int_both[1]
+        qf1_q = self._critic_quantiles(self.qf1, critic_input, taus, normalized=True)
+        qf2_q = self._critic_quantiles(self.qf2, critic_input, taus, normalized=True)
+        qf1_q_int = self._critic_quantiles(self.qf1_int, critic_input, taus, normalized=True)
+        qf2_q_int = self._critic_quantiles(self.qf2_int, critic_input, taus, normalized=True)
 
         qf1_loss = fused_quantile_huber_loss(qf1_q, target_1.detach(), taus.detach())
         qf2_loss = fused_quantile_huber_loss(qf2_q, target_2.detach(), taus.detach())
@@ -900,17 +863,19 @@ class DistSAC(BaseSAC):
             pi_critic_input.shape[0], self.n_quantiles, pi_critic_input.device
         )
 
-        self.ext_ensemble.update_buffers()
-        q_both = self.ext_ensemble(pi_critic_input, taus, normalized=True).mean(
-            dim=2, keepdim=True
+        qf1_pi = self._critic_quantiles(self.qf1, pi_critic_input, taus, normalized=True).mean(
+            dim=1, keepdim=True
         )
-        qf1_pi, qf2_pi = q_both[0], q_both[1]
+        qf2_pi = self._critic_quantiles(self.qf2, pi_critic_input, taus, normalized=True).mean(
+            dim=1, keepdim=True
+        )
 
-        self.int_ensemble.update_buffers()
-        q_int_both = self.int_ensemble(pi_critic_input, taus, normalized=True).mean(
-            dim=2, keepdim=True
+        qf1_pi_int = self._critic_quantiles(self.qf1_int, pi_critic_input, taus, normalized=True).mean(
+            dim=1, keepdim=True
         )
-        qf1_pi_int, qf2_pi_int = q_int_both[0], q_int_both[1]
+        qf2_pi_int = self._critic_quantiles(self.qf2_int, pi_critic_input, taus, normalized=True).mean(
+            dim=1, keepdim=True
+        )
 
         return torch.min(qf1_pi, qf2_pi), torch.min(qf1_pi_int, qf2_pi_int)
 
@@ -1113,6 +1078,7 @@ if __name__ == "__main__":
         hidden_layer_sizes=hidden_layer_sizes,
         n_quantiles=args.n_quantiles,
         n_target_quantiles=args.n_target_quantiles,
+        buffer_size=args.buffer_size,
         device=device,
         buffer_device=device,
     ).to(device)
