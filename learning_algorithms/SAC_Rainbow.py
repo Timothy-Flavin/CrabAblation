@@ -100,13 +100,26 @@ LOG_STD_MIN = -5
 
 
 @torch.compile
-def fused_quantile_huber_loss(pred, target, taus, kappa=1.0):
+def old_quantile_huber_loss(pred, target, taus, kappa=1.0):
     td = target.unsqueeze(1) - pred.unsqueeze(2)
     abs_td = torch.abs(td)
     huber = torch.where(
         abs_td <= kappa, 0.5 * td.pow(2), kappa * (abs_td - 0.5 * kappa)
     )
     I_ = (td < 0).float()
+    return (torch.abs(taus.unsqueeze(2) - I_) * huber).mean()
+
+
+def fused_quantile_huber_loss(pred, target, taus, kappa=1.0):
+    # F.smooth_l1_loss is exactly the Huber loss, natively fused in CUDA
+    huber = F.smooth_l1_loss(
+        pred.unsqueeze(2), target.unsqueeze(1), reduction="none", beta=kappa
+    )
+
+    # We still need the TD sign for the quantile weighting
+    td = target.unsqueeze(1) - pred.unsqueeze(2)
+    I_ = (td < 0).float()
+
     return (torch.abs(taus.unsqueeze(2) - I_) * huber).mean()
 
 
@@ -336,12 +349,20 @@ class BaseSAC(Agent):
         self.qf1_target_int.load_state_dict(self.qf1_int.state_dict())
         self.qf2_target_int.load_state_dict(self.qf2_int.state_dict())
 
-        self.q_optimizer = optim.Adam(
-            list(self.qf1.parameters()) + list(self.qf2.parameters()), lr=q_lr
+        # self.q_optimizer = optim.Adam(
+        #     list(self.qf1.parameters()) + list(self.qf2.parameters()), lr=q_lr
+        # )
+        # self.q_int_optimizer = optim.Adam(
+        #     list(self.qf1_int.parameters()) + list(self.qf2_int.parameters()), lr=q_lr
+        # )
+        self.q_total_optimizer = optim.Adam(
+            list(self.qf1.parameters())
+            + list(self.qf2.parameters())
+            + list(self.qf1_int.parameters())
+            + list(self.qf2_int.parameters()),
+            lr=q_lr,
         )
-        self.q_int_optimizer = optim.Adam(
-            list(self.qf1_int.parameters()) + list(self.qf2_int.parameters()), lr=q_lr
-        )
+
         self.actor_optimizer = optim.Adam(list(self.actor.parameters()), lr=policy_lr)
 
         if self.autotune:
@@ -422,16 +443,17 @@ class BaseSAC(Agent):
                 device=device,
             )
             self.alpha = self.log_alpha.exp().item()
-            q_lr = self.q_optimizer.param_groups[0]["lr"]
+            q_lr = self.q_total_optimizer.param_groups[0]["lr"]
             self.a_optimizer = optim.Adam([self.log_alpha], lr=q_lr)
 
         policy_lr = self.actor_optimizer.param_groups[0]["lr"]
-        q_lr = self.q_optimizer.param_groups[0]["lr"]
-        self.q_optimizer = optim.Adam(
-            list(self.qf1.parameters()) + list(self.qf2.parameters()), lr=q_lr
-        )
-        self.q_int_optimizer = optim.Adam(
-            list(self.qf1_int.parameters()) + list(self.qf2_int.parameters()), lr=q_lr
+        q_lr = self.q_total_optimizer.param_groups[0]["lr"]
+        self.q_total_optimizer = optim.Adam(
+            list(self.qf1.parameters())
+            + list(self.qf2.parameters())
+            + list(self.qf1_int.parameters())
+            + list(self.qf2_int.parameters()),
+            lr=q_lr,
         )
         self.actor_optimizer = optim.Adam(list(self.actor.parameters()), lr=policy_lr)
 
@@ -495,7 +517,7 @@ class BaseSAC(Agent):
                 b_next_obs = b_next_obs.unsqueeze(0)
 
             self.obs_rms.update(
-                b_next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
+                b_next_obs.to(dtype=torch.float32, device=self.obs_rms.mean.device)
             )
 
         self.buffer.add(obs, next_obs, action, reward, terminated, truncated)
@@ -504,32 +526,22 @@ class BaseSAC(Agent):
     def _critic_input(self, obs: torch.Tensor, act: torch.Tensor):
         return torch.cat([obs, act.to(dtype=obs.dtype)], dim=1)
 
+    @torch.no_grad()
     def update_target(self):
         if not self.delayed_critics:
             return
-        for param, target_param in zip(
-            self.qf1.parameters(), self.qf1_target.parameters()
-        ):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
-        for param, target_param in zip(
-            self.qf2.parameters(), self.qf2_target.parameters()
-        ):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
-        for param, target_param in zip(
-            self.qf1_int.parameters(), self.qf1_target_int.parameters()
-        ):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
-        for param, target_param in zip(
-            self.qf2_int.parameters(), self.qf2_target_int.parameters()
-        ):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
+
+        for online, target in [
+            (self.qf1, self.qf1_target),
+            (self.qf2, self.qf2_target),
+            (self.qf1_int, self.qf1_target_int),
+            (self.qf2_int, self.qf2_target_int),
+        ]:
+            # Multiplies target weights by (1 - tau) in-place
+            torch._foreach_mul_(list(target.parameters()), 1.0 - self.tau)
+            # Adds online weights * tau in-place
+            torch._foreach_add_(
+                list(target.parameters()), list(online.parameters()), alpha=self.tau
             )
 
     def update(self, batch_size: int, global_step: int):
@@ -548,14 +560,13 @@ class BaseSAC(Agent):
         if self.Beta > 0.0 or getattr(self, "always_update_rnd", False):
             with torch.no_grad():
                 norm_next_obs = self.obs_rms.normalize(
-                    data.next_observations.to(dtype=torch.float64)
+                    data.next_observations.to(dtype=torch.float32)
                 ).to(dtype=torch.float32)
             rnd_errors = self.rnd(norm_next_obs)
             rnd_loss = rnd_errors.mean()
             self.rnd_optim.zero_grad()
             rnd_loss.backward()
             self.rnd_optim.step()
-            rnd_loss_val = float(rnd_loss.item())
 
             with torch.no_grad():
                 int_r = torch.clamp(rnd_errors.detach(), -5.0, 5.0).squeeze()
@@ -591,7 +602,6 @@ class BaseSAC(Agent):
                     * self.munchausen_tau
                     * torch.clamp(log_pi_replay, min=self.l_clip)
                 )
-                m_r_val = float(m_r.mean().item())
             augmented_rewards = augmented_rewards + m_r
 
         with torch.no_grad():
@@ -628,15 +638,10 @@ class BaseSAC(Agent):
         ) + (time.time() - t0)
 
         t0 = time.time()
-        qf_loss = qf1_loss + qf2_loss
-        self.q_optimizer.zero_grad()
-        qf_loss.backward()
-        self.q_optimizer.step()
-
-        qf_int_loss = qf1_int_loss + qf2_int_loss
-        self.q_int_optimizer.zero_grad()
-        qf_int_loss.backward()
-        self.q_int_optimizer.step()
+        q_loss = qf1_loss + qf2_loss + qf1_int_loss + qf2_int_loss
+        self.q_total_optimizer.zero_grad()
+        q_loss.backward()
+        self.q_total_optimizer.step()
         self.timing["critic backprop"] = self.timing.get("critic backprop", 0.0) + (
             time.time() - t0
         )
@@ -648,12 +653,12 @@ class BaseSAC(Agent):
 
         t0 = time.time()
         if self.update_steps % self.policy_frequency == 0:
-            
+
             # Freeze critics to avoid unnecessary gradient computation during actor update
-            for p in self.qf1.parameters(): p.requires_grad = False
-            for p in self.qf2.parameters(): p.requires_grad = False
-            for p in self.qf1_int.parameters(): p.requires_grad = False
-            for p in self.qf2_int.parameters(): p.requires_grad = False
+            self.qf1.requires_grad_(False)
+            self.qf2.requires_grad_(False)
+            self.qf1_int.requires_grad_(False)
+            self.qf2_int.requires_grad_(False)
 
             t1 = time.time()
             pi, log_pi, _ = self.actor.get_action(data.observations)
@@ -676,12 +681,12 @@ class BaseSAC(Agent):
             self.timing["actor backprop"] = self.timing.get("actor backprop", 0.0) + (
                 time.time() - t1
             )
-            
+
             # Unfreeze critics
-            for p in self.qf1.parameters(): p.requires_grad = True
-            for p in self.qf2.parameters(): p.requires_grad = True
-            for p in self.qf1_int.parameters(): p.requires_grad = True
-            for p in self.qf2_int.parameters(): p.requires_grad = True
+            self.qf1.requires_grad_(True)
+            self.qf2.requires_grad_(True)
+            self.qf1_int.requires_grad_(True)
+            self.qf2_int.requires_grad_(True)
 
             t1 = time.time()
             if (
@@ -714,32 +719,48 @@ class BaseSAC(Agent):
             time.time() - t0
         )
 
-        self.step = global_step
-        self.last_losses = {
-            "min_qf_pi": (
-                float(min_qf_pi.mean().item()) if min_qf_pi is not None else 0.0
-            ),
-            "min_qf_pi_int": (
-                float(min_qf_pi_int.mean().item()) if min_qf_pi_int is not None else 0.0
-            ),
-            "qf1_values": float(critic_logs["qf1_values"].mean().item()),
-            "qf2_values": float(critic_logs["qf2_values"].mean().item()),
-            "qf1_loss": float(qf1_loss.item()),
-            "qf2_loss": float(qf2_loss.item()),
-            "qf_loss": float((qf_loss / 2.0).item()),
-            "actor_loss": float(actor_loss.item()) if actor_loss is not None else 0.0,
-            "alpha": float(self.alpha),
-            "alpha_loss": float(alpha_loss.item()) if alpha_loss is not None else 0.0,
-            "distributional": float(self.distributional),
-            "delayed_critics": float(self.delayed_critics),
-            "rnd_loss": rnd_loss_val,
-            "munchausen_r": m_r_val,
-            "Beta": float(self.Beta),
-            "nextq": float(next_q.mean().item()),
-            "nextintq": float(next_q_int.mean().item()),
-        }
-        print(self.last_losses)
-        return float(qf_loss.item())
+        if self.update_steps % 100 == 0:
+            t0 = time.time()
+            self.step = global_step
+            if self.Beta > 0.0:
+                rnd_loss_val = float(rnd_loss.item())
+            if self.munchausen:
+                m_r_val = float(m_r.mean().item())
+            self.last_losses = {
+                "min_qf_pi": (
+                    float(min_qf_pi.mean().item()) if min_qf_pi is not None else 0.0
+                ),
+                "min_qf_pi_int": (
+                    float(min_qf_pi_int.mean().item())
+                    if min_qf_pi_int is not None
+                    else 0.0
+                ),
+                "qf1_values": float(critic_logs["qf1_values"].mean().item()),
+                "qf2_values": float(critic_logs["qf2_values"].mean().item()),
+                "qf1_loss": float(qf1_loss.item()),
+                "qf2_loss": float(qf2_loss.item()),
+                "qf_loss": float((q_loss / 2.0).item()),
+                "actor_loss": (
+                    float(actor_loss.item()) if actor_loss is not None else 0.0
+                ),
+                "alpha": float(self.alpha),
+                "alpha_loss": (
+                    float(alpha_loss.item()) if alpha_loss is not None else 0.0
+                ),
+                "distributional": float(self.distributional),
+                "delayed_critics": float(self.delayed_critics),
+                "rnd_loss": rnd_loss_val,
+                "munchausen_r": m_r_val,
+                "Beta": float(self.Beta),
+                "nextq": float(next_q.mean().item()),
+                "nextintq": float(next_q_int.mean().item()),
+            }
+            self.timing["last_losses"] = self.timing.get("last_losses", 0.0) + (
+                time.time() - t0
+            )
+            print(self.last_losses)
+            print(f"{self.timing}")
+        return float(q_loss.item())
 
 
 class DistSAC(BaseSAC):
@@ -800,9 +821,13 @@ class DistSAC(BaseSAC):
             next_critic_input.shape[0], self.n_target_quantiles, self.actor.device
         )
 
-        qf1_next = self._critic_quantiles(target_qf1, next_critic_input, target_taus, normalized=False)
-        qf2_next = self._critic_quantiles(target_qf2, next_critic_input, target_taus, normalized=False)
-        
+        qf1_next = self._critic_quantiles(
+            target_qf1, next_critic_input, target_taus, normalized=False
+        )
+        qf2_next = self._critic_quantiles(
+            target_qf2, next_critic_input, target_taus, normalized=False
+        )
+
         # Maintain quantiles, compute element-wise min across the ensemble
         min_qf_next = torch.min(qf1_next, qf2_next)
 
@@ -812,14 +837,18 @@ class DistSAC(BaseSAC):
             batch_size,
             1,
         ), f"Expected next_state_log_pi shape ({batch_size}, 1), got {next_state_log_pi.shape}"
-        
+
         # next_state_log_pi properly broadcasts against min_qf_next (batch, target_quantiles)
         next_q = aug_r + dones_mask * self.gamma * (
             min_qf_next - current_sigma * self.alpha * next_state_log_pi
         )
 
-        qf1_next_int = self._critic_quantiles(target_qf1_int, next_critic_input, target_taus, normalized=False)
-        qf2_next_int = self._critic_quantiles(target_qf2_int, next_critic_input, target_taus, normalized=False)
+        qf1_next_int = self._critic_quantiles(
+            target_qf1_int, next_critic_input, target_taus, normalized=False
+        )
+        qf2_next_int = self._critic_quantiles(
+            target_qf2_int, next_critic_input, target_taus, normalized=False
+        )
         min_qf_next_int = torch.min(qf1_next_int, qf2_next_int)
 
         int_r_expanded = int_r.unsqueeze(1) if int_r.ndim == 1 else int_r
@@ -843,8 +872,12 @@ class DistSAC(BaseSAC):
 
         qf1_q = self._critic_quantiles(self.qf1, critic_input, taus, normalized=True)
         qf2_q = self._critic_quantiles(self.qf2, critic_input, taus, normalized=True)
-        qf1_q_int = self._critic_quantiles(self.qf1_int, critic_input, taus, normalized=True)
-        qf2_q_int = self._critic_quantiles(self.qf2_int, critic_input, taus, normalized=True)
+        qf1_q_int = self._critic_quantiles(
+            self.qf1_int, critic_input, taus, normalized=True
+        )
+        qf2_q_int = self._critic_quantiles(
+            self.qf2_int, critic_input, taus, normalized=True
+        )
 
         qf1_loss = fused_quantile_huber_loss(qf1_q, target_1.detach(), taus.detach())
         qf2_loss = fused_quantile_huber_loss(qf2_q, target_2.detach(), taus.detach())
@@ -863,19 +896,19 @@ class DistSAC(BaseSAC):
             pi_critic_input.shape[0], self.n_quantiles, pi_critic_input.device
         )
 
-        qf1_pi = self._critic_quantiles(self.qf1, pi_critic_input, taus, normalized=True).mean(
-            dim=1, keepdim=True
-        )
-        qf2_pi = self._critic_quantiles(self.qf2, pi_critic_input, taus, normalized=True).mean(
-            dim=1, keepdim=True
-        )
+        qf1_pi = self._critic_quantiles(
+            self.qf1, pi_critic_input, taus, normalized=True
+        ).mean(dim=1, keepdim=True)
+        qf2_pi = self._critic_quantiles(
+            self.qf2, pi_critic_input, taus, normalized=True
+        ).mean(dim=1, keepdim=True)
 
-        qf1_pi_int = self._critic_quantiles(self.qf1_int, pi_critic_input, taus, normalized=True).mean(
-            dim=1, keepdim=True
-        )
-        qf2_pi_int = self._critic_quantiles(self.qf2_int, pi_critic_input, taus, normalized=True).mean(
-            dim=1, keepdim=True
-        )
+        qf1_pi_int = self._critic_quantiles(
+            self.qf1_int, pi_critic_input, taus, normalized=True
+        ).mean(dim=1, keepdim=True)
+        qf2_pi_int = self._critic_quantiles(
+            self.qf2_int, pi_critic_input, taus, normalized=True
+        ).mean(dim=1, keepdim=True)
 
         return torch.min(qf1_pi, qf2_pi), torch.min(qf1_pi_int, qf2_pi_int)
 

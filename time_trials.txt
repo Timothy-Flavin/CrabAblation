@@ -1,0 +1,10 @@
+Starting off:
+10k steps mujoco sac ablation 0
+  12.04s, 11.81s, 11.44s, 11.90s
+
+Float64 replaced with Float32
+  11.67, 11.81, 11.9
+
+Requires grad fix
+  11.98, 11.86, 11.59
+
