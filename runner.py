@@ -84,14 +84,14 @@ def get_args():
     # SAC knobs
     parser.add_argument("--buffer_size", type=int, default=None)
     parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--tau", type=float, default=0.001 * 0.003)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--learning_starts", type=int, default=10000)
     parser.add_argument("--policy_lr", type=float, default=3e-4)
     parser.add_argument("--q_lr", type=float, default=1e-3)
     parser.add_argument("--policy_frequency", type=int, default=4)
     parser.add_argument("--target_network_frequency", type=int, default=1)
-    parser.add_argument("--alpha", type=float, default=0.2)
+    parser.add_argument("--alpha", type=float, default=0.001)
     parser.add_argument("--autotune", action="store_true", default=True)
     parser.add_argument("--n_quantiles", type=int, default=32)
     parser.add_argument("--n_target_quantiles", type=int, default=32)
@@ -213,7 +213,10 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         n_action_dims = int(env_cfg.get("n_action_dims", 1))
         n_action_bins = int(env_cfg.get("n_action_bins", 2))
     hidden_layer_sizes = env_cfg.get("hidden_layer_sizes", [256, 256])
-
+    # n_action_bins = 5
+    # input(
+    #     f"n action dims: {n_action_dims}, n action bins: {n_action_bins}. Press Enter to continue..."
+    # )
     # Calculate beta decay schedule
     total_steps = int(getattr(args, "total_steps", 1000000))
     update_every = int(getattr(args, "update_every", 2))
@@ -227,8 +230,8 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         "ent_reg_coef": 0.05,
         "delayed": True,
         "popart": True,
-        "tau": 0.9,
-        "alpha": 0.03,
+        "tau": 0.001 * 0.03,
+        "alpha": 0.001,
         "beta_half_life_steps": beta_half_life_steps,
     }
 
@@ -247,11 +250,12 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         cfg["delayed"] = False
     elif args.ablation == 6:
         cfg["munchausen"] = False
-        cfg["soft"] = True
-        # cfg["ent_reg_coef"] = 0.01
+        cfg["soft"] = False
+        cfg["ent_reg_coef"] = 0.00
         cfg["Beta"] = 0.0
-        cfg["distributional"] = False
+        cfg["distributional"] = True
         cfg["delayed"] = True
+        cfg["dueling"] = False
 
     AgentClass = IQNRainbowDQN if cfg["distributional"] else EVRainbowDQN
     soft = bool(cfg["soft"])
@@ -799,7 +803,7 @@ def rollout_offline_rl(
         # Sample action
         if args.algo == "dqn":
             eps_current = max(
-                1.0 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05
+                0.5 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05
             )
             tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
             actions = agent.sample_action(
