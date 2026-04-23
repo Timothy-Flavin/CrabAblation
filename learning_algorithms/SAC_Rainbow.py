@@ -77,7 +77,7 @@ class Args:
     """the frequency of training policy (delayed)"""
     target_network_frequency: int = 1  # Denis Yarats' implementation delays this by 2.
     """the frequency of updates for the target nerworks"""
-    alpha: float = 0.2
+    alpha: float = 0.01
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
@@ -249,7 +249,7 @@ class BaseSAC(Agent):
         q_lr: float = 1e-3,
         policy_frequency: int = 2,
         target_network_frequency: int = 1,
-        alpha: float = 0.2,
+        alpha: float = 0.01,
         autotune: bool = True,
         entropy_coef_zero: bool = False,
         delayed_critics: bool = True,
@@ -259,7 +259,6 @@ class BaseSAC(Agent):
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
         munchausen: bool = True,
         beta_rnd: float = 0.01,
-        munchausen_alpha: float = 0.9,
         munchausen_tau: float = 0.03,
         l_clip: float = -10.0,
         rnd_output_dim: int = 128,
@@ -369,7 +368,7 @@ class BaseSAC(Agent):
             self.target_entropy = -torch.prod(
                 torch.Tensor(envs.single_action_space.shape)
             ).item()
-            self.log_alpha = nn.Parameter(torch.zeros(1))
+            self.log_alpha = nn.Parameter(torch.zeros(1) - 4)
             self.alpha = self.log_alpha.exp().item()
             self.a_optimizer = optim.Adam([self.log_alpha], lr=q_lr)
         else:
@@ -383,7 +382,6 @@ class BaseSAC(Agent):
 
         # Munchausen KL penalty
         self.munchausen = munchausen
-        self.munchausen_alpha = munchausen_alpha
         self.munchausen_tau = munchausen_tau
         self.l_clip = l_clip
 
@@ -604,7 +602,7 @@ class BaseSAC(Agent):
                 log_pi_replay = log_prob.sum(1)
                 m_r = (
                     current_sigma
-                    * self.munchausen_alpha
+                    * self.alpha
                     * self.munchausen_tau
                     * torch.clamp(log_pi_replay, min=self.l_clip)
                 )
@@ -710,6 +708,7 @@ class BaseSAC(Agent):
                 alpha_loss.backward()
                 self.a_optimizer.step()
                 self.alpha = self.log_alpha.exp().item()
+                self.munchausen_tau = 0.03 * self.alpha
             self.timing["alpha loss and backprop"] = self.timing.get(
                 "alpha loss and backprop", 0.0
             ) + (time.time() - t1)

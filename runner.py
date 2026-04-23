@@ -115,15 +115,18 @@ def get_args():
             args.total_steps = int(max_steps_cfg)
     # Set buffer sizes from config if not overridden
     if args.dqn_buffer_size is None:
-        args.dqn_buffer_size = int(env_cfg.get("buffer_size", 10000))
+        args.dqn_buffer_size = int(env_cfg.get("buffer_size", 100000))
     if args.buffer_size is None:
-        args.buffer_size = int(env_cfg.get("buffer_size", 20000))
+        args.buffer_size = int(env_cfg.get("buffer_size", 200000))
     if args.algo == "sac":
         args.update_every = 4
     if args.env_name == "cartpole" and args.total_steps == 1000000:
         args.total_steps = 300000
     if args.env_name == "mujoco" and args.total_steps == 1000000:
         args.total_steps = 2000000
+    if args.env_name == "mujoco":
+        args.buffer_size = 500000
+        args.dqn_buffer_size = 500000
     if (
         args.algo == "dqn"
         and args.env_name == "mujoco"
@@ -387,10 +390,10 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
     elif args.ablation == 5:
         cfg["delayed_critics"] = False
     elif args.ablation == 6:
-        cfg["munchausen"] = False
-        cfg["entropy_coef_zero"] = True
+        cfg["munchausen"] = True
+        cfg["entropy_coef_zero"] = False
         cfg["Beta"] = 0.0
-        cfg["distributional"] = False
+        cfg["distributional"] = True
         cfg["delayed_critics"] = True
 
     AgentClass = DistSAC if cfg["distributional"] else EVSAC

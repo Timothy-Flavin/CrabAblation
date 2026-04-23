@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Default parameters
-ALGOS=("ppo")
+ALGOS=("ppo" "sac")
 ENVS=("cartpole" "mujoco" "minigrid") 
 #"mujoco" "cartpole" "minigrid"
 ABLATIONS=(0 1 2 3 4 5 6) #0 1 2 3 4 5 
