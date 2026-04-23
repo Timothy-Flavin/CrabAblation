@@ -249,11 +249,11 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     elif args.ablation == 5:
         cfg["delayed"] = False
     elif args.ablation == 6:
-        cfg["munchausen"] = False
-        cfg["soft"] = False
+        cfg["munchausen"] = True
+        cfg["soft"] = True
         cfg["ent_reg_coef"] = 0.00
         cfg["Beta"] = 0.0
-        cfg["distributional"] = True
+        cfg["distributional"] = False
         cfg["delayed"] = True
         cfg["dueling"] = False
 
