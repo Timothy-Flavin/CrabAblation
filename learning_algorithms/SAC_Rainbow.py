@@ -544,6 +544,12 @@ class BaseSAC(Agent):
                 list(target.parameters()), list(online.parameters()), alpha=self.tau
             )
 
+            target_buffers = list(target.buffers())
+            online_buffers = list(online.buffers())
+            if len(target_buffers) > 0:
+                torch._foreach_mul_(target_buffers, 1.0 - self.tau)
+                torch._foreach_add_(target_buffers, online_buffers, alpha=self.tau)
+
     def update(self, batch_size: int, global_step: int):
         data = self.buffer.sample(batch_size)
         self.update_steps += 1
@@ -758,8 +764,8 @@ class BaseSAC(Agent):
             self.timing["last_losses"] = self.timing.get("last_losses", 0.0) + (
                 time.time() - t0
             )
-            print(self.last_losses)
-            print(f"{self.timing}")
+            # print(self.last_losses)
+            # print(f"{self.timing}")
         return float(q_loss.item())
 
 
