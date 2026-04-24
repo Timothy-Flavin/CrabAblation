@@ -208,7 +208,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     update_every = int(getattr(args, "update_every", 2))
     beta_half_life_steps = max(1, (total_steps // update_every) // 5)
     cfg = {
-        "munchausen_constant": 0.1,
+        "munchausen_constant": 0.9,
         "soft": True,
         "Beta": 1.0,  # Start fully intrinsic
         "dueling": True,
@@ -224,33 +224,28 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         cfg["munchausen_constant"] = 0.0
         cfg["soft"] = False
     elif args.ablation == 2:
-        cfg["ent_reg_coef"] = 0.0
+        cfg["soft"] = False
     elif args.ablation == 3:
         cfg["Beta"] = 0.0
     elif args.ablation == 4:
         cfg["distributional"] = False
         cfg["dueling"] = False
-        cfg["ent_reg_coef"] = 0.005
     elif args.ablation == 5:
         cfg["delayed"] = False
     elif args.ablation == 6:
         cfg["munchausen_constant"] = 0.9
         cfg["soft"] = True
-        cfg["ent_reg_coef"] = 0.00
         cfg["Beta"] = 0.0
-        cfg["distributional"] = True
+        cfg["distributional"] = False
         cfg["delayed"] = True
         cfg["dueling"] = False
 
     AgentClass = IQNRainbowDQN if cfg["distributional"] else EVRainbowDQN
     soft = bool(cfg["soft"])
-    munchausen = bool(cfg["munchausen_constant"] > 0.0)
     dueling = bool(cfg["dueling"])
     delayed = bool(cfg["delayed"])
-    popart = bool(cfg["popart"])
     beta = float(cfg["Beta"])
     ent_reg_coef = float(cfg["ent_reg_coef"])
-    tau = float(cfg["tau"])
     alpha = float(cfg["alpha"])
     if AgentClass is IQNRainbowDQN:
         agent = AgentClass(
@@ -328,7 +323,7 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
         cfg["clip_coef"] = 0.2
         cfg["ent_coef"] = 0.001
         cfg["Beta"] = 0.0
-        cfg["distributional"] = True
+        cfg["distributional"] = False
         cfg["use_gae"] = True
 
     rollout_steps = max(1, args.num_steps // int(vec_env.num_envs))
@@ -362,13 +357,17 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         "popart": True,
         "delayed_critics": True,
         "munchausen": True,  # ablation 1 removes this
+        "munchausen_constant": 0.5,  # ablation 1 removes this
         "Beta": 1.0,  # Start fully intrinsic
         "beta_half_life_steps": beta_half_life_steps,
     }
 
     if args.ablation == 1:
         cfg["munchausen"] = False
+        cfg["munchausen_constant"] = 0.0
     elif args.ablation == 2:
+        cfg["munchausen"] = False
+        cfg["munchausen_constant"] = 0.0
         cfg["entropy_coef_zero"] = True
     elif args.ablation == 3:
         cfg["Beta"] = 0.0
@@ -377,10 +376,10 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
     elif args.ablation == 5:
         cfg["delayed_critics"] = False
     elif args.ablation == 6:
-        cfg["munchausen"] = True
+        cfg["munchausen"] = False
         cfg["entropy_coef_zero"] = False
         cfg["Beta"] = 0.0
-        cfg["distributional"] = True
+        cfg["distributional"] = False
         cfg["delayed_critics"] = True
 
     AgentClass = DistSAC if cfg["distributional"] else EVSAC
@@ -401,6 +400,7 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         n_target_quantiles=args.n_target_quantiles,
         encoder_factory=encoder_factory,
         munchausen=cfg["munchausen"],
+        munchausen_constant=0.5,
         beta_rnd=cfg["Beta"],
         beta_half_life_steps=cfg["beta_half_life_steps"],
     )
@@ -602,7 +602,7 @@ def rollout_online_rl(
     if max_wall_time_seconds is None:
         max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
     max_time = max_wall_time_seconds if (max_wall_time_seconds is not None and max_wall_time_seconds > 0) else float('inf')
-    
+
     while global_step < total_step_budget:
         time_elapsed = time.time() - start_time
         if time_elapsed >= max_time:
