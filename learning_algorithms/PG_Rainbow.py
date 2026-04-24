@@ -11,7 +11,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
-from torch.utils.tensorboard import SummaryWriter
 
 from learning_algorithms.MixedObservationEncoder import infer_encoder_out_dim
 from learning_algorithms.RainbowNetworks import IQN_Network
@@ -31,12 +30,6 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
-    """the wandb's project name"""
-    wandb_entity: str | None = None
-    """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 

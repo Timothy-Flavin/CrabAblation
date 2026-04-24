@@ -13,7 +13,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-from torch.utils.tensorboard import SummaryWriter
 
 from learning_algorithms.MixedObservationEncoder import infer_encoder_out_dim
 from learning_algorithms.cleanrl_buffers import ReplayBuffer
@@ -41,12 +40,6 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
-    """the wandb's project name"""
-    wandb_entity: str | None = None
-    """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
@@ -1061,12 +1054,6 @@ class EVSAC(BaseSAC):
 if __name__ == "__main__":
     args = tyro.cli(Args)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s"
-        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
 
     # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
@@ -1120,8 +1107,6 @@ if __name__ == "__main__":
         buffer_device=device,
     ).to(device)
 
-    agent.attach_tensorboard(writer, prefix="agent")
-
     start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
@@ -1146,12 +1131,6 @@ if __name__ == "__main__":
                 if info is not None:
                     print(
                         f"global_step={env_steps}, episodic_return={info['episode']['r']}"
-                    )
-                    writer.add_scalar(
-                        "charts/episodic_return", info["episode"]["r"], env_steps
-                    )
-                    writer.add_scalar(
-                        "charts/episodic_length", info["episode"]["l"], env_steps
                     )
                     break
 
@@ -1181,45 +1160,6 @@ if __name__ == "__main__":
                 updates_performed += 1
 
             if env_steps % 100 == 0:
-                writer.add_scalar(
-                    "losses/qf1_values",
-                    agent.last_losses.get("qf1_values", 0.0),
-                    env_steps,
-                )
-                writer.add_scalar(
-                    "losses/qf2_values",
-                    agent.last_losses.get("qf2_values", 0.0),
-                    env_steps,
-                )
-                writer.add_scalar(
-                    "losses/qf1_loss", agent.last_losses.get("qf1_loss", 0.0), env_steps
-                )
-                writer.add_scalar(
-                    "losses/qf2_loss", agent.last_losses.get("qf2_loss", 0.0), env_steps
-                )
-                writer.add_scalar(
-                    "losses/qf_loss", agent.last_losses.get("qf_loss", 0.0), env_steps
-                )
-                writer.add_scalar(
-                    "losses/actor_loss",
-                    agent.last_losses.get("actor_loss", 0.0),
-                    env_steps,
-                )
-                writer.add_scalar(
-                    "losses/alpha", agent.last_losses.get("alpha", 0.0), env_steps
-                )
                 print("SPS:", int(env_steps / (time.time() - start_time)))
-                writer.add_scalar(
-                    "charts/SPS",
-                    int(env_steps / (time.time() - start_time)),
-                    env_steps,
-                )
-                if args.autotune:
-                    writer.add_scalar(
-                        "losses/alpha_loss",
-                        agent.last_losses.get("alpha_loss", 0.0),
-                        env_steps,
-                    )
 
     envs.close()
-    writer.close()

@@ -10,7 +10,6 @@ from typing import Callable, Optional
 import gymnasium as gym
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 from runner_utils import get_device_name, plot_results, resolve_torch_device
 from environment_utils import (
     ActionTransformHandler,
@@ -607,19 +606,6 @@ def rollout_online_rl(
 
     start_time = time.time()
 
-    writer = None
-    if getattr(args, "run", None) is not None:
-        results_dir = os.path.join("results", args.algo, args.env_name)
-        os.makedirs(results_dir, exist_ok=True)
-        tb_dir = os.path.join(
-            results_dir, f"tensorboard_run{args.run}_abl{args.ablation}"
-        )
-        writer = SummaryWriter(log_dir=tb_dir)
-        writer.add_scalar("run/started", 1, 0)
-
-        if hasattr(agent, "attach_tensorboard"):
-            agent.attach_tensorboard(writer, prefix="agent")
-
     global_step = 0
     updates_performed = 0
     timed_out = False
@@ -678,19 +664,11 @@ def rollout_online_rl(
                 smooth_rhist.append(float(smooth_r))
                 ep += 1
 
-                if writer:
-                    writer.add_scalar(
-                        "charts/episodic_return", float(r_ep[env_i]), global_step
-                    )
-
                 if ep % eval_every_episodes == 0 and ep > 0:
                     eval_res = evaluate_agent(
                         agent, args, device, step=global_step, n_steps=total_step_budget
                     )
                     eval_hist.append(eval_res)
-                    if writer:
-
-                        writer.add_scalar("charts/eval_return", eval_res, global_step)
 
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0
@@ -707,10 +685,6 @@ def rollout_online_rl(
     train_time = time.time() - start_time
     steps_per_sec = (global_step / train_time) if train_time > 0 else 0.0
     updates_per_sec = (updates_performed / train_time) if train_time > 0 else 0.0
-
-    if writer:
-        writer.flush()
-        writer.close()
 
     return {
         "rhist": rhist,
@@ -731,7 +705,6 @@ def rollout_offline_rl(
     agent,
     args,
     device,
-    writer=None,
     max_wall_time_seconds=None,
     total_steps_override=None,
 ):
@@ -876,17 +849,9 @@ def rollout_offline_rl(
                 smooth_rhist.append(float(smooth_r))
                 ep += 1
 
-                if writer:
-                    writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
-                    writer.add_scalar(
-                        "episode/smooth_reward", float(smooth_r), total_samples
-                    )
-
                 if ep % eval_every_episodes == 0 and ep > 0:
                     eval_res = evaluate_agent(agent, args, device)
                     eval_hist.append(eval_res)
-                    if writer:
-                        writer.add_scalar("eval/reward", eval_res, total_samples)
 
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0

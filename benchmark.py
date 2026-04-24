@@ -254,7 +254,6 @@ def benchmark_updates(
             agent, 
             args, 
             device, 
-            writer=None,
             max_wall_time_seconds=None, 
             total_steps_override=getattr(args, 'benchmark_steps', iters * 5)
         )
