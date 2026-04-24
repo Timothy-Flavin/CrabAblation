@@ -245,7 +245,6 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     dueling = bool(cfg["dueling"])
     delayed = bool(cfg["delayed"])
     beta = float(cfg["Beta"])
-    ent_reg_coef = float(cfg["ent_reg_coef"])
     alpha = float(cfg["alpha"])
     if AgentClass is IQNRainbowDQN:
         agent = AgentClass(
@@ -260,7 +259,6 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             Thompson=False,
             dueling=dueling,
             Beta=beta,
-            ent_reg_coef=ent_reg_coef,
             delayed=delayed,
             polyak_tau=0.005,
             alpha=alpha,
