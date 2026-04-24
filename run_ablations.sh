@@ -3,13 +3,11 @@
 set -euo pipefail
 
 # Default parameters
-ALGOS=("ppo" "sac")
+ALGOS=("ppo" "sac" "dqn")
 ENVS=("cartpole" "mujoco" "minigrid") 
-#"mujoco" "cartpole" "minigrid"
-ABLATIONS=(0 1 2 3 4 5 6) #0 1 2 3 4 5 
+ABLATIONS=(0 1 2 3 4 5 6)
 RUNS=5
-DEVICE="cuda"
-DEVICE_NAME="timpc"
+DEVICE_NAME=""
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
@@ -18,16 +16,20 @@ while [[ $# -gt 0 ]]; do
     --envs) IFS=' ' read -r -a ENVS <<< "$2"; shift 2 ;;
     --ablations) IFS=' ' read -r -a ABLATIONS <<< "$2"; shift 2 ;;
     --runs) RUNS="$2"; shift 2 ;;
-    --device) DEVICE="$2"; shift 2 ;;
     --device_name) DEVICE_NAME="$2"; shift 2 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
 done
 
+if [[ -z "$DEVICE_NAME" ]]; then
+  echo "Error: --device_name is required (e.g., --device_name 'timpc')."
+  exit 1
+fi
+
 # Ensure results directory exists
 mkdir -p results
 
-echo "Starting Ablations on device: ${DEVICE} (${DEVICE_NAME})"
+echo "Starting Ablations on device computer: ${DEVICE_NAME}"
 echo "=================================================="
 
 for algo in "${ALGOS[@]}"; do
@@ -40,7 +42,8 @@ for algo in "${ALGOS[@]}"; do
             continue
           fi
           echo "[$(date +'%Y-%m-%d %H:%M:%S')] Running Algo: ${algo} | Env: ${env} | Ablation: ${abl} | Run: ${run}"
-          python runner.py --algo "${algo}" --env_name "${env}" --ablation "${abl}" --run "${run}" --device "${DEVICE}" --device_name "${DEVICE_NAME}"
+          # Removed the hardcoded --device argument
+          python runner.py --algo "${algo}" --env_name "${env}" --ablation "${abl}" --run "${run}" --device_name "${DEVICE_NAME}"
         done
       done
     done

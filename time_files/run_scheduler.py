@@ -1,13 +1,36 @@
 import os
 import json
+import yaml
 from ortools.linear_solver import pywraplp
-
 
 def solve_scheduling_problem():
     # ---------------------------------------------------
-    # 1. Data Setup
+    # 1. Data Setup & Hardware Topology
     # ---------------------------------------------------
-    devices = ["timpc", "mac", "laptop", "white-machine"]
+    devices = [
+        "timpc", 
+        "mac", 
+        "laptop", 
+        "white-machine_gpu0", 
+        "white-machine_gpu1", 
+        "alienware_gpu_0", 
+        "alienware_gpu_1", 
+        "lab-comp_cpu", 
+        "lab-comp_gpu"
+    ]
+    
+    command_pre_appends = {
+        "timpc": "",
+        "mac": "",
+        "laptop": "", 
+        "white-machine_gpu0": "OMP_NUM_THREADS=8 CUDA_VISIBLE_DEVICES=0 taskset -c 0-3,8-11 ", 
+        "white-machine_gpu1": "OMP_NUM_THREADS=8 CUDA_VISIBLE_DEVICES=1 taskset -c 4-7,12-15 ", 
+        "alienware_gpu_0": "OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES=0 taskset -c 0,1,4,5 ", 
+        "alienware_gpu_1": "OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES=1 taskset -c 2,3,6,7 ", 
+        "lab-comp_cpu": "OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=\"\" numactl --cpunodebind=0 --membind=0 ", 
+        "lab-comp_gpu": "OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 numactl --cpunodebind=1 --membind=1 ", 
+    }
+
     envs = ["minigrid", "cartpole", "mujoco"]
     models = ["dqn", "ppo", "sac"]
     ablations = [0, 1, 2, 3, 4, 5]
@@ -27,10 +50,12 @@ def solve_scheduling_problem():
     num_devices = len(devices)
 
     # Load env_config.yaml for max_steps
-    import yaml
-
-    with open(os.path.join(os.path.dirname(__file__), "../env_config.yaml"), "r") as f:
-        ENV_CONFIG = yaml.safe_load(f)
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "env_config.yaml"), "r") as f:
+            ENV_CONFIG = yaml.safe_load(f)
+    except FileNotFoundError:
+        print("Warning: env_config.yaml not found. Using fallback step counts.")
+        ENV_CONFIG = {}
 
     # Function to get steps per sec handling missing data gracefully
     def get_runtime_minutes(device, experiment):
@@ -41,8 +66,8 @@ def solve_scheduling_problem():
         json_path = os.path.join("time_files", device, f"{env}_{model}_best.json")
         steps_per_sec = None
 
-        # Default to a generic value if not found
-        default_sps = 300.0
+        # Default to a generic value if benchmark file is missing
+        default_sps = 30.0
         try:
             with open(json_path, "r") as f:
                 data = json.load(f)
@@ -53,9 +78,19 @@ def solve_scheduling_problem():
                     steps_per_sec = default_sps
         except Exception:
             steps_per_sec = default_sps
+            
+        # Prevent division by zero
+        if steps_per_sec <= 0:
+            steps_per_sec = 1.0
 
-        # Use max_steps from env_config.yaml, fallback to 300000 if missing
-        total_steps = int(ENV_CONFIG.get(env, {}).get("max_steps", 300000))
+        # Safely parse max_steps from dict or fallback to 300000
+        env_dict = ENV_CONFIG.get(env, {})
+        max_steps_val = env_dict.get("max_steps", 300000)
+        if isinstance(max_steps_val, dict):
+            total_steps = int(max_steps_val.get(model, 300000))
+        else:
+            total_steps = int(max_steps_val)
+            
         # return runtime in minutes
         return (total_steps / steps_per_sec) / 60.0
 
@@ -71,6 +106,13 @@ def solve_scheduling_problem():
     if not solver:
         print("SCIP solver not available.")
         return
+
+    # ENABLE SOLVER LOGS: Prints periodic progress and bounds
+    solver.EnableOutput()
+    
+    # Optional: Set a time limit (e.g., 5 minutes = 300,000 milliseconds)
+    # The solver will return the best schedule found within this time frame.
+    solver.SetTimeLimit(300000) 
 
     # ---------------------------------------------------
     # 3. Variables
@@ -106,11 +148,20 @@ def solve_scheduling_problem():
     # ---------------------------------------------------
     # 6. Solve & Print Results
     # ---------------------------------------------------
-    print("Solving... this may take a moment.")
+    print(f"Assigning {num_experiments} experiments across {num_devices} workers.")
+    print("Solving... streaming SCIP optimization logs below:\n")
+    print("-" * 50)
+    
     status = solver.Solve()
+    
+    print("-" * 50)
 
-    if status == pywraplp.Solver.OPTIMAL:
-        print("Optimal Schedule Found!")
+    if status in [pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE]:
+        if status == pywraplp.Solver.OPTIMAL:
+            print("Status: Optimal Schedule Found!")
+        else:
+            print("Status: Feasible Schedule Found (Time Limit Reached)!")
+            
         print(
             f"Total time to finish all experiments: {makespan.solution_value():.2f} minutes\n"
         )
@@ -126,35 +177,37 @@ def solve_scheduling_problem():
                 "set -euo pipefail\n\n",
             ]
 
+            preamble = command_pre_appends.get(device, "")
+
             for i, exp in enumerate(experiments):
-                if x[i, j].solution_value() == 1:
+                if x[i, j].solution_value() > 0.5: # Floating point safe check for 1
                     time_taken = runtime_matrix[i][j]
                     device_time += time_taken
                     dev_experiments.append(
                         f"  Env: {exp['env']:<8} | Model: {exp['model']:<3} | Ablation: {exp['ablation']} | Run: {exp['run']} (takes {time_taken:.2f} mins)"
                     )
 
-                    runner = "runner.py"
                     sh_lines.append(
                         f"echo \"[{device}] Running {exp['model']} on {exp['env']} | Ablation {exp['ablation']} | Run {exp['run']}\"\n"
                     )
-                    sh_lines.append(
-                        f"python {runner} --algo {exp['model']} --env_name {exp['env']} --ablation {exp['ablation']} --run {exp['run']}\n\n"
-                    )
+                    
+                    # Command with the hardware preamble injected and device_name passed explicitly
+                    cmd = f"{preamble}python runner.py --algo {exp['model']} --env_name {exp['env']} --ablation {exp['ablation']} --run {exp['run']} --device_name {device}\n\n"
+                    sh_lines.append(cmd)
 
             # Write the .sh file for this device
+            os.makedirs("time_files", exist_ok=True)
             sh_filename = os.path.join("time_files", f"run_{device}_experiments.sh")
             with open(sh_filename, "w", newline="\n") as sh_file:
                 sh_file.writelines(sh_lines)
 
             for line in dev_experiments:
                 print(line)
-            print(f"  Total {device} Runtime: {device_time:.2f} mins\n")
+            print(f"  Total {device} Runtime: {device_time:.2f} mins")
             print(f"  Generated shell script saved to {sh_filename}\n")
             print("-" * 50)
     else:
-        print("The solver could not find an optimal solution.")
-
+        print("The solver could not find a feasible solution.")
 
 if __name__ == "__main__":
     solve_scheduling_problem()

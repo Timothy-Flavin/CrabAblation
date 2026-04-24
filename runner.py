@@ -61,10 +61,12 @@ def get_args():
         default=0,
         help="If > 0, force this total step budget for rollouts",
     )
+    
+    # Updated default to 86400 seconds (24 hours)
     parser.add_argument(
         "--max_wall_time",
         type=float,
-        default=0.0,
+        default=86400.0,
         help="Maximum wall-clock seconds before early stop",
     )
     parser.add_argument("--device_name", type=str, default=get_device_name())
@@ -112,26 +114,12 @@ def get_args():
             args.total_steps = int(max_steps_cfg.get(args.algo, 1000000))
         else:
             args.total_steps = int(max_steps_cfg)
+            
     # Set buffer sizes from config if not overridden
     if args.dqn_buffer_size is None:
         args.dqn_buffer_size = int(env_cfg.get("buffer_size", 100000))
     if args.buffer_size is None:
         args.buffer_size = int(env_cfg.get("buffer_size", 200000))
-    if args.algo == "sac":
-        args.update_every = 4
-    if args.env_name == "cartpole" and args.total_steps == 1000000:
-        args.total_steps = 300000
-    if args.env_name == "mujoco" and args.total_steps == 1000000:
-        args.total_steps = 2000000
-    if args.env_name == "mujoco":
-        args.buffer_size = 500000
-        args.dqn_buffer_size = 500000
-    if (
-        args.algo == "dqn"
-        and args.env_name == "mujoco"
-        and args.dqn_buffer_size == 10000
-    ):
-        args.dqn_buffer_size = 20000
 
     if not args.skip_best_params:
         _maybe_load_best_params(args)
@@ -140,7 +128,6 @@ def get_args():
         args.env_id = args.env_name
 
     return args
-
 
 def _maybe_load_best_params(args):
     best_json_path = (
@@ -614,8 +601,13 @@ def rollout_online_rl(
 
     if max_wall_time_seconds is None:
         max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
-
+    max_time = max_wall_time_seconds if (max_wall_time_seconds is not None and max_wall_time_seconds > 0) else float('inf')
+    
     while global_step < total_step_budget:
+        time_elapsed = time.time() - start_time
+        if time_elapsed >= max_time:
+            timed_out = True
+            break
         if global_step > 0 and global_step % 10000 == 0:
             print(
                 f"[PPO] Step {global_step}/{total_step_budget} beta {agent.Beta} smooth r {smooth_r:.2f}"
@@ -719,6 +711,9 @@ def rollout_offline_rl(
         batch_size = int(args.batch_size)
 
     total_step_budget = _compute_rollout_budget(args, total_steps_override)
+    
+    # Resolve the hard time cap
+    max_time = max_wall_time_seconds if (max_wall_time_seconds is not None and max_wall_time_seconds > 0) else float('inf')
 
     rhist = []
     smooth_rhist = []
@@ -757,31 +752,39 @@ def rollout_offline_rl(
     eval_every_episodes = 25
 
     while total_samples < total_step_budget:
+        # Check time bounds and progress
+        time_elapsed = time.time() - start_time
+        time_progress = time_elapsed / max_time if max_time != float('inf') else 0.0
+        step_progress = total_samples / max(1, total_step_budget)
+        
+        # Ensures parameters scale accurately if time finishes before steps
+        progress = min(1.0, max(time_progress, step_progress))
+
+        if time_elapsed >= max_time:
+            break
+
         if total_samples > 0 and total_samples % 10000 == 0:
             print(
                 f"[{args.algo.upper()}] Step {total_samples}/{total_step_budget} (Episodes: {ep}) smooth r {smooth_r}"
             )
-        if (
-            max_wall_time_seconds is not None
-            and max_wall_time_seconds > 0
-            and (time.time() - start_time) >= max_wall_time_seconds
-        ):
-            break
 
         t_ = time.time()
 
-        # Sample action
+        # Sample action using PROGRESS fraction instead of raw steps
         if args.algo == "dqn":
-            eps_current = max(
-                0.5 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05
-            )
+            eps_current = max(0.5 - 2.0 * progress, 0.05)
             tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
+            # Pass the effective progression step artificially so agent scales properly internally
+            effective_step = int(progress * total_step_budget)
             actions = agent.sample_action(
-                tobs, eps=eps_current, step=total_samples, n_steps=total_step_budget
+                tobs, eps=eps_current, step=effective_step, n_steps=total_step_budget
             )
         else:  # SAC
             learning_starts_val = getattr(args, "learning_starts", 5000)
-            if total_samples < learning_starts_val:
+            ls_fraction = learning_starts_val / max(1, total_step_budget)
+            
+            # Use progress fraction to evaluate learning start boundaries
+            if progress < ls_fraction:
                 if isinstance(vec_env.single_action_space, gym.spaces.Box):
                     actions = np.array(
                         [
@@ -811,9 +814,7 @@ def rollout_offline_rl(
             next_obs.clone() if isinstance(next_obs, torch.Tensor) else next_obs.copy()
         )
 
-        # 1. Properly extract final observations for BOTH terminations and truncations
         if "final_observation" in infos:
-            # Safely get the boolean mask of environments that actually finished
             _final_masks = infos.get(
                 "_final_observation", np.logical_or(terminations, truncations)
             )
@@ -821,7 +822,6 @@ def rollout_offline_rl(
                 if is_final:
                     real_next_obs[idx] = infos["final_observation"][idx]
 
-        # 2. Add manual runner-level truncations AFTER true env resets have been processed
         for env_i in range(args.num_envs):
             if ep_len[env_i] + 1 >= getattr(args, "max_frames_per_ep", 2000):
                 truncations[env_i] = True
@@ -830,12 +830,10 @@ def rollout_offline_rl(
         if args.algo == "dqn" and actions_arr.ndim == 1:
             actions_arr = actions_arr.reshape(-1, 1)
 
-        # Unified Observe (Buffer addition & Stat tracking inside agent). Info passed to align with PPO API
         agent.observe(
             obs, actions_arr, rewards, real_next_obs, terminations, truncations, infos
         )
 
-        # Logging & Housekeeping
         for env_i in range(args.num_envs):
             total_samples += 1
             r_ep[env_i] += float(rewards[env_i])
@@ -850,7 +848,8 @@ def rollout_offline_rl(
                 ep += 1
 
                 if ep % eval_every_episodes == 0 and ep > 0:
-                    eval_res = evaluate_agent(agent, args, device)
+                    effective_step = int(progress * total_step_budget)
+                    eval_res = evaluate_agent(agent, args, device, step=effective_step, n_steps=total_step_budget)
                     eval_hist.append(eval_res)
 
                 r_ep[env_i] = 0.0
@@ -861,19 +860,22 @@ def rollout_offline_rl(
         # Update Agent
         steps_since_update += args.num_envs
         t_ = time.time()
+        effective_step = int(progress * total_step_budget)
         if args.algo == "dqn":
             rnd_burn_in = getattr(args, "rnd_burn_in", 0)
+            rnd_fraction = rnd_burn_in / max(1, total_step_budget)
+            
             while steps_since_update >= args.update_every:
                 if total_samples > batch_size:
-                    loss_val = agent.update(batch_size=batch_size, step=total_samples)
-                    if total_samples >= rnd_burn_in:
+                    loss_val = agent.update(batch_size=batch_size, step=effective_step)
+                    if progress >= rnd_fraction:
                         lhist.append(float(loss_val))
                     updates_performed += 1
                 steps_since_update -= args.update_every
         else:  # SAC
             while steps_since_update >= args.update_every:
                 loss_val = agent.update(
-                    batch_size=batch_size, global_step=total_samples
+                    batch_size=batch_size, global_step=effective_step
                 )
                 if loss_val is not None:
                     try:
@@ -903,10 +905,9 @@ def rollout_offline_rl(
         "steps_per_sec": float(steps_per_sec),
         "updates_per_sec": float(updates_per_sec),
         "train_time": float(train_time),
-        "timed_out": False,
+        "timed_out": (time_elapsed >= max_time),
         "time_taken_modular": time_taken_modular,
     }
-
 
 def main():
     args = get_args()
