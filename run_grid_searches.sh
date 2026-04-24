@@ -42,7 +42,7 @@ case $MACHINE in
     "mac")
         DEV1_NAME="$MACHINE"
         DEV1_PRE=""
-        DEV1_SEARCH_DEVS="cpu mps"
+        DEV1_SEARCH_DEVS="cpu"
         
         DEV2_NAME=""
         DEV2_PRE=""
