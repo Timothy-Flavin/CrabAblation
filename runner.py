@@ -280,7 +280,6 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             Thompson=False,
             dueling=dueling,
             Beta=beta,
-            ent_reg_coef=ent_reg_coef,
             delayed=delayed,
             polyak_tau=0.005,
             alpha=alpha,
