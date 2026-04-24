@@ -67,32 +67,28 @@ def get_args():
     parser.add_argument("--num_steps", type=int, default=128)
     parser.add_argument("--replace_existing", action="store_true", default=False)
     
+
     # Cap wall time at 20 seconds for benchmarks
     parser.add_argument(
         "--max_wall_time",
         type=float,
-        default=20.0,
+        default=15.0,
         help="Maximum wall-clock seconds per trial before early stop",
     )
-    parser.add_argument(
-        "--benchmark_steps",
-        type=int,
-        default=5000,
-        help="Step budget for each benchmark rollout trial",
-    )
+    
+    # Set step budget huge so it always relies on the 20s wall time cap
+    parser.add_argument("--benchmark_steps", type=int, default=1000000)
 
-    # DQN knobs
+    # Force burn-in to 0 for benchmarks
     parser.add_argument("--dqn_buffer_size", type=int, default=10000)
     parser.add_argument("--dqn_batch_size", type=int, default=256)
     parser.add_argument("--update_every", type=int, default=8)
-    parser.add_argument("--rnd_burn_in", type=int, default=10)
+    parser.add_argument("--rnd_burn_in", type=int, default=0) # Changed to 0
 
     # SAC knobs
     parser.add_argument("--buffer_size", type=int, default=20000)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--learning_starts", type=int, default=0)
+    parser.add_argument("--learning_starts", type=int, default=0) # Changed to 0
     parser.add_argument("--policy_lr", type=float, default=3e-4)
     parser.add_argument("--q_lr", type=float, default=1e-3)
     parser.add_argument("--policy_frequency", type=int, default=2)
@@ -106,6 +102,7 @@ def get_args():
     args = parser.parse_args()
     if not args.env_id:
         args.env_id = args.env_name
+    args.is_benchmark = True
 
     return args
 
