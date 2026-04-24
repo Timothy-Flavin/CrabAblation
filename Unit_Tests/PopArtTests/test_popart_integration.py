@@ -4,14 +4,12 @@ import torch
 import unittest
 import numpy as np
 import gymnasium as gym
-from collections import namedtuple
 import logging
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 from learning_algorithms.DQN_Rainbow import EVRainbowDQN
 from learning_algorithms.SAC_Rainbow import EVSAC
 from learning_algorithms.PG_Rainbow import StandardPPOAgent
-from learning_algorithms.cleanrl_buffers import ReplayBufferSamples
 
 # Ensure log dir exists
 log_dir = "Unit_Tests/PopArtTests/logs"
@@ -30,11 +28,6 @@ class DummyEnvs:
             self.single_action_space = gym.spaces.Discrete(10)
 
 
-BatchData = namedtuple(
-    "BatchData", ["observations", "actions", "rewards", "next_observations", "dones"]
-)
-
-
 class TestPopartIntegration(unittest.TestCase):
 
     def test_dqn_popart_integration(self):
@@ -43,20 +36,19 @@ class TestPopartIntegration(unittest.TestCase):
         def train_dqn(scale, seed, check_stats=False):
             torch.manual_seed(seed)
             np.random.seed(seed)
+            batch_size = 32
+            
             agent = EVRainbowDQN(
                 input_dim=1,
                 n_action_dims=1,
                 n_action_bins=10,
+                n_envs=batch_size,
                 hidden_layer_sizes=[32],
                 lr=0.05,
                 burn_in_updates=0,
                 min_std=1e-8,
             ).to(torch.device("cpu"))
 
-            batch_size = 32
-            obs = torch.ones(batch_size, 1)
-            next_obs = torch.ones(batch_size, 1)
-            terms = torch.zeros(batch_size)
             orig_sigma = agent.ext_online.output_layer.sigma.item()
 
             # For exact invariance without optimizer momentum artifacts, we burn in the target buffer directly
@@ -70,34 +62,25 @@ class TestPopartIntegration(unittest.TestCase):
             # Disable the internal ext_r_clip tracker for this test to ensure pure PopArt functionality
             agent.ext_r_clip = float("inf")
 
-            # After burn-in, sigma is clamped to min_std (constant burn-in has zero variance).
-            # During the first update step it will jump to track the actual reward std ∝ scale.
-            sigma_after_burn_in = agent.ext_online.output_layer.sigma.item()
-
             steps_to_converge = 200
             for step in range(1, 200):
-                obs = torch.randn(batch_size, 1)
-                next_obs = torch.randn(batch_size, 1)
-                target_act = (obs > 0).long()
+                obs = np.random.randn(batch_size, 1).astype(np.float32)
+                next_obs = np.random.randn(batch_size, 1).astype(np.float32)
+                target_act = (obs > 0).astype(np.int64)
 
-                act = torch.randint(0, 10, (batch_size, 1))
-                r = torch.where(
+                act = np.random.randint(0, 10, (batch_size, 1)).astype(np.int32)
+                r = np.where(
                     act == target_act,
-                    torch.tensor(float(scale)),
-                    torch.tensor(-float(scale) / 9),
-                )
+                    float(scale),
+                    -float(scale) / 9,
+                ).astype(np.float32).flatten()
+                
+                terms = np.zeros(batch_size, dtype=bool)
+                truncs = np.zeros(batch_size, dtype=bool)
+                infos = {}
 
-                class MockBuffer:
-                    def sample(self, *args, **kwargs):
-                        return ReplayBufferSamples(
-                            observations=obs,
-                            actions=act,
-                            next_observations=next_obs,
-                            terminations=terms.view(-1, 1),
-                            truncations=torch.zeros_like(terms).view(-1, 1),
-                            rewards=r.view(-1, 1),
-                        )
-                agent.buffer = MockBuffer()
+                # Use official API
+                agent.observe(obs, act, r, next_obs, terms, truncs, infos)
                 agent.update(batch_size=batch_size, step=step)
 
                 if check_stats and step == 10:
@@ -142,7 +125,9 @@ class TestPopartIntegration(unittest.TestCase):
             torch.manual_seed(seed)
             np.random.seed(seed)
             envs = DummyEnvs(continuous=True)
-            envs.num_envs = 1
+            batch_size = 64
+            envs.num_envs = batch_size
+            
             agent = EVSAC(
                 envs,
                 hidden_layer_sizes=(32, 32),
@@ -155,7 +140,6 @@ class TestPopartIntegration(unittest.TestCase):
                 entropy_coef_zero=True,  # autotune alpha starts large relative to 1e-4 rewards
             ).to(torch.device("cpu"))
 
-            batch_size = 64
             orig_sigma = agent.qf1.output_layer.sigma.item()
 
             # Snap PopArt distribution directly to reality
@@ -170,8 +154,6 @@ class TestPopartIntegration(unittest.TestCase):
             agent.qf1.output_layer.beta = old_beta1
             agent.qf2.output_layer.beta = old_beta2
 
-            # After burn-in, sigma should be proportional to scale.
-            # This is the explicit proof that both agents are operating at different reward scales.
             sigma_after_burn_in = agent.qf1.output_layer.sigma.item()
             if check_stats:
                 logging.info(
@@ -182,25 +164,17 @@ class TestPopartIntegration(unittest.TestCase):
             steps_to_converge = MAX_STEPS
 
             for step in range(1, MAX_STEPS):
-                obs = torch.ones(batch_size, 1)
-                next_obs = torch.ones(batch_size, 1)
-                dones = torch.zeros(batch_size, 1)
+                obs = np.ones((batch_size, 1), dtype=np.float32)
+                next_obs = np.ones((batch_size, 1), dtype=np.float32)
+                
+                acts = np.random.uniform(-1, 1, (batch_size, 10)).astype(np.float32)
+                r = scale - scale * np.mean(np.abs(acts), axis=-1)
+                
+                terms = np.zeros(batch_size, dtype=bool)
+                truncs = np.zeros(batch_size, dtype=bool)
 
-                acts = torch.rand(batch_size, 10) * 2 - 1
-                r = scale - scale * torch.mean(torch.abs(acts), dim=-1, keepdim=True)
-
-                class MockBuffer:
-                    def sample(self, *args, **kwargs):
-                        import types
-                        return types.SimpleNamespace(
-                            observations=obs,
-                            actions=acts,
-                            rewards=r,
-                            next_observations=next_obs,
-                            terminations=dones,
-                            truncations=torch.zeros_like(dones),
-                        )
-                agent.buffer = MockBuffer()
+                # Use official API
+                agent.observe(obs, acts, r, next_obs, terms, truncs, {})
                 agent.update(batch_size=batch_size, global_step=step)
 
                 if check_stats and step == 10:
@@ -213,7 +187,7 @@ class TestPopartIntegration(unittest.TestCase):
                     )
 
                 with torch.no_grad():
-                    mean_action, _ = agent.actor(obs[0:1])
+                    mean_action, _ = agent.actor(torch.ones(1, 1))
                     if (mean_action.abs() < 0.2).all():
                         steps_to_converge = step
                         break
@@ -228,9 +202,6 @@ class TestPopartIntegration(unittest.TestCase):
         large_sigmas = [r[1] for r in large_results]
         small_sigmas = [r[1] for r in small_results]
 
-        # Explicit proof the agents ran at genuinely different reward scales:
-        # sigma must track reward std, which is proportional to scale.
-        # If sigma_large / sigma_small is not ~1e8, the rewards were aliased.
         sigma_ratio = np.mean(large_sigmas) / np.mean(small_sigmas)
         logging.info(
             f"SAC sigma ratio large/small = {sigma_ratio:.3e} (expected ~1e8)"
@@ -261,18 +232,21 @@ class TestPopartIntegration(unittest.TestCase):
             torch.manual_seed(seed)
             np.random.seed(seed)
             envs = DummyEnvs(continuous=False)
+            batch_size = 64
+            envs.num_envs = batch_size
+            
             agent = StandardPPOAgent(
                 envs,
                 learning_rate=0.05,
                 hidden_layer_sizes=(32, 32),
                 popart=True,
-                num_envs=1,
-                num_steps=64,
+                num_envs=batch_size,
+                num_steps=1, # Single step per update given envs is scaled
                 update_epochs=2,
                 num_minibatches=1,
+                Beta=0.0
             ).to(torch.device("cpu"))
 
-            batch_size = 64
             orig_sigma = agent.ext_critic_head.sigma.item()
 
             # Snap PopArt distribution directly to reality
@@ -285,34 +259,30 @@ class TestPopartIntegration(unittest.TestCase):
             steps_to_converge = 100
 
             for step in range(1, 100):
-                obs = torch.ones(batch_size, 1)
-                next_obs = torch.ones(1, 1)
-                dones = torch.zeros(batch_size, 1)
-                next_done = torch.zeros(1)
-
-                actions = torch.randint(0, 10, (batch_size, 1))
-                r = torch.where(
+                obs = np.ones((batch_size, 1), dtype=np.float32)
+                next_obs = np.ones((batch_size, 1), dtype=np.float32)
+                
+                actions = np.random.randint(0, 10, batch_size).astype(np.int32)
+                r = np.where(
                     actions == 0,
-                    torch.tensor(float(scale)),
-                    -torch.tensor(float(scale) / 9),
-                )
+                    float(scale),
+                    -float(scale) / 9,
+                ).astype(np.float32)
+                
+                terms = np.zeros(batch_size, dtype=bool)
+                truncs = np.zeros(batch_size, dtype=bool)
+                infos = {}
 
                 with torch.no_grad():
-                    _, logprobs, _, ext_values, int_values = (
-                        agent.get_action_and_values(obs, actions.flatten())
+                    _, logprobs, _, _, _ = agent.get_action_and_values(
+                        torch.tensor(obs), torch.tensor(actions)
                     )
 
-                agent.update(
-                    obs,
-                    actions.flatten(),
-                    logprobs,
-                    r.flatten(),
-                    dones,
-                    ext_values.flatten(),
-                    int_values.flatten(),
-                    next_obs[0],
-                    next_done,
+                # Use official API (observe takes numpy values cleanly)
+                agent.observe(
+                    obs, actions, logprobs.numpy(), r, next_obs, terms, truncs, infos
                 )
+                agent.update(global_step=step)
 
                 if check_stats and step == 5:
                     new_sigma = agent.ext_critic_head.sigma.item()
@@ -324,7 +294,7 @@ class TestPopartIntegration(unittest.TestCase):
                     )
 
                 with torch.no_grad():
-                    logits = agent.actor(obs[0:1])
+                    logits = agent.actor(torch.ones(1, 1))
                     probs = torch.softmax(logits, dim=-1)
                     if probs[0, 0].item() > 0.5:
                         steps_to_converge = step

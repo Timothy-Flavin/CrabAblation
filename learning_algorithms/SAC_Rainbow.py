@@ -495,7 +495,7 @@ class BaseSAC(Agent):
                 b_next_obs = b_next_obs.unsqueeze(0)
 
             self.obs_rms.update(
-                b_next_obs.to(dtype=torch.float64, device=self.obs_rms.mean.device)
+                b_next_obs.to(device=self.obs_rms.mean.device)
             )
 
         self.buffer.add(obs, next_obs, action, reward, terminated, truncated)
@@ -548,8 +548,8 @@ class BaseSAC(Agent):
         if self.Beta > 0.0 or getattr(self, "always_update_rnd", False):
             with torch.no_grad():
                 norm_next_obs = self.obs_rms.normalize(
-                    data.next_observations.to(dtype=torch.float64)
-                ).to(dtype=torch.float32)
+                    data.next_observations.to(device=self.device)
+                )
             rnd_errors = self.rnd(norm_next_obs)
             rnd_loss = rnd_errors.mean()
             self.rnd_optim.zero_grad()
@@ -650,10 +650,10 @@ class BaseSAC(Agent):
         if self.update_steps % self.policy_frequency == 0:
             
             # Freeze critics to avoid unnecessary gradient computation during actor update
-            for p in self.qf1.parameters(): p.requires_grad = False
-            for p in self.qf2.parameters(): p.requires_grad = False
-            for p in self.qf1_int.parameters(): p.requires_grad = False
-            for p in self.qf2_int.parameters(): p.requires_grad = False
+            self.qf1.requires_grad_(False)
+            self.qf2.requires_grad_(False)
+            self.qf1_int.requires_grad_(False)
+            self.qf2_int.requires_grad_(False)
 
             t1 = time.time()
             pi, log_pi, _ = self.actor.get_action(data.observations)
@@ -661,14 +661,14 @@ class BaseSAC(Agent):
 
             min_qf_pi, min_qf_pi_int = self._get_actor_q_values(pi_critic_input)
 
-            # actor_loss = (
-            #     (self.alpha * log_pi)
-            #     - ((1.0 - self.Beta) * min_qf_pi + self.Beta * min_qf_pi_int)
-            # ).mean()
             actor_loss = (
                 (self.alpha * log_pi)
-                - (min_qf_pi + self.Beta * min_qf_pi_int)
+                - ((1.0 - self.Beta) * min_qf_pi + self.Beta * min_qf_pi_int)
             ).mean()
+            # actor_loss = (
+            #     (self.alpha * log_pi)
+            #     - (min_qf_pi + self.Beta * min_qf_pi_int)
+            # ).mean()
             self.timing["actor forward and loss"] = self.timing.get(
                 "actor forward and loss", 0.0
             ) + (time.time() - t1)
@@ -682,10 +682,10 @@ class BaseSAC(Agent):
             )
             
             # Unfreeze critics
-            for p in self.qf1.parameters(): p.requires_grad = True
-            for p in self.qf2.parameters(): p.requires_grad = True
-            for p in self.qf1_int.parameters(): p.requires_grad = True
-            for p in self.qf2_int.parameters(): p.requires_grad = True
+            self.qf1.requires_grad_(True)
+            self.qf2.requires_grad_(True)
+            self.qf1_int.requires_grad_(True)
+            self.qf2_int.requires_grad_(True)
 
             t1 = time.time()
             if (
@@ -719,30 +719,31 @@ class BaseSAC(Agent):
         )
 
         self.step = global_step
-        self.last_losses = {
-            "min_qf_pi": (
-                float(min_qf_pi.mean().item()) if min_qf_pi is not None else 0.0
-            ),
-            "min_qf_pi_int": (
-                float(min_qf_pi_int.mean().item()) if min_qf_pi_int is not None else 0.0
-            ),
-            "qf1_values": float(critic_logs["qf1_values"].mean().item()),
-            "qf2_values": float(critic_logs["qf2_values"].mean().item()),
-            "qf1_loss": float(qf1_loss.item()),
-            "qf2_loss": float(qf2_loss.item()),
-            "qf_loss": float((qf_loss / 2.0).item()),
-            "actor_loss": float(actor_loss.item()) if actor_loss is not None else 0.0,
-            "alpha": float(self.alpha),
-            "alpha_loss": float(alpha_loss.item()) if alpha_loss is not None else 0.0,
-            "distributional": float(self.distributional),
-            "delayed_critics": float(self.delayed_critics),
-            "rnd_loss": rnd_loss_val,
-            "munchausen_r": m_r_val,
-            "Beta": float(self.Beta),
-            "nextq": float(next_q.mean().item()),
-            "nextintq": float(next_q_int.mean().item()),
-        }
-        #print(self.last_losses)
+        if self.step%100==0:
+            self.last_losses = {
+                "min_qf_pi": (
+                    float(min_qf_pi.mean().item()) if min_qf_pi is not None else 0.0
+                ),
+                "min_qf_pi_int": (
+                    float(min_qf_pi_int.mean().item()) if min_qf_pi_int is not None else 0.0
+                ),
+                "qf1_values": float(critic_logs["qf1_values"].mean().item()),
+                "qf2_values": float(critic_logs["qf2_values"].mean().item()),
+                "qf1_loss": float(qf1_loss.item()),
+                "qf2_loss": float(qf2_loss.item()),
+                "qf_loss": float((qf_loss / 2.0).item()),
+                "actor_loss": float(actor_loss.item()) if actor_loss is not None else 0.0,
+                "alpha": float(self.alpha),
+                "alpha_loss": float(alpha_loss.item()) if alpha_loss is not None else 0.0,
+                "distributional": float(self.distributional),
+                "delayed_critics": float(self.delayed_critics),
+                "rnd_loss": rnd_loss_val,
+                "munchausen_r": m_r_val,
+                "Beta": float(self.Beta),
+                "nextq": float(next_q.mean().item()),
+                "nextintq": float(next_q_int.mean().item()),
+            }
+            #print(self.last_losses)
         return float(qf_loss.item())
 
 

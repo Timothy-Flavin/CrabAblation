@@ -250,7 +250,12 @@ class RainbowBase(Agent):
         
         # Assuming you trigger this every K steps instead of every frame
         self.ext_target.load_state_dict(self.ext_online.state_dict())
-        self.int_target.load_state_dict(self.int_online.state_dict())
+        with torch.no_grad():
+        for param, target_param in zip(self.ext_online.parameters(), self.ext_target.parameters()):
+            target_param.data.copy_(param.data)
+        for param, target_param in zip(self.int_online.parameters(), self.int_target.parameters()):
+            target_param.data.copy_(param.data)
+        #self.int_target.load_state_dict(self.int_online.state_dict())
         self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
         self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
         self.int_target.output_layer.sigma.copy_(self.int_online.output_layer.sigma)
@@ -596,47 +601,49 @@ class EVRainbowDQN(RainbowBase):
 
         self.int_optim.zero_grad()
         intrinsic_loss.backward()
-
-        # Update target network
-        if self.delayed_target and self.step%200==0:
-            self.update_target()
-
-        # tracking
         if hasattr(self, "int_online"):
             torch.nn.utils.clip_grad_norm_(self.int_online.parameters(), max_norm=10.0)
         self.int_optim.step()
+        
+        if self.delayed_target and self.step%200==0:
+            self.update_target()
 
-        if isinstance(b_r_int, torch.Tensor):
-            r_int_log = float(b_r_int.mean().item())
-        else:
-            r_int_log = 0.0
+        if self.step%100==0:
+            # Update target network
+            
 
-        if isinstance(entropy_loss, torch.Tensor):
-            entropy_val = float(entropy_loss.item())
-        else:
-            entropy_val = entropy_loss
-        if isinstance(rnd_loss, torch.Tensor):
-            rnd_loss = rnd_loss.item()
-        self.last_losses = {
-            "extrinsic": float(extrinsic_loss.item()),
-            "intrinsic": float(intrinsic_loss.item()),
-            "rnd": float(rnd_loss),
-            "avg_r_int": r_int_log,
-            "entropy_reg": entropy_val,
-            "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
-            "target_mean": float(target_for_stats_ext.mean().item()),
-            "td_target_norm_mean": float(td_target_norm.abs().mean().detach().item()),
-            "entropy_loss": entropy_val,
-            "Beta": float(self.Beta),
-            "Q_ext_mean": float(q_ext_now_norm.mean().item()),
-            "Q_int_mean": (
-                float(int_q_now_norm.mean().item())
-                if "int_q_now_norm" in locals()
-                else 0.0
-            ),
-            "last_eps": float(self.last_eps),
-        }
-        #print(self.last_losses)
+            # tracking
+            if isinstance(b_r_int, torch.Tensor):
+                r_int_log = float(b_r_int.mean().item())
+            else:
+                r_int_log = 0.0
+
+            if isinstance(entropy_loss, torch.Tensor):
+                entropy_val = float(entropy_loss.item())
+            else:
+                entropy_val = entropy_loss
+            if isinstance(rnd_loss, torch.Tensor):
+                rnd_loss = rnd_loss.item()
+            self.last_losses = {
+                "extrinsic": float(extrinsic_loss.item()),
+                "intrinsic": float(intrinsic_loss.item()),
+                "rnd": float(rnd_loss),
+                "avg_r_int": r_int_log,
+                "entropy_reg": entropy_val,
+                "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
+                "target_mean": float(target_for_stats_ext.mean().item()),
+                "td_target_norm_mean": float(td_target_norm.abs().mean().detach().item()),
+                "entropy_loss": entropy_val,
+                "Beta": float(self.Beta),
+                "Q_ext_mean": float(q_ext_now_norm.mean().item()),
+                "Q_int_mean": (
+                    float(int_q_now_norm.mean().item())
+                    if "int_q_now_norm" in locals()
+                    else 0.0
+                ),
+                "last_eps": float(self.last_eps),
+            }
+            #print(self.last_losses)
 
         return float(extrinsic_loss.item())
 
@@ -1123,51 +1130,52 @@ class IQNRainbowDQN(RainbowBase):
         if self.delayed_target and self.step%200==0:
             self.update_target()
 
-        # ========================================================
-        # Tracking identical to EV
-        # ========================================================
-        if isinstance(b_r_int, torch.Tensor):
-            r_int_log = float(b_r_int.mean().item())
-        else:
-            r_int_log = 0.0
+        if self.step%100==0:
+            # ========================================================
+            # Tracking identical to EV
+            # ========================================================
+            if isinstance(b_r_int, torch.Tensor):
+                r_int_log = float(b_r_int.mean().item())
+            else:
+                r_int_log = 0.0
 
-        if isinstance(entropy_loss, torch.Tensor):
-            entropy_val = float(entropy_loss.item())
-        else:
-            entropy_val = entropy_loss
+            if isinstance(entropy_loss, torch.Tensor):
+                entropy_val = float(entropy_loss.item())
+            else:
+                entropy_val = entropy_loss
 
-        if isinstance(rnd_loss, torch.Tensor):
-            rnd_loss = rnd_loss.item()
+            if isinstance(rnd_loss, torch.Tensor):
+                rnd_loss = rnd_loss.item()
 
-        q_ext_now_norm = (
-            quantiles_pred.mean(dim=1)
-            if "quantiles_pred" in locals()
-            else torch.tensor(0.0)
-        )
+            q_ext_now_norm = (
+                quantiles_pred.mean(dim=1)
+                if "quantiles_pred" in locals()
+                else torch.tensor(0.0)
+            )
 
-        self.last_losses = {
-            "extrinsic": float(extrinsic_loss.item()),
-            "intrinsic": float(intrinsic_loss.item()),
-            "rnd": float(rnd_loss),
-            "avg_r_int": r_int_log,
-            "entropy_reg": entropy_val,
-            "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
-            "target_mean": (
-                float(target_values.mean().item())
-                if "target_values" in locals()
-                else 0.0
-            ),
-            "entropy_loss": entropy_val,
-            "Beta": float(self.Beta),
-            "Q_ext_mean": float(q_ext_now_norm.mean().item()),
-            "Q_int_mean": (
-                float(int_quantiles.mean().item())
-                if "int_quantiles" in locals()
-                else 0.0
-            ),
-            "last_eps": float(self.last_eps),
-        }
-        #print(self.last_losses)
+            self.last_losses = {
+                "extrinsic": float(extrinsic_loss.item()),
+                "intrinsic": float(intrinsic_loss.item()),
+                "rnd": float(rnd_loss),
+                "avg_r_int": r_int_log,
+                "entropy_reg": entropy_val,
+                "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
+                "target_mean": (
+                    float(target_values.mean().item())
+                    if "target_values" in locals()
+                    else 0.0
+                ),
+                "entropy_loss": entropy_val,
+                "Beta": float(self.Beta),
+                "Q_ext_mean": float(q_ext_now_norm.mean().item()),
+                "Q_int_mean": (
+                    float(int_quantiles.mean().item())
+                    if "int_quantiles" in locals()
+                    else 0.0
+                ),
+                "last_eps": float(self.last_eps),
+            }
+            #print(self.last_losses)
         return float(extrinsic_loss.item())
 
     def sample_action(

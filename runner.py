@@ -74,13 +74,13 @@ def get_args():
     )
 
     # DQN knobs
-    parser.add_argument("--dqn_buffer_size", type=int, default=None)
+    parser.add_argument("--dqn_buffer_size", type=int, default=2e4)
     parser.add_argument("--dqn_batch_size", type=int, default=64)
     parser.add_argument("--update_every", type=int, default=4)
     parser.add_argument("--rnd_burn_in", type=int, default=1000)
 
     # SAC knobs
-    parser.add_argument("--buffer_size", type=int, default=None)
+    parser.add_argument("--buffer_size", type=int, default=2e4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--batch_size", type=int, default=128)
