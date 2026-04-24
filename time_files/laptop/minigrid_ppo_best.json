@@ -1,0 +1,38 @@
+{
+    "ablation_0": {
+        "device": "cuda",
+        "num_envs": 16,
+        "steps_per_sec": 446.11034341697956,
+        "updates_per_sec": 55.763792927122445
+    },
+    "ablation_1": {
+        "device": "cuda",
+        "num_envs": 16,
+        "steps_per_sec": 455.46666666666664,
+        "updates_per_sec": 56.53333333333333
+    },
+    "ablation_2": {
+        "device": "cpu",
+        "num_envs": 16,
+        "steps_per_sec": 434.6495114902724,
+        "updates_per_sec": 54.33118893628405
+    },
+    "ablation_3": {
+        "device": "cuda",
+        "num_envs": 16,
+        "steps_per_sec": 444.8815807776954,
+        "updates_per_sec": 55.61019759721192
+    },
+    "ablation_4": {
+        "device": "cpu",
+        "num_envs": 16,
+        "steps_per_sec": 678.1740230525451,
+        "updates_per_sec": 84.2385972030677
+    },
+    "ablation_5": {
+        "device": "cpu",
+        "num_envs": 16,
+        "steps_per_sec": 451.5141617230182,
+        "updates_per_sec": 56.43927021537728
+    }
+}

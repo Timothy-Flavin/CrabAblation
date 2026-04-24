@@ -13,8 +13,8 @@ def solve_scheduling_problem():
         "laptop", 
         "white-machine_gpu0", 
         "white-machine_gpu1", 
-        "alienware_gpu_0", 
-        "alienware_gpu_1", 
+        #"alienware_gpu_0", 
+        #"alienware_gpu_1", 
         "lab-comp_cpu", 
         "lab-comp_gpu"
     ]
@@ -34,7 +34,7 @@ def solve_scheduling_problem():
     envs = ["minigrid", "cartpole", "mujoco"]
     models = ["dqn", "ppo", "sac"]
     ablations = [0, 1, 2, 3, 4, 5]
-    runs = [1, 2, 3]
+    runs = [1, 2, 3, 4, 5]
 
     # Generate the list of experiments
     experiments = []
@@ -51,7 +51,7 @@ def solve_scheduling_problem():
 
     # Load env_config.yaml for max_steps
     try:
-        with open(os.path.join(os.path.dirname(__file__), "env_config.yaml"), "r") as f:
+        with open(os.path.join(os.path.dirname(__file__), "../env_config.yaml"), "r") as f:
             ENV_CONFIG = yaml.safe_load(f)
     except FileNotFoundError:
         print("Warning: env_config.yaml not found. Using fallback step counts.")
