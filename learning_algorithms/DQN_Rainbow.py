@@ -878,6 +878,8 @@ class IQNRainbowDQN(RainbowBase):
         self.n_quantiles = 32
         self.n_target_quantiles = 32
 
+        print(f"self soft {self.soft} selfmunch: {self.munchausen} mc {self.munchausen_constant}")
+
     def _sample_taus(
         self, batch_size: int, n: int, device: torch.device
     ) -> torch.Tensor:
@@ -1098,8 +1100,9 @@ class IQNRainbowDQN(RainbowBase):
         self.optim.step()
 
         # --- ALPHA AUTO-TUNING UPDATE ---
-        alpha_loss = torch.tensor(0.0, device=self.log_alpha.device)
+        alpha_loss = 0
         if self.soft:
+            alpha_loss = torch.tensor(0.0, device=self.log_alpha.device)
             with torch.no_grad():
                 q_fresh = (
                     quantiles_pred.mean(dim=1).detach()
@@ -1240,13 +1243,15 @@ class IQNRainbowDQN(RainbowBase):
                 if "quantiles_pred" in locals()
                 else torch.tensor(0.0)
             )
+            if self.soft:
+                alpha_loss = float(alpha_loss.item())
 
             self.last_losses = {
                 "extrinsic": float(extrinsic_loss.item()),
                 "intrinsic": float(intrinsic_loss.item()),
                 "rnd": float(rnd_loss),
                 "avg_r_int": r_int_log,
-                "alpha_loss": (float(alpha_loss.item()) if isinstance(alpha_loss, torch.Tensor) else float(alpha_loss)),
+                "alpha_loss": alpha_loss,
                 "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
                 "target_mean": (
                     float(target_values.mean().item())
