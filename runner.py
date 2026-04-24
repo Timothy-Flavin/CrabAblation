@@ -222,21 +222,20 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     update_every = int(getattr(args, "update_every", 2))
     beta_half_life_steps = max(1, (total_steps // update_every) // 5)
     cfg = {
-        "munchausen": True,
+        "munchausen_constant": 0.1,
         "soft": True,
         "Beta": 1.0,  # Start fully intrinsic
         "dueling": True,
         "distributional": True,
-        "ent_reg_coef": 0.05,
         "delayed": True,
         "popart": True,
-        "tau": 0.001 * 0.03,
-        "alpha": 0.001,
+        "tau": 0.05,
+        "alpha": 0.01,
         "beta_half_life_steps": beta_half_life_steps,
     }
 
     if args.ablation == 1:
-        cfg["munchausen"] = False
+        cfg["munchausen_constant"] = 0.0
         cfg["soft"] = False
     elif args.ablation == 2:
         cfg["ent_reg_coef"] = 0.0
@@ -249,17 +248,17 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     elif args.ablation == 5:
         cfg["delayed"] = False
     elif args.ablation == 6:
-        cfg["munchausen"] = True
+        cfg["munchausen_constant"] = 0.9
         cfg["soft"] = True
         cfg["ent_reg_coef"] = 0.00
         cfg["Beta"] = 0.0
-        cfg["distributional"] = False
+        cfg["distributional"] = True
         cfg["delayed"] = True
         cfg["dueling"] = False
 
     AgentClass = IQNRainbowDQN if cfg["distributional"] else EVRainbowDQN
     soft = bool(cfg["soft"])
-    munchausen = bool(cfg["munchausen"])
+    munchausen = bool(cfg["munchausen_constant"] > 0.0)
     dueling = bool(cfg["dueling"])
     delayed = bool(cfg["delayed"])
     popart = bool(cfg["popart"])
@@ -276,13 +275,12 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             buffer_size=int(args.dqn_buffer_size),
             hidden_layer_sizes=hidden_layer_sizes,
             soft=soft,
-            munchausen=munchausen,
+            munchausen_constant=cfg["munchausen_constant"],
             Thompson=False,
             dueling=dueling,
             Beta=beta,
             ent_reg_coef=ent_reg_coef,
             delayed=delayed,
-            tau=tau,
             polyak_tau=0.005,
             alpha=alpha,
             beta_half_life_steps=cfg["beta_half_life_steps"],
@@ -299,13 +297,12 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             buffer_size=int(args.dqn_buffer_size),
             hidden_layer_sizes=hidden_layer_sizes,
             soft=soft,
-            munchausen=munchausen,
+            munchausen_constant=cfg["munchausen_constant"],
             Thompson=False,
             dueling=dueling,
             Beta=beta,
             ent_reg_coef=ent_reg_coef,
             delayed=delayed,
-            tau=tau,
             polyak_tau=0.005,
             alpha=alpha,
             beta_half_life_steps=cfg["beta_half_life_steps"],
@@ -404,7 +401,7 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
     agent = AgentClass(
         _agent_spec_from_vec_env(vec_env),
         gamma=args.gamma,
-        tau=args.tau,
+        tau=0.005,  # args.tau,
         policy_lr=args.policy_lr,
         q_lr=args.q_lr,
         policy_frequency=args.policy_frequency,

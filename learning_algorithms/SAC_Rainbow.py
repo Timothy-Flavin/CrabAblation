@@ -259,7 +259,7 @@ class BaseSAC(Agent):
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
         munchausen: bool = True,
         beta_rnd: float = 0.01,
-        munchausen_tau: float = 0.9,
+        munchausen_constant: float = 0.1,
         l_clip: float = -10.0,
         rnd_output_dim: int = 128,
         rnd_lr: float = 1e-3,
@@ -382,7 +382,7 @@ class BaseSAC(Agent):
 
         # Munchausen KL penalty
         self.munchausen = munchausen
-        self.munchausen_tau = munchausen_tau
+        self.munchausen_constant = munchausen_constant
         self.l_clip = l_clip
 
         # RND intrinsic reward
@@ -603,7 +603,7 @@ class BaseSAC(Agent):
                 m_r = (
                     current_sigma
                     * self.alpha
-                    * self.munchausen_tau
+                    * self.munchausen_constant
                     * torch.clamp(log_pi_replay, min=self.l_clip)
                 )
             augmented_rewards = augmented_rewards + m_r
@@ -708,7 +708,6 @@ class BaseSAC(Agent):
                 alpha_loss.backward()
                 self.a_optimizer.step()
                 self.alpha = self.log_alpha.exp().item()
-                self.munchausen_tau = 0.9
             self.timing["alpha loss and backprop"] = self.timing.get(
                 "alpha loss and backprop", 0.0
             ) + (time.time() - t1)
