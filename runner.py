@@ -10,7 +10,6 @@ from typing import Callable, Optional
 import gymnasium as gym
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 from runner_utils import get_device_name, plot_results, resolve_torch_device
 from environment_utils import (
     ActionTransformHandler,
@@ -48,7 +47,9 @@ def get_args():
         help="Optional explicit env id. Defaults to env_name.",
     )
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5, 6])
+    parser.add_argument(
+        "--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5, 6]
+    )
     parser.add_argument("--fully_obs", action="store_true")
     parser.add_argument("--run", type=int, default=1)
     parser.add_argument("--num_envs", type=int, default=4)
@@ -60,10 +61,12 @@ def get_args():
         default=0,
         help="If > 0, force this total step budget for rollouts",
     )
+    
+    # Updated default to 86400 seconds (24 hours)
     parser.add_argument(
         "--max_wall_time",
         type=float,
-        default=0.0,
+        default=86400.0,
         help="Maximum wall-clock seconds before early stop",
     )
     parser.add_argument("--device_name", type=str, default=get_device_name())
@@ -74,22 +77,22 @@ def get_args():
     )
 
     # DQN knobs
-    parser.add_argument("--dqn_buffer_size", type=int, default=None)
+    parser.add_argument("--dqn_buffer_size", type=int, default=2e4)
     parser.add_argument("--dqn_batch_size", type=int, default=64)
     parser.add_argument("--update_every", type=int, default=4)
     parser.add_argument("--rnd_burn_in", type=int, default=1000)
 
     # SAC knobs
-    parser.add_argument("--buffer_size", type=int, default=None)
+    parser.add_argument("--buffer_size", type=int, default=2e4)
     parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--tau", type=float, default=0.001 * 0.003)
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--learning_starts", type=int, default=0)
+    parser.add_argument("--learning_starts", type=int, default=10000)
     parser.add_argument("--policy_lr", type=float, default=3e-4)
     parser.add_argument("--q_lr", type=float, default=1e-3)
     parser.add_argument("--policy_frequency", type=int, default=4)
     parser.add_argument("--target_network_frequency", type=int, default=1)
-    parser.add_argument("--alpha", type=float, default=0.2)
+    parser.add_argument("--alpha", type=float, default=0.001)
     parser.add_argument("--autotune", action="store_true", default=True)
     parser.add_argument("--n_quantiles", type=int, default=32)
     parser.add_argument("--n_target_quantiles", type=int, default=32)
@@ -111,23 +114,12 @@ def get_args():
             args.total_steps = int(max_steps_cfg.get(args.algo, 1000000))
         else:
             args.total_steps = int(max_steps_cfg)
+            
     # Set buffer sizes from config if not overridden
     if args.dqn_buffer_size is None:
-        args.dqn_buffer_size = int(env_cfg.get("buffer_size", 10000))
+        args.dqn_buffer_size = int(env_cfg.get("buffer_size", 100000))
     if args.buffer_size is None:
-        args.buffer_size = int(env_cfg.get("buffer_size", 20000))
-    if args.algo == "sac":
-        args.update_every = 4
-    if args.env_name == "cartpole" and args.total_steps == 1000000:
-        args.total_steps = 300000
-    if args.env_name == "mujoco" and args.total_steps == 1000000:
-        args.total_steps = 2000000
-    if (
-        args.algo == "dqn"
-        and args.env_name == "mujoco"
-        and args.dqn_buffer_size == 10000
-    ):
-        args.dqn_buffer_size = 20000
+        args.buffer_size = int(env_cfg.get("buffer_size", 200000))
 
     if not args.skip_best_params:
         _maybe_load_best_params(args)
@@ -136,7 +128,6 @@ def get_args():
         args.env_id = args.env_name
 
     return args
-
 
 def _maybe_load_best_params(args):
     best_json_path = (
@@ -207,56 +198,53 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     else:
         n_action_dims = int(env_cfg.get("n_action_dims", 1))
         n_action_bins = int(env_cfg.get("n_action_bins", 2))
-    hidden_layer_sizes = env_cfg.get("hidden_layer_sizes", [128, 128])
-
+    hidden_layer_sizes = env_cfg.get("hidden_layer_sizes", [256, 256])
+    # n_action_bins = 5
+    # input(
+    #     f"n action dims: {n_action_dims}, n action bins: {n_action_bins}. Press Enter to continue..."
+    # )
     # Calculate beta decay schedule
     total_steps = int(getattr(args, "total_steps", 1000000))
-    update_every = int(getattr(args, "update_every", 4))
+    update_every = int(getattr(args, "update_every", 2))
     beta_half_life_steps = max(1, (total_steps // update_every) // 5)
     cfg = {
-        "munchausen": True,
+        "munchausen_constant": 0.9,
         "soft": True,
         "Beta": 1.0,  # Start fully intrinsic
         "dueling": True,
         "distributional": True,
-        "ent_reg_coef": 0.05,
         "delayed": True,
         "popart": True,
-        "tau": 0.9,
-        "alpha": 0.03,
+        "tau": 0.05,
+        "alpha": 0.01,
         "beta_half_life_steps": beta_half_life_steps,
     }
 
     if args.ablation == 1:
-        cfg["munchausen"] = False
+        cfg["munchausen_constant"] = 0.0
         cfg["soft"] = False
     elif args.ablation == 2:
-        cfg["ent_reg_coef"] = 0.0
+        cfg["soft"] = False
     elif args.ablation == 3:
         cfg["Beta"] = 0.0
     elif args.ablation == 4:
         cfg["distributional"] = False
         cfg["dueling"] = False
-        cfg["ent_reg_coef"] = 0.005
     elif args.ablation == 5:
         cfg["delayed"] = False
     elif args.ablation == 6:
-        cfg["munchausen"] = False
-        cfg["soft"] = False
-        cfg["ent_reg_coef"] = 0.01
+        cfg["munchausen_constant"] = 0.9
+        cfg["soft"] = True
         cfg["Beta"] = 0.0
-        cfg["distributional"] = True
+        cfg["distributional"] = False
         cfg["delayed"] = True
+        cfg["dueling"] = False
 
     AgentClass = IQNRainbowDQN if cfg["distributional"] else EVRainbowDQN
     soft = bool(cfg["soft"])
-    munchausen = bool(cfg["munchausen"])
     dueling = bool(cfg["dueling"])
     delayed = bool(cfg["delayed"])
-    popart = bool(cfg["popart"])
     beta = float(cfg["Beta"])
-    ent_reg_coef = float(cfg["ent_reg_coef"])
-    tau = float(cfg["tau"])
     alpha = float(cfg["alpha"])
     if AgentClass is IQNRainbowDQN:
         agent = AgentClass(
@@ -267,18 +255,16 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             buffer_size=int(args.dqn_buffer_size),
             hidden_layer_sizes=hidden_layer_sizes,
             soft=soft,
-            munchausen=munchausen,
+            munchausen_constant=cfg["munchausen_constant"],
             Thompson=False,
             dueling=dueling,
             Beta=beta,
-            ent_reg_coef=ent_reg_coef,
             delayed=delayed,
-            tau=tau,
             polyak_tau=0.005,
             alpha=alpha,
             beta_half_life_steps=cfg["beta_half_life_steps"],
             norm_obs=False,
-            burn_in_updates=1000,
+            burn_in_updates=int(getattr(args, "rnd_burn_in", 1000)),
             encoder_factory=encoder_factory,
         )
     else:
@@ -290,19 +276,17 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             buffer_size=int(args.dqn_buffer_size),
             hidden_layer_sizes=hidden_layer_sizes,
             soft=soft,
-            munchausen=munchausen,
+            munchausen_constant=cfg["munchausen_constant"],
             Thompson=False,
             dueling=dueling,
             Beta=beta,
-            ent_reg_coef=ent_reg_coef,
             delayed=delayed,
-            tau=tau,
             polyak_tau=0.005,
             alpha=alpha,
             beta_half_life_steps=cfg["beta_half_life_steps"],
             norm_obs=False,
-            burn_in_updates=1000,
             encoder_factory=encoder_factory,
+            burn_in_updates=int(getattr(args, "rnd_burn_in", 1000)),
         )
     return agent, cfg
 
@@ -370,13 +354,17 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         "popart": True,
         "delayed_critics": True,
         "munchausen": True,  # ablation 1 removes this
+        "munchausen_constant": 0.5,  # ablation 1 removes this
         "Beta": 1.0,  # Start fully intrinsic
         "beta_half_life_steps": beta_half_life_steps,
     }
 
     if args.ablation == 1:
         cfg["munchausen"] = False
+        cfg["munchausen_constant"] = 0.0
     elif args.ablation == 2:
+        cfg["munchausen"] = False
+        cfg["munchausen_constant"] = 0.0
         cfg["entropy_coef_zero"] = True
     elif args.ablation == 3:
         cfg["Beta"] = 0.0
@@ -388,14 +376,14 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         cfg["munchausen"] = False
         cfg["entropy_coef_zero"] = False
         cfg["Beta"] = 0.0
-        cfg["distributional"] = True
+        cfg["distributional"] = False
         cfg["delayed_critics"] = True
 
     AgentClass = DistSAC if cfg["distributional"] else EVSAC
     agent = AgentClass(
         _agent_spec_from_vec_env(vec_env),
         gamma=args.gamma,
-        tau=args.tau,
+        tau=0.005,  # args.tau,
         policy_lr=args.policy_lr,
         q_lr=args.q_lr,
         policy_frequency=args.policy_frequency,
@@ -409,6 +397,7 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         n_target_quantiles=args.n_target_quantiles,
         encoder_factory=encoder_factory,
         munchausen=cfg["munchausen"],
+        munchausen_constant=0.5,
         beta_rnd=cfg["Beta"],
         beta_half_life_steps=cfg["beta_half_life_steps"],
     )
@@ -601,32 +590,26 @@ def rollout_online_rl(
 
     start_time = time.time()
 
-    writer = None
-    if getattr(args, "run", None) is not None:
-        results_dir = os.path.join("results", args.algo, args.env_name)
-        os.makedirs(results_dir, exist_ok=True)
-        tb_dir = os.path.join(
-            results_dir, f"tensorboard_run{args.run}_abl{args.ablation}"
-        )
-        writer = SummaryWriter(log_dir=tb_dir)
-        writer.add_scalar("run/started", 1, 0)
-
-        if hasattr(agent, "attach_tensorboard"):
-            agent.attach_tensorboard(writer, prefix="agent")
-
     global_step = 0
     updates_performed = 0
     timed_out = False
 
-    eval_every_episodes = getattr(args, 'eval_every_episodes', 25)
+    eval_every_episodes = getattr(args, "eval_every_episodes", 25)
 
     if max_wall_time_seconds is None:
         max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
+    max_time = max_wall_time_seconds if (max_wall_time_seconds is not None and max_wall_time_seconds > 0) else float('inf')
 
     while global_step < total_step_budget:
+        time_elapsed = time.time() - start_time
+        if time_elapsed >= max_time:
+            timed_out = True
+            break
         if global_step > 0 and global_step % 10000 == 0:
-            print(f"[PPO] Step {global_step}/{total_step_budget} beta {agent.Beta}")
-        
+            print(
+                f"[PPO] Step {global_step}/{total_step_budget} beta {agent.Beta} smooth r {smooth_r:.2f}"
+            )
+
         if (
             max_wall_time_seconds is not None
             and max_wall_time_seconds > 0
@@ -635,11 +618,10 @@ def rollout_online_rl(
             timed_out = True
             break
 
-
         with torch.no_grad():
             tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
             # Ext/Int values are no longer needed here since we batch them in update()
-            action, logprob = agent.sample_action(tobs) 
+            action, logprob = agent.sample_action(tobs)
 
         np_action = action.cpu().numpy()
         step_action = action_transform.transform_action(np_action)
@@ -650,13 +632,13 @@ def rollout_online_rl(
         # Funnel strictly into observe. Observe now handles the final_observation extraction.
         agent.observe(
             obs,
-            action, 
-            logprob, 
-            reward, 
-            next_obs, 
-            terminations, 
+            action,
+            logprob,
+            reward,
+            next_obs,
+            terminations,
             truncations,
-            infos  # Pass infos so the agent can catch truncations
+            infos,  # Pass infos so the agent can catch truncations
         )
 
         for env_i in range(args.num_envs):
@@ -670,20 +652,15 @@ def rollout_online_rl(
                 rhist.append(float(r_ep[env_i]))
                 smooth_rhist.append(float(smooth_r))
                 ep += 1
-                
-                if writer:
-                    writer.add_scalar("charts/episodic_return", float(r_ep[env_i]), global_step)
 
                 if ep % eval_every_episodes == 0 and ep > 0:
-                    eval_res = evaluate_agent(agent, args, device, step=global_step, n_steps=total_step_budget)
+                    eval_res = evaluate_agent(
+                        agent, args, device, step=global_step, n_steps=total_step_budget
+                    )
                     eval_hist.append(eval_res)
-                    if writer:
 
-                        writer.add_scalar("charts/eval_return", eval_res, global_step)
-                
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0
-
 
         obs = next_obs
         global_step += args.num_envs
@@ -695,32 +672,46 @@ def rollout_online_rl(
                 updates_performed += int(agent.update_epochs * agent.num_minibatches)
 
     train_time = time.time() - start_time
-    steps_per_sec = (global_step / train_time) if train_time > 0 else 0.0
-    updates_per_sec = (updates_performed / train_time) if train_time > 0 else 0.0
 
-    if writer:
-        writer.flush()
-        writer.close()
+    train_time = time.time() - start_time
+    
+    # --- Steady-State SPS Calculation ---
+    # Bypasses the "fast-forward" burn-in phase by isolating the actual per-update loop math
+    if updates_performed > 0 and total_samples > 0:
+        time_per_update = time_taken_modular["update_agent"] / updates_performed
+        time_per_sample = (time_taken_modular["action_sample"] + time_taken_modular["env_step"]) / total_samples
+        
+        steady_state_time_per_sample = time_per_sample + (time_per_update / args.update_every)
+        
+        steps_per_sec = 1.0 / steady_state_time_per_sample if steady_state_time_per_sample > 0 else 0.0
+        updates_per_sec = 1.0 / time_per_update if time_per_update > 0 else 0.0
+    else:
+        # Fallback if the run timed out before a single update could occur
+        steps_per_sec = total_samples / (train_time if train_time > 0 else 1)
+        updates_per_sec = updates_performed / (train_time if train_time > 0 else 1)
 
     return {
+        "final_model": agent,
         "rhist": rhist,
         "smooth_rhist": smooth_rhist,
         "lhist": lhist,
         "eval_hist": eval_hist,
-        "steps_run": int(global_step),
+        "steps_run": int(total_samples),
         "updates_performed": int(updates_performed),
         "steps_per_sec": float(steps_per_sec),
         "updates_per_sec": float(updates_per_sec),
-        "timed_out": bool(timed_out),
         "train_time": float(train_time),
+        "timed_out": (time_elapsed >= max_time),
+        "time_taken_modular": time_taken_modular,
     }
+
+
 
 def rollout_offline_rl(
     vec_env,
     agent,
     args,
     device,
-    writer=None,
     max_wall_time_seconds=None,
     total_steps_override=None,
 ):
@@ -735,23 +726,22 @@ def rollout_offline_rl(
         batch_size = int(args.batch_size)
 
     total_step_budget = _compute_rollout_budget(args, total_steps_override)
+    max_time = max_wall_time_seconds if (max_wall_time_seconds is not None and max_wall_time_seconds > 0) else float('inf')
 
-    rhist = []
-    smooth_rhist = []
-    lhist = []
-    eval_hist = []
+    # Benchmark Clock Isolation Variables
+    is_benchmark = getattr(args, "is_benchmark", False)
+    benchmark_clock_started = not is_benchmark
+    benchmark_start_time = start_time
+    benchmark_start_samples = 0
+    benchmark_start_updates = 0
 
+    rhist, smooth_rhist, lhist, eval_hist = [], [], [], []
     r_ep = np.zeros(args.num_envs)
     ep_len = np.zeros(args.num_envs, dtype=int)
     smooth_r = 0.0
     ep = 0
 
-    time_taken_modular = {
-        "action_sample": 0.0,
-        "env_step": 0.0,
-        "update_agent": 0.0,
-        "eval_agent": 0.0,
-    }
+    time_taken_modular = {"action_sample": 0.0, "env_step": 0.0, "update_agent": 0.0, "eval_agent": 0.0}
 
     obs, _ = vec_env.reset()
     steps_since_update = 0
@@ -759,85 +749,58 @@ def rollout_offline_rl(
 
     env_cfg = ENV_CONFIG.get(args.env_name, {})
     action_transform = ActionTransformHandler(
-        args.env_name,
-        args.algo,
-        vec_env.single_action_space,
+        args.env_name, args.algo, vec_env.single_action_space,
         bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
-        discrete_bins=int(env_cfg.get("n_action_bins", 2)),
-        batched=True,
+        discrete_bins=int(env_cfg.get("n_action_bins", 2)), batched=True,
     )
-
     proxy_action_space = _proxy_action_space(vec_env.single_action_space)
     proxy_action_dim = int(np.prod(proxy_action_space.shape))
 
     eval_every_episodes = 25
 
     while total_samples < total_step_budget:
-        if total_samples > 0 and total_samples % 10000 == 0:
-            print(
-                f"[{args.algo.upper()}] Step {total_samples}/{total_step_budget} (Episodes: {ep})"
-            )
-        if (
-            max_wall_time_seconds is not None
-            and max_wall_time_seconds > 0
-            and (time.time() - start_time) >= max_wall_time_seconds
-        ):
+        # Check timeout explicitly from the isolated clock
+        current_clock = benchmark_start_time if benchmark_clock_started else start_time
+        time_elapsed = time.time() - current_clock
+        
+        progress = min(1.0, max(time_elapsed / max_time if max_time != float('inf') else 0.0, total_samples / max(1, total_step_budget)))
+
+        if time_elapsed >= max_time:
             break
 
+        if total_samples > 0 and total_samples % 10000 == 0:
+            print(f"[{args.algo.upper()}] Step {total_samples}/{total_step_budget} (Episodes: {ep}) smooth r {smooth_r}")
+
         t_ = time.time()
+        effective_step = int(progress * total_step_budget)
 
-        # Sample action
         if args.algo == "dqn":
-            eps_current = max(
-                1.0 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05
-            )
+            eps_current = max(0.5 - 2.0 * progress, 0.05)
             tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
-            actions = agent.sample_action(
-                tobs, eps=eps_current, step=total_samples, n_steps=total_step_budget
-            )
-        else:  # SAC
-            learning_starts_val = getattr(args, "learning_starts", 5000)
-            if total_samples < learning_starts_val:
-                import gym
-
+            actions = agent.sample_action(tobs, eps=eps_current, step=effective_step, n_steps=total_step_budget)
+        else:
+            ls_fraction = getattr(args, "learning_starts", 5000) / max(1, total_step_budget)
+            if progress < ls_fraction:
                 if isinstance(vec_env.single_action_space, gym.spaces.Box):
-                    actions = np.array(
-                        [
-                            vec_env.single_action_space.sample()
-                            for _ in range(vec_env.num_envs)
-                        ],
-                        dtype=np.float32,
-                    )
+                    actions = np.array([vec_env.single_action_space.sample() for _ in range(vec_env.num_envs)], dtype=np.float32)
                 else:
-                    actions = np.random.uniform(
-                        low=0.0, high=1.0, size=(vec_env.num_envs, proxy_action_dim)
-                    ).astype(np.float32)
+                    actions = np.random.uniform(low=0.0, high=1.0, size=(vec_env.num_envs, proxy_action_dim)).astype(np.float32)
             else:
-                actions = agent.sample_action(
-                    torch.as_tensor(obs, dtype=torch.float32, device=device)
-                )
+                actions = agent.sample_action(torch.as_tensor(obs, dtype=torch.float32, device=device))
 
         time_taken_modular["action_sample"] += time.time() - t_
-
         step_action = action_transform.transform_action(actions)
 
         t_ = time.time()
         next_obs, rewards, terminations, truncations, infos = vec_env.step(step_action)
         time_taken_modular["env_step"] += time.time() - t_
 
-        real_next_obs = (
-            next_obs.clone() if isinstance(next_obs, torch.Tensor) else next_obs.copy()
-        )
-
-        # 1. Properly extract final observations for BOTH terminations and truncations
+        real_next_obs = next_obs.clone() if isinstance(next_obs, torch.Tensor) else next_obs.copy()
         if "final_observation" in infos:
-            # Safely get the boolean mask of environments that actually finished
-            _final_masks = infos.get("_final_observation", np.logical_or(terminations, truncations))
-            for idx, is_final in enumerate(_final_masks):
+            for idx, is_final in enumerate(infos.get("_final_observation", np.logical_or(terminations, truncations))):
                 if is_final:
                     real_next_obs[idx] = infos["final_observation"][idx]
 
-        # 2. Add manual runner-level truncations AFTER true env resets have been processed
         for env_i in range(args.num_envs):
             if ep_len[env_i] + 1 >= getattr(args, "max_frames_per_ep", 2000):
                 truncations[env_i] = True
@@ -846,75 +809,76 @@ def rollout_offline_rl(
         if args.algo == "dqn" and actions_arr.ndim == 1:
             actions_arr = actions_arr.reshape(-1, 1)
 
-        # Unified Observe (Buffer addition & Stat tracking inside agent). Info passed to align with PPO API
-        agent.observe(
-            obs, actions_arr, rewards, real_next_obs, terminations, truncations, infos
-        )
+        agent.observe(obs, actions_arr, rewards, real_next_obs, terminations, truncations, infos)
 
-        # Logging & Housekeeping
         for env_i in range(args.num_envs):
             total_samples += 1
             r_ep[env_i] += float(rewards[env_i])
             ep_len[env_i] += 1
             if terminations[env_i] or truncations[env_i]:
                 rhist.append(float(r_ep[env_i]))
-                if len(rhist) < 20:
-                    smooth_r = float(sum(rhist) / len(rhist))
-                else:
-                    smooth_r = float(0.05 * rhist[-1] + 0.95 * smooth_r)
-                smooth_rhist.append(float(smooth_r))
+                smooth_r = float(sum(rhist)/len(rhist)) if len(rhist) < 20 else float(0.05 * rhist[-1] + 0.95 * smooth_r)
+                smooth_rhist.append(smooth_r)
                 ep += 1
 
-                if writer:
-                    writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
-                    writer.add_scalar(
-                        "episode/smooth_reward", float(smooth_r), total_samples
-                    )
-
                 if ep % eval_every_episodes == 0 and ep > 0:
-                    eval_res = evaluate_agent(agent, args, device)
-                    eval_hist.append(eval_res)
-                    if writer:
-                        writer.add_scalar("eval/reward", eval_res, total_samples)
+                    eval_hist.append(evaluate_agent(agent, args, device, step=effective_step, n_steps=total_step_budget))
 
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0
 
         obs = next_obs
-
-        # Update Agent
         steps_since_update += args.num_envs
         t_ = time.time()
+
         if args.algo == "dqn":
             rnd_burn_in = getattr(args, "rnd_burn_in", 0)
+            rnd_fraction = rnd_burn_in / max(1, total_step_budget)
             while steps_since_update >= args.update_every:
                 if total_samples > batch_size:
-                    loss_val = agent.update(batch_size=batch_size, step=total_samples)
-                    if total_samples >= rnd_burn_in:
-                        lhist.append(float(loss_val))
-                    updates_performed += 1
+                    loss_val = agent.update(batch_size=batch_size, step=effective_step)
+                    # ONLY record update if loss_val proves backprop executed
+                    if loss_val is not None:
+                        if progress >= rnd_fraction:
+                            lhist.append(float(loss_val))
+                        updates_performed += 1
                 steps_since_update -= args.update_every
-        else:  # SAC
+        else:
             while steps_since_update >= args.update_every:
-                loss_val = agent.update(
-                    batch_size=batch_size, global_step=total_samples
-                )
+                loss_val = agent.update(batch_size=batch_size, global_step=effective_step)
+                # ONLY record update if loss_val proves backprop executed
                 if loss_val is not None:
                     try:
-                        lhist.append(
-                            float(
-                                loss_val[0] if isinstance(loss_val, tuple) else loss_val
-                            )
-                        )
+                        lhist.append(float(loss_val[0] if isinstance(loss_val, tuple) else loss_val))
                     except:
                         pass
-                updates_performed += 1
+                    updates_performed += 1
                 steps_since_update -= args.update_every
+
         time_taken_modular["update_agent"] += time.time() - t_
 
-    train_time = time.time() - start_time
-    steps_per_sec = total_samples / (train_time if train_time > 0 else 1)
-    updates_per_sec = updates_performed / (train_time if train_time > 0 else 1)
+        # --- ISOLATION TRIGGER ---
+        # The exact moment the first true update finishes, reset the clock!
+        if is_benchmark and not benchmark_clock_started:
+            if updates_performed > 0:
+                benchmark_clock_started = True
+                benchmark_start_time = time.time()
+                benchmark_start_samples = total_samples
+                benchmark_start_updates = updates_performed
+                time_taken_modular = {k: 0.0 for k in time_taken_modular}
+
+    # Use the isolated clock for math
+    if is_benchmark and benchmark_clock_started:
+        train_time = time.time() - benchmark_start_time
+        measured_samples = total_samples - benchmark_start_samples
+        measured_updates = updates_performed - benchmark_start_updates
+    else:
+        train_time = time.time() - start_time
+        measured_samples = total_samples
+        measured_updates = updates_performed
+
+    steps_per_sec = measured_samples / (train_time if train_time > 0 else 1)
+    updates_per_sec = measured_updates / (train_time if train_time > 0 else 1)
 
     return {
         "final_model": agent,
@@ -927,7 +891,7 @@ def rollout_offline_rl(
         "steps_per_sec": float(steps_per_sec),
         "updates_per_sec": float(updates_per_sec),
         "train_time": float(train_time),
-        "timed_out": False,
+        "timed_out": (time_elapsed >= max_time),
         "time_taken_modular": time_taken_modular,
     }
 

@@ -21,7 +21,6 @@ from runner import (
 from runner_utils import (
     benchmark_action_sampling_generic,
     benchmark_updates_generic,
-    get_benchmark_devices,
     get_device_name,
     load_grid_search_results,
     resolve_torch_device,
@@ -48,7 +47,14 @@ def get_args():
         help="Optional explicit env id. Defaults to env_name.",
     )
     parser.add_argument("--grid_search", action="store_true", help="Run grid search")
-    parser.add_argument("--device_name", type=str, default=get_device_name())
+    parser.add_argument("--device_name", type=str, required=True, help="Required name of the computer running the benchmark")
+    parser.add_argument(
+        "--search_devices",
+        type=str,
+        nargs="+",
+        default=["cpu", "cuda"] if torch.cuda.is_available() else ["cpu"],
+        help="List of PyTorch devices to test (e.g. 'cpu', 'cuda:0', 'cuda:1')",
+    )
     parser.add_argument(
         "--device",
         type=str,
@@ -60,31 +66,29 @@ def get_args():
     parser.add_argument("--num_envs", type=int, default=8)
     parser.add_argument("--num_steps", type=int, default=128)
     parser.add_argument("--replace_existing", action="store_true", default=False)
+    
+
+    # Cap wall time at 20 seconds for benchmarks
     parser.add_argument(
         "--max_wall_time",
         type=float,
-        default=120.0,
+        default=15.0,
         help="Maximum wall-clock seconds per trial before early stop",
     )
-    parser.add_argument(
-        "--benchmark_steps",
-        type=int,
-        default=5000,
-        help="Step budget for each benchmark rollout trial",
-    )
+    
+    # Set step budget huge so it always relies on the 20s wall time cap
+    parser.add_argument("--benchmark_steps", type=int, default=1000000)
 
-    # DQN knobs
+    # Force burn-in to 0 for benchmarks
     parser.add_argument("--dqn_buffer_size", type=int, default=10000)
     parser.add_argument("--dqn_batch_size", type=int, default=256)
     parser.add_argument("--update_every", type=int, default=8)
-    parser.add_argument("--rnd_burn_in", type=int, default=10)
+    parser.add_argument("--rnd_burn_in", type=int, default=0) # Changed to 0
 
     # SAC knobs
     parser.add_argument("--buffer_size", type=int, default=20000)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--learning_starts", type=int, default=0)
+    parser.add_argument("--learning_starts", type=int, default=0) # Changed to 0
     parser.add_argument("--policy_lr", type=float, default=3e-4)
     parser.add_argument("--q_lr", type=float, default=1e-3)
     parser.add_argument("--policy_frequency", type=int, default=2)
@@ -96,25 +100,15 @@ def get_args():
     parser.add_argument("--hide_seek_bins_per_dim", type=int, default=3)
 
     args = parser.parse_args()
-    if not torch.cuda.is_available():
-        args.device="cpu"
-
-    if (
-        args.env_name == "mujoco"
-        and args.algo == "dqn"
-        and args.dqn_buffer_size == 10000
-    ):
-        args.dqn_buffer_size = 20000
-
     if not args.env_id:
         args.env_id = args.env_name
+    args.is_benchmark = True
 
     return args
 
 
 def run_grid_search(args, total_steps=2000):
-    # suppress print
-    devices = get_benchmark_devices()
+    devices = args.search_devices
     num_envs_list = [1, 4, 8, 12, 16]
 
     if args.replace_existing:
@@ -209,11 +203,6 @@ def run_grid_search(args, total_steps=2000):
                         best_sps = current_config["steps_per_sec"]
                         best_config = current_config
 
-                    if hasattr(agent, "timing") and agent.timing:
-                        import json
-                        with open(f"timing_{args.algo}_{args.ablation}_{dev}_{num_envs}.json", "w") as f:
-                            json.dump(agent.timing, f, indent=4)
-
                 except Exception as e:
                     traceback.print_exc()
                     exit()
@@ -227,7 +216,6 @@ def run_grid_search(args, total_steps=2000):
                 default=None
             )
         best_results[f"ablation_{ablation}"] = best_config
-        # suppress print
 
     save_grid_search_results(args, args.algo, best_results, all_results)
     import json
@@ -246,21 +234,19 @@ def benchmark_updates(
         print(f"\n--- Benchmarking Offline Env Rollout for {args.algo.upper()} ---")
         t_start = time.time()
         from runner import rollout_offline_rl
-        args.batch_size = 256
-        args.dqn_batch_size = 256
         print("Using rollout_offline_rl with true env dynamics.")
         rollout_offline_rl(
             vec_env, 
             agent, 
             args, 
             device, 
-            writer=None,
             max_wall_time_seconds=None, 
             total_steps_override=getattr(args, 'benchmark_steps', iters * 5)
         )
         t_end = time.time()
         print(f"Offline RL Update Benchmark for {args.algo.upper()} complete. Real Training Time: {(t_end - t_start):.3f}s.")
         return
+
 def benchmark_action_sampling(
     agent, args, obs_dim, device="cpu", batch_sizes=None, iters=200
 ):
@@ -268,17 +254,14 @@ def benchmark_action_sampling(
         batch_sizes = [1, 4, 16, 64, 256]
 
     if args.algo == "dqn":
-
         def sample_fn(obs):
             return agent.sample_action(obs, eps=0.1, step=0)
 
     elif args.algo == "ppo":
-
         def sample_fn(obs):
             return agent.sample_action(obs)[0]
 
     else:
-
         def sample_fn(obs):
             return agent.sample_action(obs, deterministic=False)
 
@@ -351,7 +334,7 @@ def main():
                 batch_sizes=[1, 4, 16, 64, 256],
             )
 
-        for dev in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+        for dev in args.search_devices:
             args.device = dev
             for n_envs in [1, 4, 8]:
                 args.num_envs = n_envs

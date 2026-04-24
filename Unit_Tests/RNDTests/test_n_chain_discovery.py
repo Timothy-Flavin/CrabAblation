@@ -3,7 +3,6 @@ import os
 import torch
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
 from learning_algorithms.DQN_Rainbow import EVRainbowDQN
 
 def test_n_chain_discovery():
@@ -49,9 +48,6 @@ def test_n_chain_discovery():
     assert r_int_1_decayed < r_int_1 / 5, "Visitation Decay Test failed! Extrinsic decay didn't apply."
     print("Visitation Decay Test Passed!")
 
-if __name__ == "__main__":
-    test_n_chain_discovery()
-    
 def test_full_chain():
     input_dim = 10
     agent = EVRainbowDQN(
@@ -62,7 +58,7 @@ def test_full_chain():
         norm_obs=False 
     )
     
-    # We step through states 0 to 9 in the chain. Each new state should have huge RND compared to the current known state
+    # Step through states 0 to 9 in the chain. Each new state should have huge RND.
     for i in range(input_dim - 1):
         state_current = torch.zeros((10, input_dim), dtype=torch.float32)
         state_current[:, i] = 1.0
@@ -82,4 +78,5 @@ def test_full_chain():
     print("Full N-Chain progression passed!")
 
 if __name__ == "__main__":
+    test_n_chain_discovery()
     test_full_chain()

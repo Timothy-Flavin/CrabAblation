@@ -1,12 +1,27 @@
 INFO:root:Starting DQN PopArt Integration Test (25 Seeds)
-INFO:root:DQN Convergence steps -> Large: 7.84 +- 10.15, Small: 7.84 +- 10.15
+INFO:root:DQN Convergence steps -> Large: 2.54 +- 1.97, Small: 2.54 +- 1.97
 INFO:root:Starting PPO PopArt Integration Test (25 Seeds)
-INFO:root:PPO PopArt Sigma updated from 1.0 to 930.8319091796875
-INFO:root:PPO Convergence steps -> Large: 5.13 +- 1.91, Small: 4.72 +- 1.43
+INFO:root:PPO Convergence steps -> Large: 1.00 +- 0.00, Small: 1.00 +- 0.00
 INFO:root:Starting SAC PopArt Integration Test (25 Seeds)
 INFO:root:SAC scale=1e+04 burn-in sigma=8.226e+02 (expected ~9.100e+02)
-INFO:root:SAC scale=1e+04 PopArt sigma: 1.000e+00 -> 8.239e+02
+INFO:root:SAC scale=1e+04 PopArt sigma: 1.000e+00 -> 8.234e+02
 INFO:root:SAC scale=1e-04 burn-in sigma=8.226e-06 (expected ~9.100e-06)
-INFO:root:SAC scale=1e-04 PopArt sigma: 1.000e+00 -> 8.239e-06
+INFO:root:SAC scale=1e-04 PopArt sigma: 1.000e+00 -> 8.234e-06
 INFO:root:SAC sigma ratio large/small = 1.000e+08 (expected ~1e8)
-INFO:root:SAC Convergence steps -> Large: 262.80 +- 135.17, Small: 254.54 +- 130.33
+INFO:root:SAC Convergence steps -> Large: 291.18 +- 141.09, Small: 286.08 +- 136.74
+
+INFO:root:Starting DQN PopArt Integration Test (25 Seeds)
+INFO:root:DQN Convergence steps -> Large: 1.00 +- 0.00, Small: 1.00 +- 0.00
+INFO:root:Starting PPO PopArt Integration Test (25 Seeds)
+INFO:root:PPO Convergence steps -> Large: 8.04 +- 0.20, Small: 8.04 +- 0.20
+INFO:root:Starting SAC PopArt Integration Test (25 Seeds)
+INFO:root:SAC sigma ratio large/small = 1.000e+08 (expected ~1e8)
+INFO:root:SAC Convergence steps -> Large: 30.48 +- 35.16, Small: 30.48 +- 35.16
+
+INFO:root:Starting DQN PopArt Integration Test (25 Seeds)
+INFO:root:DQN Convergence steps -> Large: 3.56 +- 4.86, Small: 3.56 +- 4.86
+INFO:root:Starting PPO PopArt Integration Test (25 Seeds)
+INFO:root:PPO Convergence steps -> Large: 15.56 +- 1.10, Small: 15.58 +- 1.06
+INFO:root:Starting SAC PopArt Integration Test (25 Seeds)
+INFO:root:SAC sigma ratio large/small = 1.000e+08 (expected ~1e8)
+INFO:root:SAC Convergence steps -> Large: 124.68 +- 68.81, Small: 124.68 +- 68.81

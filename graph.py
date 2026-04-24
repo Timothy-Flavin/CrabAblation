@@ -29,7 +29,7 @@ ABLATION_MAP = {
 def ema(values: np.ndarray, weight: float) -> np.ndarray:
     if values.size == 0:
         return values
-    out = np.empty_like(values, dtype=np.float64)
+    out = np.empty_like(values, dtype=np.float32)
     out[0] = values[0]
     w = weight
     one_minus = 1.0 - w
@@ -76,8 +76,8 @@ def collect_for_algo(
         for run in runs:
             try:
                 train_arr, eval_arr = load_run_arrays(algo_env_dir, run, ablation)
-                train_runs.append(ema(train_arr.astype(np.float64), weight))
-                eval_runs.append(ema(eval_arr.astype(np.float64), weight))
+                train_runs.append(ema(train_arr.astype(np.float32), weight))
+                eval_runs.append(ema(eval_arr.astype(np.float32), weight))
 
                 if xaxis == "time":
                     time_path = algo_env_dir / f"train_time_{run}_{ablation}.npy"
@@ -181,7 +181,9 @@ def main():
         "--xaxis", type=str, default="episodes", choices=["episodes", "steps", "time"]
     )
     parser.add_argument("--max_steps", type=int, default=None)
-    parser.add_argument("--yaml", type=str, default="env_config.yaml", help="Path to env_config.yaml")
+    parser.add_argument(
+        "--yaml", type=str, default="env_config.yaml", help="Path to env_config.yaml"
+    )
     args = parser.parse_args()
 
     # Load YAML config for per-algo max_steps
@@ -216,9 +218,7 @@ def main():
                 max_steps = int(max_steps_cfg)
 
         print(f"Processing algorithm: {algo_name}...")
-        stats = collect_for_algo(
-            env_dir, args.runs, args.weight, args.xaxis, max_steps
-        )
+        stats = collect_for_algo(env_dir, args.runs, args.weight, args.xaxis, max_steps)
 
         if stats:
             found_any = True
