@@ -3,13 +3,13 @@
 set -euo pipefail
 
 # Default parameters
-ALGOS=("sac")
-ENVS=("cartpole" "mujoco" "cartpole" "minigrid") 
+ALGOS=("ppo" "sac")
+ENVS=("cartpole" "mujoco" "minigrid") 
 #"mujoco" "cartpole" "minigrid"
 ABLATIONS=(0 1 2 3 4 5 6) #0 1 2 3 4 5 
 RUNS=5
 DEVICE="cuda"
-DEVICE_NAME="laptop"
+DEVICE_NAME="timpc"
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do

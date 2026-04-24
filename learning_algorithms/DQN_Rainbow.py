@@ -28,8 +28,8 @@ class RainbowBase(Agent):
         hidden_layer_sizes=[128, 128],
         lr: float = 1e-3,
         gamma: float = 0.99,
-        alpha: float = 0.9,
-        tau: float = 0.03,
+        alpha: float = 0.001,
+        munchausen_constant: float = 0.1,
         polyak_tau: float = 0.03,
         l_clip: float = -1.0,
         soft: bool = False,
@@ -76,11 +76,11 @@ class RainbowBase(Agent):
         self.lr = lr
         self.gamma = gamma
         self.alpha = alpha
-        self.tau = tau
         self.polyak_tau = polyak_tau
         self.l_clip = l_clip
         self.soft = soft
-        self.munchausen = munchausen
+        self.munchausen = munchausen_constant > 0.0
+        self.munchausen_constant = munchausen_constant
         self.Thompson = Thompson
         self.dueling = dueling
 
@@ -151,7 +151,7 @@ class RainbowBase(Agent):
     def observe(self, obs, action, reward, next_obs, terminated, truncated, info=None):
         # Update random network distillation running mean and std norm
         # if we are using intrinsic rewards.
-        
+
         real_next_obs = next_obs
         if info is not None and "final_observation" in info:
             if isinstance(next_obs, torch.Tensor):
@@ -243,35 +243,56 @@ class RainbowBase(Agent):
         if hasattr(self, "obs_rms") and hasattr(self.obs_rms, "to"):
             self.obs_rms.to(device)
 
+    @torch.no_grad()
     def update_target(self):
-        """Hard update: copy online to target every K steps."""
         if not self.delayed_target:
             return
-        
-        # Assuming you trigger this every K steps instead of every frame
-        self.ext_target.load_state_dict(self.ext_online.state_dict())
-        with torch.no_grad():
-        for param, target_param in zip(self.ext_online.parameters(), self.ext_target.parameters()):
-            target_param.data.copy_(param.data)
-        for param, target_param in zip(self.int_online.parameters(), self.int_target.parameters()):
-            target_param.data.copy_(param.data)
-        #self.int_target.load_state_dict(self.int_online.state_dict())
-        self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
-        self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
-        self.int_target.output_layer.sigma.copy_(self.int_online.output_layer.sigma)
-        self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
-        #"""Polyak averaging: target = (1 - tau) * target + tau * online."""
-        # if not self.delayed_target:
-        #     return
-        # with torch.no_grad():
-        #     for tp, op in zip(
-        #         self.ext_target.parameters(), self.ext_online.parameters()
-        #     ):
-        #         tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
-        #     for tp, op in zip(
-        #         self.int_target.parameters(), self.int_online.parameters()
-        #     ):
-        #         tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
+
+        for online, target in [
+            (self.ext_online, self.ext_target),
+            (self.int_online, self.int_target),
+        ]:
+            # Multiplies target weights by (1 - tau) in-place
+            torch._foreach_mul_(list(target.parameters()), 1.0 - self.polyak_tau)
+            # Adds online weights * tau in-place
+            torch._foreach_add_(
+                list(target.parameters()),
+                list(online.parameters()),
+                alpha=self.polyak_tau,
+            )
+
+            target_buffers = list(target.buffers())
+            online_buffers = list(online.buffers())
+            if len(target_buffers) > 0:
+                torch._foreach_mul_(target_buffers, 1.0 - self.polyak_tau)
+                torch._foreach_add_(
+                    target_buffers, online_buffers, alpha=self.polyak_tau
+                )
+
+    # def update_target(self):
+    #     """Hard update: copy online to target every K steps."""
+    #     if not self.delayed_target:
+    #         return
+
+    #     # Assuming you trigger this every K steps instead of every frame
+    #     self.ext_target.load_state_dict(self.ext_online.state_dict())
+    #     self.int_target.load_state_dict(self.int_online.state_dict())
+    #     self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
+    #     self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
+    #     self.int_target.output_layer.sigma.copy_(self.int_online.output_layer.sigma)
+    #     self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
+    #     # """Polyak averaging: target = (1 - tau) * target + tau * online."""
+    #     # if not self.delayed_target:
+    #     #     return
+    #     # with torch.no_grad():
+    #     #     for tp, op in zip(
+    #     #         self.ext_target.parameters(), self.ext_online.parameters()
+    #     #     ):
+    #     #         tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
+    #     #     for tp, op in zip(
+    #     #         self.int_target.parameters(), self.int_online.parameters()
+    #     #     ):
+    #     #         tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
 
     def _update_RND(self, next_obs: torch.Tensor):
         with torch.no_grad():
@@ -300,11 +321,10 @@ class EVRainbowDQN(RainbowBase):
         lr: float = 1e-3,
         gamma: float = 0.99,
         alpha: float = 0.9,
-        tau: float = 0.03,
+        munchausen_constant: float = 0.1,
         polyak_tau: float = 0.005,
         l_clip: float = -1.0,
         soft: bool = False,
-        munchausen: bool = False,
         Thompson: bool = False,
         dueling: bool = False,
         Beta: float = 0.0,
@@ -331,11 +351,10 @@ class EVRainbowDQN(RainbowBase):
             lr=lr,
             gamma=gamma,
             alpha=alpha,
-            tau=tau,
+            munchausen_constant=munchausen_constant,
             polyak_tau=polyak_tau,
             l_clip=l_clip,
             soft=soft,
-            munchausen=munchausen,
             Thompson=Thompson,
             dueling=dueling,
             Beta=Beta,
@@ -415,9 +434,20 @@ class EVRainbowDQN(RainbowBase):
         self.optim = torch.optim.Adam(self.ext_online.parameters(), lr=lr)
         self.int_optim = torch.optim.Adam(self.int_online.parameters(), lr=intrinsic_lr)
 
+        # --- ALPHA AUTOTUNER SETUP ---
+        if self.soft:
+            # Max entropy per dim is ln(bins). Target ~80% of max entropy across all dims.
+            max_ent = np.log(self.n_action_bins)  # self.n_action_dims *
+            self.target_entropy = 0.8 * max_ent
+            # Start alpha small so the penalty doesn't immediately crush Q-values
+            self.log_alpha = nn.Parameter(torch.tensor([-3.0], device=self.device))
+            # Use a slightly lower LR for alpha to prevent temperature whiplash
+            self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
+            self.alpha = self.log_alpha.exp().item()
+
     @torch.no_grad()
     def _soft_policy(self, q_values: torch.Tensor):
-        logpi = torch.clamp(torch.log_softmax(q_values / self.tau, dim=-1), min=-1e8)
+        logpi = torch.clamp(torch.log_softmax(q_values / self.alpha, dim=-1), min=-1e8)
         pi = torch.exp(logpi)
         ent = -(pi * logpi).sum(dim=-1)  # [B]
         return pi, logpi, ent
@@ -464,8 +494,7 @@ class EVRainbowDQN(RainbowBase):
 
         logpi_now = None
         pi_now = None
-        entropy_loss = 0
-        current_sigma = self.ext_online.output_layer.sigma.detach()
+        current_sigma = self.ext_target.output_layer.sigma.detach()
 
         # Get target
         with torch.no_grad():
@@ -481,27 +510,27 @@ class EVRainbowDQN(RainbowBase):
             if self.munchausen:
                 if logpi_now is None:
                     logpi_now = torch.clamp(
-                        torch.log_softmax(q_ext_norm / self.tau, dim=-1), min=-1e8
+                        torch.log_softmax(q_ext_norm / self.alpha, dim=-1), min=-1e8
                     )
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(
                     -1
                 )  # [B,D]
                 r_kl = torch.clamp(selected_logpi, min=self.l_clip)
                 if r_kl.ndim > 1:
-                    r_kl = r_kl.sum(-1)
+                    r_kl = r_kl.mean(-1)
                 assert b_r_ext.ndim == r_kl.ndim
-                b_r_ext += current_sigma * self.alpha * self.tau * r_kl
+                b_r_ext += current_sigma * self.alpha * self.munchausen_constant * r_kl
 
             # Next value with entropy and weighted sum over q values
             if self.munchausen or self.soft:
                 logpi_next = torch.clamp(
-                    torch.log_softmax(q_next_online_norm / self.tau, dim=-1), min=-1e8
+                    torch.log_softmax(q_next_online_norm / self.alpha, dim=-1), min=-1e8
                 )
                 pi_next = torch.exp(logpi_next)
                 next_head_vals = (
                     pi_next
-                    * (q_next_target_raw - current_sigma * self.tau * logpi_next)
-                ).mean(-1)
+                    * (q_next_target_raw - current_sigma * self.alpha * logpi_next)
+                ).sum(-1)
             # Next value with no entropy or weighted sum, using argmax policy
             else:
                 target_actions_next = q_next_online_norm.argmax(
@@ -522,36 +551,56 @@ class EVRainbowDQN(RainbowBase):
 
         target_for_stats_ext = online_ext_target.detach()  # maintain [B, D]
         self.ext_online.output_layer.update_stats(target_for_stats_ext)
-        #if self.delayed_target:
-            
+        # if self.delayed_target:
+
         td_target_norm = self.ext_online.output_layer.normalize(target_for_stats_ext)
         q_ext_now_norm = self.ext_online(b_obs, normalized=True)
         q_selected_norm = torch.gather(q_ext_now_norm, -1, b_actions_idx).squeeze(
             -1
         )  # [B, D]
+        drift_penalty = 0.0
         if q_selected_norm.ndim > 1:
+            drift_penalty = q_selected_norm.pow(2).mean() * 1e-3
             q_selected_norm = q_selected_norm.mean(-1)
         assert (
             q_selected_norm.shape == td_target_norm.shape
         ), f"Shape mismatch: q_selected_norm {q_selected_norm.shape}, td_target_norm {td_target_norm.shape}"
-        extrinsic_loss = torch.nn.functional.mse_loss(q_selected_norm, td_target_norm)
-
-        if self.ent_reg_coef > 0.0:
-            logpi_now = torch.clamp(
-                torch.log_softmax(q_ext_now_norm / self.tau, dim=-1), min=-1e8
-            )
-            if torch.isnan(logpi_now).any():
-                print("NaN detected in logpi_now!")
-                raise (Exception("fuck"))
-            pi_now = torch.exp(logpi_now)
-            entropy_loss = (pi_now * logpi_now).sum(dim=-1).mean()
-            extrinsic_loss = extrinsic_loss + self.ent_reg_coef * entropy_loss
+        extrinsic_loss = (
+            torch.nn.functional.mse_loss(q_selected_norm, td_target_norm)
+            + drift_penalty
+        )
 
         self.optim.zero_grad()
         extrinsic_loss.backward()
         if hasattr(self, "ext_online"):
             torch.nn.utils.clip_grad_norm_(self.ext_online.parameters(), max_norm=10.0)
         self.optim.step()
+
+        # --- ALPHA AUTO-TUNING UPDATE ---
+        alpha_loss = torch.tensor(0.0, device=self.log_alpha.device)
+        if self.soft:
+            with torch.no_grad():
+                q_fresh = self.ext_online(b_obs, normalized=True).detach()
+                logpi_fresh = torch.clamp(
+                    torch.log_softmax(q_fresh / self.alpha, dim=-1), min=-1e8
+                )
+                pi_fresh = torch.exp(logpi_fresh)
+                current_entropy = -(pi_fresh * logpi_fresh).sum(dim=-1).mean()
+                # Ensure current_entropy and target_entropy are on the same device
+                current_entropy = current_entropy.to(self.log_alpha.device)
+                target_entropy = torch.tensor(
+                    self.target_entropy,
+                    device=self.log_alpha.device,
+                    dtype=current_entropy.dtype,
+                )
+            # REMOVED THE NEGATIVE SIGN at the front
+            alpha_loss = (
+                self.log_alpha.exp() * (current_entropy - target_entropy).detach()
+            )
+            self.alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optim.step()
+            self.alpha = self.log_alpha.exp().item()
 
         # Intrinsic Q update
         with torch.no_grad():
@@ -579,7 +628,7 @@ class EVRainbowDQN(RainbowBase):
 
         target_for_stats_int = int_td_target.detach()
         self.int_online.output_layer.update_stats(target_for_stats_int)
-        #if self.delayed_target:
+        # if self.delayed_target:
         #    self.int_target.output_layer.sigma.copy_(self.int_online.output_layer.sigma)
         #    self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
 
@@ -590,38 +639,35 @@ class EVRainbowDQN(RainbowBase):
         int_q_selected_norm = torch.gather(int_q_now_norm, -1, b_actions_idx).squeeze(
             -1
         )
+        drift_penalty_int = 0.0
         if int_q_selected_norm.ndim > 1:
+            drift_penalty_int = int_q_selected_norm.pow(2).mean() * 1e-3
             int_q_selected_norm = int_q_selected_norm.mean(-1)
         assert (
             int_q_selected_norm.shape == int_td_target_norm.shape
         ), f"Shape mismatch: int_q_selected_norm {int_q_selected_norm.shape}, int_td_target_norm {int_td_target_norm.shape}"
-        intrinsic_loss = torch.nn.functional.mse_loss(
-            int_q_selected_norm, int_td_target_norm
+        intrinsic_loss = (
+            torch.nn.functional.mse_loss(int_q_selected_norm, int_td_target_norm)
+            + drift_penalty_int
         )
 
         self.int_optim.zero_grad()
         intrinsic_loss.backward()
-        if hasattr(self, "int_online"):
-            torch.nn.utils.clip_grad_norm_(self.int_online.parameters(), max_norm=10.0)
         self.int_optim.step()
-        
-        if self.delayed_target and self.step%200==0:
-            self.update_target()
+        self.update_target()
 
-        if self.step%100==0:
-            # Update target network
-            
-
+        if self.step % 1000 == 0:
             # tracking
+            if hasattr(self, "int_online"):
+                torch.nn.utils.clip_grad_norm_(
+                    self.int_online.parameters(), max_norm=10.0
+                )
+
             if isinstance(b_r_int, torch.Tensor):
                 r_int_log = float(b_r_int.mean().item())
             else:
                 r_int_log = 0.0
 
-            if isinstance(entropy_loss, torch.Tensor):
-                entropy_val = float(entropy_loss.item())
-            else:
-                entropy_val = entropy_loss
             if isinstance(rnd_loss, torch.Tensor):
                 rnd_loss = rnd_loss.item()
             self.last_losses = {
@@ -629,11 +675,10 @@ class EVRainbowDQN(RainbowBase):
                 "intrinsic": float(intrinsic_loss.item()),
                 "rnd": float(rnd_loss),
                 "avg_r_int": r_int_log,
-                "entropy_reg": entropy_val,
+                "alpha_loss": (float(alpha_loss.item()) if isinstance(alpha_loss, torch.Tensor) else float(alpha_loss)),
                 "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
                 "target_mean": float(target_for_stats_ext.mean().item()),
                 "td_target_norm_mean": float(td_target_norm.abs().mean().detach().item()),
-                "entropy_loss": entropy_val,
                 "Beta": float(self.Beta),
                 "Q_ext_mean": float(q_ext_now_norm.mean().item()),
                 "Q_int_mean": (
@@ -663,31 +708,31 @@ class EVRainbowDQN(RainbowBase):
 
         with torch.no_grad():
             q_ext = self.ext_online(obs_b, normalized=True)  # [B,n_actions]
-            rand_vals = torch.rand(batch_size, device=obs_b.device)
-            explore_mask = (rand_vals < min_ent) | (rand_vals < eps)
-
             if self.Beta > 0.0:
                 int_q = self.int_online(obs_b, normalized=True)
                 q_ext = (1.0 - self.Beta) * q_ext + self.Beta * int_q
 
             if self.soft or self.munchausen:
-                q_ext = q_ext / self.tau
-                actions = torch.distributions.Categorical(logits=q_ext).sample()
+                actions = torch.distributions.Categorical(
+                    logits=q_ext / self.alpha
+                ).sample()
             else:
                 actions = torch.argmax(q_ext, dim=-1)
+                rand_vals = torch.rand(batch_size, device=obs_b.device)
+                explore_mask = (rand_vals < min_ent) | (rand_vals < eps)
 
-            if explore_mask.any():
-                explore_actions = torch.randint(
-                    0,
-                    self.n_action_bins,
-                    (batch_size, self.n_action_dims),
-                    device=obs_b.device,
-                )
-                actions = torch.where(
-                    explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask,
-                    explore_actions,
-                    actions,
-                )
+                if explore_mask.any():
+                    explore_actions = torch.randint(
+                        0,
+                        self.n_action_bins,
+                        (batch_size, self.n_action_dims),
+                        device=obs_b.device,
+                    )
+                    actions = torch.where(
+                        explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask,
+                        explore_actions,
+                        actions,
+                    )
 
             if is_batched:
                 return actions.tolist()
@@ -709,11 +754,10 @@ class IQNRainbowDQN(RainbowBase):
         lr: float = 1e-3,
         gamma: float = 0.99,
         alpha: float = 0.9,
-        tau: float = 0.03,
         polyak_tau: float = 0.03,
         l_clip: float = -1.0,
         soft: bool = False,
-        munchausen: bool = False,
+        munchausen_constant: float = 0.1,
         Thompson: bool = False,
         dueling: bool = False,
         Beta: float = 0.0,
@@ -740,11 +784,10 @@ class IQNRainbowDQN(RainbowBase):
             lr=lr,
             gamma=gamma,
             alpha=alpha,
-            tau=tau,
+            munchausen_constant=munchausen_constant,
             polyak_tau=polyak_tau,
             l_clip=l_clip,
             soft=soft,
-            munchausen=munchausen,
             Thompson=Thompson,
             dueling=dueling,
             Beta=Beta,
@@ -824,6 +867,14 @@ class IQNRainbowDQN(RainbowBase):
         self.optim = torch.optim.Adam(self.ext_online.parameters(), lr=lr)
         self.int_optim = torch.optim.Adam(self.int_online.parameters(), lr=intrinsic_lr)
 
+        # --- ALPHA AUTOTUNER SETUP ---
+        if self.soft:
+            max_ent = np.log(self.n_action_bins)  # self.n_action_dims *
+            self.target_entropy = 0.8 * max_ent
+            self.log_alpha = nn.Parameter(torch.tensor([-3.0], device=self.device))
+            self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
+            self.alpha = self.log_alpha.exp().item()
+
         self.n_quantiles = 32
         self.n_target_quantiles = 32
 
@@ -891,51 +942,54 @@ class IQNRainbowDQN(RainbowBase):
                 torch.zeros_like(b_r_ext),
             )
 
-        entropy_loss = 0.0
         current_sigma = self.ext_online.output_layer.sigma.detach()
 
         # ========================================================
         # Extrinsic Q update
         # ========================================================
         with torch.no_grad():
-            dist_q_shape = (batch_size,self.n_quantiles,self.n_action_dims,self.n_action_bins)
+            dist_q_shape = (
+                batch_size,
+                self.n_quantiles,
+                self.n_action_dims,
+                self.n_action_bins,
+            )
             taus = self._sample_taus(batch_size, self.n_quantiles, self.device)
             target_taus = self._sample_taus(
                 batch_size, self.n_target_quantiles, self.device
             )
 
             # Online Next Q -> For action selection
-            online_next_q_norm = self.ext_online(
-                b_next_obs, taus, normalized=True
-            )
-           #print(online_next_q_norm.shape)
+            online_next_q_norm = self.ext_online(b_next_obs, taus, normalized=True)
+            # print(online_next_q_norm.shape)
             online_next_q_norm = online_next_q_norm.view(dist_q_shape).mean(dim=1)
-           #print(f"online next q nrm [0] {online_next_q_norm[0]}")
+            # print(f"online next q nrm [0] {online_next_q_norm[0]}")
 
             # Target Net Quantiles -> For target values
             t_net = self.ext_target if self.delayed_target else self.ext_online
             target_quantiles_all = t_net(
                 b_next_obs, target_taus, normalized=False
             )  # [B, Nt, D, Bins]
-           #print(f"Target quantils shape: {target_quantiles_all.shape}")
+            # print(f"Target quantils shape: {target_quantiles_all.shape}")
 
             m_r = 0.0
             ent_bonus = 0.0
 
             if self.munchausen or self.soft:
                 logpi_next = torch.clamp(
-                    torch.log_softmax(online_next_q_norm / self.tau, dim=-1), min=self.l_clip
+                    torch.log_softmax(online_next_q_norm / self.alpha, dim=-1),
+                    min=-1e8,
                 )
                 pi_next = torch.exp(logpi_next)
                 # Entropy bonus: sum over D
-                ent_bonus = -(pi_next * logpi_next).sum(dim=-1)  # sum over bins
+                ent_bonus = -(pi_next * logpi_next).mean(dim=-1)  # sum over bins
                 if ent_bonus.ndim > 1:
-                    ent_bonus = ent_bonus.sum(dim=-1).unsqueeze(
+                    ent_bonus = ent_bonus.mean(dim=-1).unsqueeze(
                         1
                     )  # sum over D, then [B, 1]
                 else:
                     ent_bonus = ent_bonus.unsqueeze(1)
-               #print(f"pi next: {pi_next.shape} logpinext: {logpi_next.shape}, ")
+                # print(f"pi next: {pi_next.shape} logpinext: {logpi_next.shape}, ")
                 # if self.soft:
                 #     print(f"ent: {ent_bonus.shape}")
                 # Mixed target values
@@ -959,46 +1013,53 @@ class IQNRainbowDQN(RainbowBase):
                 if mixed_target.ndim > 2:
                     mixed_target = mixed_target.mean(dim=-1)  # sum over D -> [B, Nt]
 
-           #print(f"mixed target dim: {mixed_target.shape}")
+            # print(f"mixed target dim: {mixed_target.shape}")
             if self.munchausen:
-                t_expected = torch.linspace(0.01,0.99,self.n_quantiles,device=self.device)
-                t_expected = t_expected.unsqueeze(0).expand(batch_size, -1)
-                q_ext_norm_now = self.ext_online(b_obs, t_expected, normalized=True).mean(
-                    dim=1
+                t_expected = torch.linspace(
+                    0.01, 0.99, self.n_quantiles, device=self.device
                 )
-               #print(q_ext_norm_now.shape)
-               #print(q_ext_norm_now[0])
-                logpi_now = torch.log_softmax(q_ext_norm_now / self.tau, dim=-1)
-               #print(f"logpi now: {logpi_now[0]} pi now: {torch.exp(logpi_now[0])}")
-               #print(f"logpi shape: {logpi_now.shape} actions shape: {b_actions_idx.shape}")
+                t_expected = t_expected.unsqueeze(0).expand(batch_size, -1)
+                q_ext_norm_now = self.ext_online(
+                    b_obs, t_expected, normalized=True
+                ).mean(dim=1)
+                # print(q_ext_norm_now.shape)
+                # print(q_ext_norm_now[0])
+                logpi_now = torch.log_softmax(q_ext_norm_now / self.alpha, dim=-1)
+                # print(f"logpi now: {logpi_now[0]} pi now: {torch.exp(logpi_now[0])}")
+                # print(f"logpi shape: {logpi_now.shape} actions shape: {b_actions_idx.shape}")
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(-1)
-               #print(f"actins: {b_actions_idx[0]} \nselected {selected_logpi[0]} \nlogpis {logpi_now[0]}")
-               #print(selected_logpi.shape)
+                # print(f"actins: {b_actions_idx[0]} \nselected {selected_logpi[0]} \nlogpis {logpi_now[0]}")
+                # print(selected_logpi.shape)
                 # sum r_kl over D if needed
-                
+
                 if selected_logpi.ndim > 1:
-                   #print("summed dim 1 logpis for multiple action dims")
-                    r_kl = selected_logpi.sum(dim=-1).view(-1)
+                    # print("summed dim 1 logpis for multiple action dims")
+                    r_kl = torch.clamp(
+                        selected_logpi.mean(dim=-1), min=self.l_clip
+                    ).view(-1)
                 else:
-                    r_kl = selected_logpi.view(-1)
-                m_r = (current_sigma * self.alpha * self.tau * r_kl).view(-1)
-               #print(f"munchausen reward: {m_r} from {current_sigma}*{self.alpha}*{self.tau}")
+                    r_kl = torch.clamp(selected_logpi, min=self.l_clip).view(-1)
+                m_r = (
+                    current_sigma * self.alpha * self.munchausen_constant * r_kl
+                ).view(-1)
             b_r_final = b_r_ext.view(-1) + m_r
             # Target Q-distribution
             assert (
                 b_r_final.shape == b_term.shape
             ), f"Shape mismatch: b_r_final {b_r_final.shape}, b_term {b_term.shape}"
-            assert b_term.ndim == mixed_target.ndim-1, "mixed target is going to broadcast bad"
+            assert (
+                b_term.ndim == mixed_target.ndim - 1
+            ), "mixed target is going to broadcast bad"
             target_values = b_r_final.unsqueeze(1) + (1 - b_term).unsqueeze(
                 1
-            ) * self.gamma * (mixed_target + current_sigma * self.tau * ent_bonus)
-       #print(f"We made it past the target calculation br {b_r_final.unsqueeze(1).shape} bterm {(1 - b_term).unsqueeze(1).shape} mix_target {mixed_target.shape}, ")
+            ) * self.gamma * (mixed_target + current_sigma * self.alpha * ent_bonus)
+        # print(f"We made it past the target calculation br {b_r_final.unsqueeze(1).shape} bterm {(1 - b_term).unsqueeze(1).shape} mix_target {mixed_target.shape}, ")
         # if self.soft:
         #     print(f"ent: {ent_bonus.shape}")
         # Apply PopArt stats tracking over target distributions
         # Mean to get the expected value and stop popart from thinking taus are
         self.ext_online.output_layer.update_stats(target_values.detach().mean(-1))
-        #if self.delayed_target:
+        # if self.delayed_target:
         #    self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
         #    self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
         target_values_norm = self.ext_online.output_layer.normalize(
@@ -1017,32 +1078,58 @@ class IQNRainbowDQN(RainbowBase):
         pred_chosen = torch.gather(quantiles_pred, -1, gather_index_pred).squeeze(
             -1
         )  # [B, N, D]
+        int_drift_penalty = 0.0
         if pred_chosen.ndim > 2:
+            int_drift_penalty = pred_chosen.pow(2).mean() * 1e-3
             pred_chosen = pred_chosen.mean(dim=-1)  # [B, N]
         assert (
             pred_chosen.shape[0] == target_values_norm.shape[0]
             and pred_chosen.ndim == target_values_norm.ndim == 2
         ), f"Shape mismatch: pred_chosen {pred_chosen.shape}, target_values_norm {target_values_norm.shape}"
 
-        extrinsic_loss = self._quantile_huber_loss(
-            pred_chosen, target_values_norm, taus_pred
+        extrinsic_loss = (
+            self._quantile_huber_loss(pred_chosen, target_values_norm, taus_pred)
+            + int_drift_penalty
         )
-
-        # Add pure entropy reg if needed
-        if self.ent_reg_coef > 0.0:
-            q_ext_now_fresh = quantiles_pred.mean(dim=1)
-            logpi_fresh = torch.clamp(
-                torch.log_softmax(q_ext_now_fresh / self.tau, dim=-1), min=-1e8
-            )
-            pi_fresh = torch.exp(logpi_fresh)
-            entropy = (pi_fresh * logpi_fresh).sum(dim=-1).mean()
-            entropy_loss = self.ent_reg_coef * entropy
-            extrinsic_loss = extrinsic_loss + entropy_loss
 
         self.optim.zero_grad()
         extrinsic_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.ext_online.parameters(), max_norm=10.0)
         self.optim.step()
+
+        # --- ALPHA AUTO-TUNING UPDATE ---
+        alpha_loss = torch.tensor(0.0, device=self.log_alpha.device)
+        if self.soft:
+            with torch.no_grad():
+                q_fresh = (
+                    quantiles_pred.mean(dim=1).detach()
+                    if "quantiles_pred" in locals()
+                    else self.ext_online(
+                        b_obs,
+                        self._sample_taus(batch_size, self.n_quantiles, self.device),
+                        normalized=True,
+                    )
+                    .mean(dim=1)
+                    .detach()
+                )
+                logpi_fresh = torch.clamp(
+                    torch.log_softmax(q_fresh / self.alpha, dim=-1), min=-1e8
+                )
+                pi_fresh = torch.exp(logpi_fresh)
+                current_entropy = -(pi_fresh * logpi_fresh).sum(dim=-1).mean()
+                current_entropy = current_entropy.to(self.log_alpha.device)
+                target_entropy = torch.tensor(
+                    self.target_entropy,
+                    device=self.log_alpha.device,
+                    dtype=current_entropy.dtype,
+                )
+            alpha_loss = (
+                self.log_alpha.exp() * (current_entropy - target_entropy).detach()
+            )
+            self.alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optim.step()
+            self.alpha = self.log_alpha.exp().item()
 
         # ========================================================
         # Intrinsic Q update
@@ -1074,6 +1161,7 @@ class IQNRainbowDQN(RainbowBase):
                 ).squeeze(
                     -1
                 )  # [B, Nt, D]
+
                 if mixed_target_int.ndim > 2:
                     mixed_target_int = mixed_target_int.mean(dim=-1)  # [B, Nt]
 
@@ -1087,11 +1175,11 @@ class IQNRainbowDQN(RainbowBase):
             self.int_online.output_layer.update_stats(
                 int_target_values.detach().mean(-1)
             )
-            #if self.delayed_target:
-                # self.int_target.output_layer.sigma.copy_(
-                #     self.int_online.output_layer.sigma
-                # )
-                # self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
+            # if self.delayed_target:
+            # self.int_target.output_layer.sigma.copy_(
+            #     self.int_online.output_layer.sigma
+            # )
+            # self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
             int_target_values_norm = self.int_online.output_layer.normalize(
                 int_target_values.detach()
             )
@@ -1107,7 +1195,9 @@ class IQNRainbowDQN(RainbowBase):
             ).squeeze(
                 -1
             )  # [B, N, D]
+            int_drift_penalty = 0.0
             if int_pred_chosen.ndim > 2:
+                int_drift_penalty = int_pred_chosen.pow(2).mean() * 1e-3
                 int_pred_chosen = int_pred_chosen.mean(dim=-1)  # [B, N]
 
             assert (
@@ -1115,8 +1205,11 @@ class IQNRainbowDQN(RainbowBase):
                 and int_pred_chosen.ndim == int_target_values_norm.ndim == 2
             ), f"Shape mismatch: int_pred_chosen {int_pred_chosen.shape}, int_target_values_norm {int_target_values_norm.shape}"
 
-            intrinsic_loss = self._quantile_huber_loss(
-                int_pred_chosen, int_target_values_norm, int_taus_pred
+            intrinsic_loss = (
+                self._quantile_huber_loss(
+                    int_pred_chosen, int_target_values_norm, int_taus_pred
+                )
+                + int_drift_penalty
             )
 
             self.int_optim.zero_grad()
@@ -1127,8 +1220,8 @@ class IQNRainbowDQN(RainbowBase):
             intrinsic_loss = torch.tensor(0.0)
 
         # Update target network
-        if self.delayed_target and self.step%200==0:
-            self.update_target()
+        # if self.delayed_target and self.step % 200 == 0:
+        self.update_target()
 
         if self.step%100==0:
             # ========================================================
@@ -1138,11 +1231,6 @@ class IQNRainbowDQN(RainbowBase):
                 r_int_log = float(b_r_int.mean().item())
             else:
                 r_int_log = 0.0
-
-            if isinstance(entropy_loss, torch.Tensor):
-                entropy_val = float(entropy_loss.item())
-            else:
-                entropy_val = entropy_loss
 
             if isinstance(rnd_loss, torch.Tensor):
                 rnd_loss = rnd_loss.item()
@@ -1158,14 +1246,13 @@ class IQNRainbowDQN(RainbowBase):
                 "intrinsic": float(intrinsic_loss.item()),
                 "rnd": float(rnd_loss),
                 "avg_r_int": r_int_log,
-                "entropy_reg": entropy_val,
+                "alpha_loss": (float(alpha_loss.item()) if isinstance(alpha_loss, torch.Tensor) else float(alpha_loss)),
                 "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
                 "target_mean": (
                     float(target_values.mean().item())
                     if "target_values" in locals()
                     else 0.0
                 ),
-                "entropy_loss": entropy_val,
                 "Beta": float(self.Beta),
                 "Q_ext_mean": float(q_ext_now_norm.mean().item()),
                 "Q_int_mean": (
@@ -1175,7 +1262,7 @@ class IQNRainbowDQN(RainbowBase):
                 ),
                 "last_eps": float(self.last_eps),
             }
-            #print(self.last_losses)
+            # print(self.last_losses)
         return float(extrinsic_loss.item())
 
     def sample_action(
@@ -1197,35 +1284,32 @@ class IQNRainbowDQN(RainbowBase):
             ext_q = self.ext_online(obs_b, taus, normalized=True).mean(
                 dim=1
             )  # [B,D,Bins]
-
-            rand_vals = torch.rand(batch_size, device=obs_b.device)
-            explore_mask = (rand_vals < min_eps) | (rand_vals < eps)
-
             if self.Beta > 0.0:
                 int_taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
                 int_q = self.int_online(obs_b, int_taus, normalized=True).mean(dim=1)
                 ext_q = (1.0 - self.Beta) * ext_q + self.Beta * int_q
 
             if self.soft or self.munchausen:
-                logits = ext_q / self.tau
+                logits = ext_q / self.alpha
                 actions = torch.distributions.Categorical(
                     logits=logits
                 ).sample()  # [B,D]
             else:
                 actions = torch.argmax(ext_q, dim=-1)  # [B,D]
-
-            if explore_mask.any():
-                explore_actions = torch.randint(
-                    0,
-                    self.n_action_bins,
-                    (batch_size, self.n_action_dims),
-                    device=obs_b.device,
-                )
-                actions = torch.where(
-                    explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask,
-                    explore_actions,
-                    actions,
-                )
+                rand_vals = torch.rand(batch_size, device=obs_b.device)
+                explore_mask = (rand_vals < min_eps) | (rand_vals < eps)
+                if explore_mask.any():
+                    explore_actions = torch.randint(
+                        0,
+                        self.n_action_bins,
+                        (batch_size, self.n_action_dims),
+                        device=obs_b.device,
+                    )
+                    actions = torch.where(
+                        explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask,
+                        explore_actions,
+                        actions,
+                    )
 
             if is_batched:
                 return actions.tolist()

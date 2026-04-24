@@ -109,11 +109,11 @@ class RunningMeanStd(nn.Module):
         # This ensures they are saved with state_dict and moved to GPU (e.g., .to(device)).
 
         # 'n' is the count of *individual samples* seen, not batches.
-        self.register_buffer("count", torch.tensor(0.0, dtype=torch.float64))
-        self.register_buffer("mean", torch.zeros(shape, dtype=torch.float64))
+        self.register_buffer("count", torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer("mean", torch.zeros(shape, dtype=torch.float32))
 
         # 'M2' stores the sum of squares of differences from the mean
-        self.register_buffer("M2", torch.zeros(shape, dtype=torch.float64))
+        self.register_buffer("M2", torch.zeros(shape, dtype=torch.float32))
 
     @property
     def var(self):
@@ -132,9 +132,9 @@ class RunningMeanStd(nn.Module):
 
         # Ensure tensor on correct device/dtype
         if not isinstance(x, torch.Tensor):
-            x = torch.tensor(x, dtype=torch.float64, device=self.mean.device)
+            x = torch.tensor(x, dtype=torch.float32, device=self.mean.device)
         else:
-            x = x.to(dtype=torch.float64, device=self.mean.device)
+            x = x.to(dtype=torch.float32, device=self.mean.device)
 
         feat_shape = tuple(self.mean.shape)
         feat_ndim = self.mean.dim()
@@ -206,14 +206,12 @@ class RunningMeanStd(nn.Module):
         # Clip the result to be within [-clip_range, clip_range]
         return torch.clamp(normalized_x, -clip_range, clip_range)
 
-
     def normalize_scale(self, x, clip_range=10.0):
         if self.count == 0:
             return x
         x = x.to(self.mean.device)
         normalized_x = x / (self.std.detach() + 1e-8)
         return torch.clamp(normalized_x, -clip_range, clip_range)
-
 
     def normalize_scale(self, x, clip_range=10.0):
         if self.count == 0:

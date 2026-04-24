@@ -10,7 +10,6 @@ from typing import Callable, Optional
 import gymnasium as gym
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 from runner_utils import get_device_name, plot_results, resolve_torch_device
 from environment_utils import (
     ActionTransformHandler,
@@ -48,7 +47,9 @@ def get_args():
         help="Optional explicit env id. Defaults to env_name.",
     )
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5, 6])
+    parser.add_argument(
+        "--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5, 6]
+    )
     parser.add_argument("--fully_obs", action="store_true")
     parser.add_argument("--run", type=int, default=1)
     parser.add_argument("--num_envs", type=int, default=4)
@@ -82,14 +83,14 @@ def get_args():
     # SAC knobs
     parser.add_argument("--buffer_size", type=int, default=2e4)
     parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--tau", type=float, default=0.001 * 0.003)
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--learning_starts", type=int, default=0)
+    parser.add_argument("--learning_starts", type=int, default=10000)
     parser.add_argument("--policy_lr", type=float, default=3e-4)
     parser.add_argument("--q_lr", type=float, default=1e-3)
     parser.add_argument("--policy_frequency", type=int, default=4)
     parser.add_argument("--target_network_frequency", type=int, default=1)
-    parser.add_argument("--alpha", type=float, default=0.2)
+    parser.add_argument("--alpha", type=float, default=0.001)
     parser.add_argument("--autotune", action="store_true", default=True)
     parser.add_argument("--n_quantiles", type=int, default=32)
     parser.add_argument("--n_target_quantiles", type=int, default=32)
@@ -113,15 +114,18 @@ def get_args():
             args.total_steps = int(max_steps_cfg)
     # Set buffer sizes from config if not overridden
     if args.dqn_buffer_size is None:
-        args.dqn_buffer_size = int(env_cfg.get("buffer_size", 10000))
+        args.dqn_buffer_size = int(env_cfg.get("buffer_size", 100000))
     if args.buffer_size is None:
-        args.buffer_size = int(env_cfg.get("buffer_size", 20000))
+        args.buffer_size = int(env_cfg.get("buffer_size", 200000))
     if args.algo == "sac":
         args.update_every = 4
     if args.env_name == "cartpole" and args.total_steps == 1000000:
         args.total_steps = 300000
     if args.env_name == "mujoco" and args.total_steps == 1000000:
         args.total_steps = 2000000
+    if args.env_name == "mujoco":
+        args.buffer_size = 500000
+        args.dqn_buffer_size = 500000
     if (
         args.algo == "dqn"
         and args.env_name == "mujoco"
@@ -207,28 +211,30 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     else:
         n_action_dims = int(env_cfg.get("n_action_dims", 1))
         n_action_bins = int(env_cfg.get("n_action_bins", 2))
-    hidden_layer_sizes = env_cfg.get("hidden_layer_sizes", [128, 128])
-
+    hidden_layer_sizes = env_cfg.get("hidden_layer_sizes", [256, 256])
+    # n_action_bins = 5
+    # input(
+    #     f"n action dims: {n_action_dims}, n action bins: {n_action_bins}. Press Enter to continue..."
+    # )
     # Calculate beta decay schedule
     total_steps = int(getattr(args, "total_steps", 1000000))
-    update_every = int(getattr(args, "update_every", 4))
+    update_every = int(getattr(args, "update_every", 2))
     beta_half_life_steps = max(1, (total_steps // update_every) // 5)
     cfg = {
-        "munchausen": True,
+        "munchausen_constant": 0.1,
         "soft": True,
         "Beta": 1.0,  # Start fully intrinsic
         "dueling": True,
         "distributional": True,
-        "ent_reg_coef": 0.05,
         "delayed": True,
         "popart": True,
-        "tau": 0.9,
-        "alpha": 0.03,
+        "tau": 0.05,
+        "alpha": 0.01,
         "beta_half_life_steps": beta_half_life_steps,
     }
 
     if args.ablation == 1:
-        cfg["munchausen"] = False
+        cfg["munchausen_constant"] = 0.0
         cfg["soft"] = False
     elif args.ablation == 2:
         cfg["ent_reg_coef"] = 0.0
@@ -241,16 +247,17 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     elif args.ablation == 5:
         cfg["delayed"] = False
     elif args.ablation == 6:
-        cfg["munchausen"] = False
-        cfg["soft"] = False
-        cfg["ent_reg_coef"] = 0.01
+        cfg["munchausen_constant"] = 0.9
+        cfg["soft"] = True
+        cfg["ent_reg_coef"] = 0.00
         cfg["Beta"] = 0.0
         cfg["distributional"] = True
         cfg["delayed"] = True
+        cfg["dueling"] = False
 
     AgentClass = IQNRainbowDQN if cfg["distributional"] else EVRainbowDQN
     soft = bool(cfg["soft"])
-    munchausen = bool(cfg["munchausen"])
+    munchausen = bool(cfg["munchausen_constant"] > 0.0)
     dueling = bool(cfg["dueling"])
     delayed = bool(cfg["delayed"])
     popart = bool(cfg["popart"])
@@ -267,13 +274,12 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             buffer_size=int(args.dqn_buffer_size),
             hidden_layer_sizes=hidden_layer_sizes,
             soft=soft,
-            munchausen=munchausen,
+            munchausen_constant=cfg["munchausen_constant"],
             Thompson=False,
             dueling=dueling,
             Beta=beta,
             ent_reg_coef=ent_reg_coef,
             delayed=delayed,
-            tau=tau,
             polyak_tau=0.005,
             alpha=alpha,
             beta_half_life_steps=cfg["beta_half_life_steps"],
@@ -290,13 +296,12 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             buffer_size=int(args.dqn_buffer_size),
             hidden_layer_sizes=hidden_layer_sizes,
             soft=soft,
-            munchausen=munchausen,
+            munchausen_constant=cfg["munchausen_constant"],
             Thompson=False,
             dueling=dueling,
             Beta=beta,
             ent_reg_coef=ent_reg_coef,
             delayed=delayed,
-            tau=tau,
             polyak_tau=0.005,
             alpha=alpha,
             beta_half_life_steps=cfg["beta_half_life_steps"],
@@ -336,7 +341,7 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
         cfg["clip_coef"] = 0.2
         cfg["ent_coef"] = 0.001
         cfg["Beta"] = 0.0
-        cfg["distributional"] = False
+        cfg["distributional"] = True
         cfg["use_gae"] = True
 
     rollout_steps = max(1, args.num_steps // int(vec_env.num_envs))
@@ -385,7 +390,7 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
     elif args.ablation == 5:
         cfg["delayed_critics"] = False
     elif args.ablation == 6:
-        cfg["munchausen"] = False
+        cfg["munchausen"] = True
         cfg["entropy_coef_zero"] = False
         cfg["Beta"] = 0.0
         cfg["distributional"] = True
@@ -395,7 +400,7 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
     agent = AgentClass(
         _agent_spec_from_vec_env(vec_env),
         gamma=args.gamma,
-        tau=args.tau,
+        tau=0.005,  # args.tau,
         policy_lr=args.policy_lr,
         q_lr=args.q_lr,
         policy_frequency=args.policy_frequency,
@@ -601,32 +606,21 @@ def rollout_online_rl(
 
     start_time = time.time()
 
-    writer = None
-    if getattr(args, "run", None) is not None:
-        results_dir = os.path.join("results", args.algo, args.env_name)
-        os.makedirs(results_dir, exist_ok=True)
-        tb_dir = os.path.join(
-            results_dir, f"tensorboard_run{args.run}_abl{args.ablation}"
-        )
-        writer = SummaryWriter(log_dir=tb_dir)
-        writer.add_scalar("run/started", 1, 0)
-
-        if hasattr(agent, "attach_tensorboard"):
-            agent.attach_tensorboard(writer, prefix="agent")
-
     global_step = 0
     updates_performed = 0
     timed_out = False
 
-    eval_every_episodes = getattr(args, 'eval_every_episodes', 25)
+    eval_every_episodes = getattr(args, "eval_every_episodes", 25)
 
     if max_wall_time_seconds is None:
         max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
 
     while global_step < total_step_budget:
         if global_step > 0 and global_step % 10000 == 0:
-            print(f"[PPO] Step {global_step}/{total_step_budget} beta {agent.Beta}")
-        
+            print(
+                f"[PPO] Step {global_step}/{total_step_budget} beta {agent.Beta} smooth r {smooth_r:.2f}"
+            )
+
         if (
             max_wall_time_seconds is not None
             and max_wall_time_seconds > 0
@@ -635,11 +629,10 @@ def rollout_online_rl(
             timed_out = True
             break
 
-
         with torch.no_grad():
             tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
             # Ext/Int values are no longer needed here since we batch them in update()
-            action, logprob = agent.sample_action(tobs) 
+            action, logprob = agent.sample_action(tobs)
 
         np_action = action.cpu().numpy()
         step_action = action_transform.transform_action(np_action)
@@ -650,13 +643,13 @@ def rollout_online_rl(
         # Funnel strictly into observe. Observe now handles the final_observation extraction.
         agent.observe(
             obs,
-            action, 
-            logprob, 
-            reward, 
-            next_obs, 
-            terminations, 
+            action,
+            logprob,
+            reward,
+            next_obs,
+            terminations,
             truncations,
-            infos  # Pass infos so the agent can catch truncations
+            infos,  # Pass infos so the agent can catch truncations
         )
 
         for env_i in range(args.num_envs):
@@ -670,20 +663,15 @@ def rollout_online_rl(
                 rhist.append(float(r_ep[env_i]))
                 smooth_rhist.append(float(smooth_r))
                 ep += 1
-                
-                if writer:
-                    writer.add_scalar("charts/episodic_return", float(r_ep[env_i]), global_step)
 
                 if ep % eval_every_episodes == 0 and ep > 0:
-                    eval_res = evaluate_agent(agent, args, device, step=global_step, n_steps=total_step_budget)
+                    eval_res = evaluate_agent(
+                        agent, args, device, step=global_step, n_steps=total_step_budget
+                    )
                     eval_hist.append(eval_res)
-                    if writer:
 
-                        writer.add_scalar("charts/eval_return", eval_res, global_step)
-                
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0
-
 
         obs = next_obs
         global_step += args.num_envs
@@ -698,10 +686,6 @@ def rollout_online_rl(
     steps_per_sec = (global_step / train_time) if train_time > 0 else 0.0
     updates_per_sec = (updates_performed / train_time) if train_time > 0 else 0.0
 
-    if writer:
-        writer.flush()
-        writer.close()
-
     return {
         "rhist": rhist,
         "smooth_rhist": smooth_rhist,
@@ -715,12 +699,12 @@ def rollout_online_rl(
         "train_time": float(train_time),
     }
 
+
 def rollout_offline_rl(
     vec_env,
     agent,
     args,
     device,
-    writer=None,
     max_wall_time_seconds=None,
     total_steps_override=None,
 ):
@@ -775,7 +759,7 @@ def rollout_offline_rl(
     while total_samples < total_step_budget:
         if total_samples > 0 and total_samples % 10000 == 0:
             print(
-                f"[{args.algo.upper()}] Step {total_samples}/{total_step_budget} (Episodes: {ep})"
+                f"[{args.algo.upper()}] Step {total_samples}/{total_step_budget} (Episodes: {ep}) smooth r {smooth_r}"
             )
         if (
             max_wall_time_seconds is not None
@@ -789,7 +773,7 @@ def rollout_offline_rl(
         # Sample action
         if args.algo == "dqn":
             eps_current = max(
-                1.0 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05
+                0.5 - 2.0 * (total_samples / max(1, total_step_budget)), 0.05
             )
             tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
             actions = agent.sample_action(
@@ -798,8 +782,6 @@ def rollout_offline_rl(
         else:  # SAC
             learning_starts_val = getattr(args, "learning_starts", 5000)
             if total_samples < learning_starts_val:
-                import gym
-
                 if isinstance(vec_env.single_action_space, gym.spaces.Box):
                     actions = np.array(
                         [
@@ -832,7 +814,9 @@ def rollout_offline_rl(
         # 1. Properly extract final observations for BOTH terminations and truncations
         if "final_observation" in infos:
             # Safely get the boolean mask of environments that actually finished
-            _final_masks = infos.get("_final_observation", np.logical_or(terminations, truncations))
+            _final_masks = infos.get(
+                "_final_observation", np.logical_or(terminations, truncations)
+            )
             for idx, is_final in enumerate(_final_masks):
                 if is_final:
                     real_next_obs[idx] = infos["final_observation"][idx]
@@ -865,17 +849,9 @@ def rollout_offline_rl(
                 smooth_rhist.append(float(smooth_r))
                 ep += 1
 
-                if writer:
-                    writer.add_scalar("episode/reward", float(rhist[-1]), total_samples)
-                    writer.add_scalar(
-                        "episode/smooth_reward", float(smooth_r), total_samples
-                    )
-
                 if ep % eval_every_episodes == 0 and ep > 0:
                     eval_res = evaluate_agent(agent, args, device)
                     eval_hist.append(eval_res)
-                    if writer:
-                        writer.add_scalar("eval/reward", eval_res, total_samples)
 
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0
