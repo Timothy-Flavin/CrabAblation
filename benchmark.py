@@ -209,10 +209,10 @@ def run_grid_search(args, total_steps=2000):
                         best_sps = current_config["steps_per_sec"]
                         best_config = current_config
 
-                    if hasattr(agent, "timing") and agent.timing:
-                        import json
-                        with open(f"timing_{args.algo}_{args.ablation}_{dev}_{num_envs}.json", "w") as f:
-                            json.dump(agent.timing, f, indent=4)
+                    # if hasattr(agent, "timing") and agent.timing:
+                    #     import json
+                    #     with open(f"timing_{args.algo}_{args.ablation}_{dev}_{num_envs}.json", "w") as f:
+                    #         json.dump(agent.timing, f, indent=4)
 
                 except Exception as e:
                     traceback.print_exc()
