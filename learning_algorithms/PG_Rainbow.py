@@ -403,7 +403,7 @@ class BasePPOAgent(Agent):
         return action, logprob, entropy, ext_v, int_v
 
     # Grad free just action for buffer
-    @torch.no_grad
+    @torch.no_grad()
     def sample_action(self, obs):
         action, logprob, _ = self._get_action(obs, entropy=False)
         return action, logprob
