@@ -357,11 +357,13 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         "munchausen_constant": 0.5,  # ablation 1 removes this
         "Beta": 1.0,  # Start fully intrinsic
         "beta_half_life_steps": beta_half_life_steps,
+        "soft":True,
     }
 
     if args.ablation == 1:
         cfg["munchausen"] = False
         cfg["munchausen_constant"] = 0.0
+        cfg["entropy_coef_zero"] = False
     elif args.ablation == 2:
         cfg["munchausen"] = False
         cfg["munchausen_constant"] = 0.0
@@ -382,7 +384,7 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
     AgentClass = DistSAC if cfg["distributional"] else EVSAC
     agent = AgentClass(
         _agent_spec_from_vec_env(vec_env),
-        gamma=args.gamma,
+        gamma=0.99,
         tau=0.005,  # args.tau,
         policy_lr=args.policy_lr,
         q_lr=args.q_lr,
@@ -565,7 +567,10 @@ def rollout_online_rl(
     max_wall_time_seconds=None,
     total_steps_override=None,
 ):
+    import time
+    start_time = time.time()
     obs, _ = vec_env.reset()
+    
     env_cfg = ENV_CONFIG.get(args.env_name, {})
     action_transform = ActionTransformHandler(
         args.env_name,
@@ -577,6 +582,14 @@ def rollout_online_rl(
     )
 
     total_step_budget = _compute_rollout_budget(args, total_steps_override)
+    max_time = max_wall_time_seconds if (max_wall_time_seconds is not None and max_wall_time_seconds > 0) else float('inf')
+
+    # Benchmark Clock Isolation Variables
+    is_benchmark = getattr(args, "is_benchmark", False)
+    benchmark_clock_started = not is_benchmark
+    benchmark_start_time = start_time
+    benchmark_start_steps = 0
+    benchmark_start_updates = 0
 
     rhist = []
     smooth_rhist = []
@@ -588,74 +601,57 @@ def rollout_online_rl(
     smooth_r = 0.0
     ep = 0
 
-    start_time = time.time()
+    time_taken_modular = {"action_sample": 0.0, "env_step": 0.0, "update_agent": 0.0, "eval_agent": 0.0}
 
     global_step = 0
     updates_performed = 0
-    timed_out = False
-
     eval_every_episodes = getattr(args, "eval_every_episodes", 25)
 
-    if max_wall_time_seconds is None:
-        max_wall_time_seconds = getattr(args, "max_wall_time", 0.0)
-    max_time = max_wall_time_seconds if (max_wall_time_seconds is not None and max_wall_time_seconds > 0) else float('inf')
-
     while global_step < total_step_budget:
-        time_elapsed = time.time() - start_time
+        current_clock = benchmark_start_time if benchmark_clock_started else start_time
+        time_elapsed = time.time() - current_clock
+
+        progress = min(1.0, max(time_elapsed / max_time if max_time != float('inf') else 0.0, global_step / max(1, total_step_budget)))
+
         if time_elapsed >= max_time:
-            timed_out = True
             break
+
         if global_step > 0 and global_step % 10000 == 0:
-            print(
-                f"[PPO] Step {global_step}/{total_step_budget} beta {agent.Beta} smooth r {smooth_r:.2f}"
-            )
+            print(f"[PPO] Step {global_step}/{total_step_budget} beta {agent.Beta} smooth r {smooth_r:.2f}")
 
-        if (
-            max_wall_time_seconds is not None
-            and max_wall_time_seconds > 0
-            and (time.time() - start_time) >= max_wall_time_seconds
-        ):
-            timed_out = True
-            break
-
+        t_ = time.time()
         with torch.no_grad():
             tobs = torch.as_tensor(obs, dtype=torch.float32, device=device)
-            # Ext/Int values are no longer needed here since we batch them in update()
             action, logprob = agent.sample_action(tobs)
+        time_taken_modular["action_sample"] += time.time() - t_
 
         np_action = action.cpu().numpy()
         step_action = action_transform.transform_action(np_action)
 
+        t_ = time.time()
         next_obs, reward, terminations, truncations, infos = vec_env.step(step_action)
+        time_taken_modular["env_step"] += time.time() - t_
+
         ep_len += 1
 
-        # Funnel strictly into observe. Observe now handles the final_observation extraction.
         agent.observe(
-            obs,
-            action,
-            logprob,
-            reward,
-            next_obs,
-            terminations,
-            truncations,
-            infos,  # Pass infos so the agent can catch truncations
+            obs, action, logprob, reward, next_obs, terminations, truncations, infos
         )
 
         for env_i in range(args.num_envs):
             r_ep[env_i] += float(reward[env_i])
             if terminations[env_i] or truncations[env_i]:
                 smooth_r = (
-                    r_ep[env_i]
-                    if smooth_r == 0.0
-                    else 0.99 * smooth_r + 0.01 * r_ep[env_i]
+                    r_ep[env_i] if smooth_r == 0.0 else 0.99 * smooth_r + 0.01 * r_ep[env_i]
                 )
                 rhist.append(float(r_ep[env_i]))
                 smooth_rhist.append(float(smooth_r))
                 ep += 1
 
                 if ep % eval_every_episodes == 0 and ep > 0:
+                    effective_step = int(progress * total_step_budget)
                     eval_res = evaluate_agent(
-                        agent, args, device, step=global_step, n_steps=total_step_budget
+                        agent, args, device, step=effective_step, n_steps=total_step_budget
                     )
                     eval_hist.append(eval_res)
 
@@ -665,46 +661,51 @@ def rollout_online_rl(
         obs = next_obs
         global_step += args.num_envs
 
+        # PPO Update phase
         if agent.step_idx >= agent.num_steps:
+            t_ = time.time()
             loss = agent.update(global_step=global_step)
             if loss is not None:
                 lhist.append(float(loss))
                 updates_performed += int(agent.update_epochs * agent.num_minibatches)
+            time_taken_modular["update_agent"] += time.time() - t_
 
-    train_time = time.time() - start_time
+            # --- ISOLATION TRIGGER ---
+            # The exact moment the first true PPO update finishes, reset the clock!
+            if is_benchmark and not benchmark_clock_started:
+                if updates_performed > 0:
+                    benchmark_clock_started = True
+                    benchmark_start_time = time.time()
+                    benchmark_start_steps = global_step
+                    benchmark_start_updates = updates_performed
+                    time_taken_modular = {k: 0.0 for k in time_taken_modular}
 
-    train_time = time.time() - start_time
-    
-    # --- Steady-State SPS Calculation ---
-    # Bypasses the "fast-forward" burn-in phase by isolating the actual per-update loop math
-    if updates_performed > 0 and total_samples > 0:
-        time_per_update = time_taken_modular["update_agent"] / updates_performed
-        time_per_sample = (time_taken_modular["action_sample"] + time_taken_modular["env_step"]) / total_samples
-        
-        steady_state_time_per_sample = time_per_sample + (time_per_update / args.update_every)
-        
-        steps_per_sec = 1.0 / steady_state_time_per_sample if steady_state_time_per_sample > 0 else 0.0
-        updates_per_sec = 1.0 / time_per_update if time_per_update > 0 else 0.0
+    # Use the isolated clock for math if benchmark was triggered
+    if is_benchmark and benchmark_clock_started:
+        train_time = time.time() - benchmark_start_time
+        measured_steps = global_step - benchmark_start_steps
+        measured_updates = updates_performed - benchmark_start_updates
     else:
-        # Fallback if the run timed out before a single update could occur
-        steps_per_sec = total_samples / (train_time if train_time > 0 else 1)
-        updates_per_sec = updates_performed / (train_time if train_time > 0 else 1)
+        train_time = time.time() - start_time
+        measured_steps = global_step
+        measured_updates = updates_performed
+
+    steps_per_sec = measured_steps / (train_time if train_time > 0 else 1)
+    updates_per_sec = measured_updates / (train_time if train_time > 0 else 1)
 
     return {
-        "final_model": agent,
         "rhist": rhist,
         "smooth_rhist": smooth_rhist,
         "lhist": lhist,
         "eval_hist": eval_hist,
-        "steps_run": int(total_samples),
+        "steps_run": int(global_step),
         "updates_performed": int(updates_performed),
         "steps_per_sec": float(steps_per_sec),
         "updates_per_sec": float(updates_per_sec),
-        "train_time": float(train_time),
         "timed_out": (time_elapsed >= max_time),
+        "train_time": float(train_time),
         "time_taken_modular": time_taken_modular,
     }
-
 
 
 def rollout_offline_rl(
