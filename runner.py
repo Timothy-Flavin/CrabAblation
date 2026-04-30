@@ -29,52 +29,23 @@ with open("env_config.yaml", "r") as f:
     ENV_CONFIG = yaml.safe_load(f)
 
 
-def get_args():
-    parser = argparse.ArgumentParser(description="Unified RL runner")
-    parser.add_argument(
-        "--algo", type=str, default="dqn", choices=["dqn", "ppo", "sac"]
-    )
-    parser.add_argument(
-        "--env_name",
-        type=str,
-        default="minigrid",
-        choices=["cartpole", "minigrid", "mujoco", "hide-and-seek-engine"],
-    )
-    parser.add_argument(
-        "--env_id",
-        type=str,
-        default="",
-        help="Optional explicit env id. Defaults to env_name.",
-    )
+def get_parser():
+    # conflict_handler='resolve' allows benchmark.py to safely override arguments if needed
+    parser = argparse.ArgumentParser(description="Unified RL runner", conflict_handler='resolve')
+    parser.add_argument("--algo", type=str, default="dqn", choices=["dqn", "ppo", "sac"])
+    parser.add_argument("--env_name", type=str, default="minigrid", choices=["cartpole", "minigrid", "mujoco", "hide-and-seek-engine"])
+    parser.add_argument("--env_id", type=str, default="", help="Optional explicit env id. Defaults to env_name.")
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument(
-        "--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5, 6]
-    )
+    parser.add_argument("--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5, 6])
     parser.add_argument("--fully_obs", action="store_true")
     parser.add_argument("--run", type=int, default=1)
     parser.add_argument("--num_envs", type=int, default=4)
     parser.add_argument("--num_steps", type=int, default=2048)
     parser.add_argument("--total_steps", type=int, default=None)
-    parser.add_argument(
-        "--total_steps_override",
-        type=int,
-        default=0,
-        help="If > 0, force this total step budget for rollouts",
-    )
-    
-    # Updated default to 86400 seconds (24 hours)
-    parser.add_argument(
-        "--max_wall_time",
-        type=float,
-        default=86400.0,
-        help="Maximum wall-clock seconds before early stop",
-    )
+    parser.add_argument("--total_steps_override", type=int, default=0)
+    parser.add_argument("--max_wall_time", type=float, default=86400.0)
     parser.add_argument("--device_name", type=str, default=get_device_name())
-    parser.add_argument(
-        "--skip_best_params",
-        action="store_true",
-        help="Do not load best grid-search params for device/num_envs",
-    )
+    parser.add_argument("--skip_best_params", action="store_true")
 
     # DQN knobs
     parser.add_argument("--dqn_buffer_size", type=int, default=2e4)
@@ -96,38 +67,38 @@ def get_args():
     parser.add_argument("--autotune", action="store_true", default=True)
     parser.add_argument("--n_quantiles", type=int, default=32)
     parser.add_argument("--n_target_quantiles", type=int, default=32)
-    parser.add_argument(
-        "--hide_seek_bins_per_dim",
-        type=int,
-        default=3,
-        help="Discretization bins per Box dimension for discrete mixed-action wrapper.",
-    )
+    parser.add_argument("--hide_seek_bins_per_dim", type=int, default=3)
+    
+    return parser
 
-    args = parser.parse_args()
-
-    # Load config for this environment
+def process_args(args):
     env_cfg = ENV_CONFIG.get(args.env_name, {})
-    # Set max_steps/total_steps from config if not overridden
+    
     max_steps_cfg = env_cfg.get("max_steps", 1000000)
-    if args.total_steps is None:
+    if getattr(args, "total_steps", None) is None:
         if isinstance(max_steps_cfg, dict):
             args.total_steps = int(max_steps_cfg.get(args.algo, 1000000))
         else:
             args.total_steps = int(max_steps_cfg)
             
-    # Set buffer sizes from config if not overridden
-    if args.dqn_buffer_size is None:
+    if getattr(args, "dqn_buffer_size", None) is None:
         args.dqn_buffer_size = int(env_cfg.get("buffer_size", 100000))
-    if args.buffer_size is None:
+    if getattr(args, "buffer_size", None) is None:
         args.buffer_size = int(env_cfg.get("buffer_size", 200000))
 
-    if not args.skip_best_params:
+    if not getattr(args, "skip_best_params", False):
         _maybe_load_best_params(args)
 
-    if not args.env_id:
+    if not getattr(args, "env_id", None):
         args.env_id = args.env_name
 
     return args
+
+def get_args():
+    parser = get_parser()
+    args = parser.parse_args()
+    return process_args(args)
+
 
 def _maybe_load_best_params(args):
     best_json_path = (

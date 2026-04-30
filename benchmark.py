@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-import warnings
-
-warnings.filterwarnings("ignore")
-
 import argparse
-from types import SimpleNamespace
 import traceback 
+import warnings
+import gc
 import gymnasium as gym
 import numpy as np
 import torch
+
+# Safely import psutil for RAM prediction
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    print("Warning: psutil not installed. RAM prediction disabled. Run 'pip install psutil' to enable.")
 
 from environment_utils import get_env_benchmark_spec
 from runner import (
@@ -17,6 +22,8 @@ from runner import (
     create_vec_env,
     rollout_offline_rl,
     rollout_online_rl,
+    get_parser,      # Inherited natively from runner
+    process_args     # Inherited natively from runner
 )
 from runner_utils import (
     benchmark_action_sampling_generic,
@@ -27,89 +34,45 @@ from runner_utils import (
     save_grid_search_results,
 )
 
+warnings.filterwarnings("ignore")
 
 def get_args():
-    parser = argparse.ArgumentParser(description="Unified benchmark runner")
-    parser.add_argument(
-        "--algo", type=str, default="dqn", choices=["dqn", "ppo", "sac"]
-    )
-    parser.add_argument(
-        "--env_name",
-        type=str,
-        default="minigrid",
-        choices=["cartpole", "minigrid", "mujoco", "hide-and-seek-engine"],
-        help="Environment to use",
-    )
-    parser.add_argument(
-        "--env_id",
-        type=str,
-        default="",
-        help="Optional explicit env id. Defaults to env_name.",
-    )
+    # 1. Inherit all standard hyperparameters natively from runner
+    parser = get_parser()
+    
+    # 2. Add purely benchmark-specific flags
     parser.add_argument("--grid_search", action="store_true", help="Run grid search")
-    parser.add_argument("--device_name", type=str, required=True, help="Required name of the computer running the benchmark")
     parser.add_argument(
         "--search_devices",
         type=str,
         nargs="+",
         default=["cpu", "cuda"] if torch.cuda.is_available() else ["cpu"],
-        help="List of PyTorch devices to test (e.g. 'cpu', 'cuda:0', 'cuda:1')",
+        help="List of PyTorch devices to test",
     )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Default device",
-    )
-    parser.add_argument("--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5])
-    parser.add_argument("--fully_obs", action="store_true")
-    parser.add_argument("--num_envs", type=int, default=8)
-    parser.add_argument("--num_steps", type=int, default=128)
     parser.add_argument("--replace_existing", action="store_true", default=False)
-    
-
-    # Cap wall time at 20 seconds for benchmarks
-    parser.add_argument(
-        "--max_wall_time",
-        type=float,
-        default=15.0,
-        help="Maximum wall-clock seconds per trial before early stop",
-    )
-    
-    # Set step budget huge so it always relies on the 20s wall time cap
     parser.add_argument("--benchmark_steps", type=int, default=1000000)
 
-    # Force burn-in to 0 for benchmarks
-    parser.add_argument("--dqn_buffer_size", type=int, default=10000)
-    parser.add_argument("--dqn_batch_size", type=int, default=256)
-    parser.add_argument("--update_every", type=int, default=8)
-    parser.add_argument("--rnd_burn_in", type=int, default=0) # Changed to 0
+    # Force burn-in and learning starts to 0 for benchmarks so they immediately test update speed
+    # We also prevent loading best.json parameters globally so we don't accidentally set num_envs=128
+    parser.set_defaults(
+        rnd_burn_in=0, 
+        learning_starts=0, 
+        max_wall_time=15.0,
+        skip_best_params=True
+    )
 
-    # SAC knobs
-    parser.add_argument("--buffer_size", type=int, default=20000)
-    parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--learning_starts", type=int, default=0) # Changed to 0
-    parser.add_argument("--policy_lr", type=float, default=3e-4)
-    parser.add_argument("--q_lr", type=float, default=1e-3)
-    parser.add_argument("--policy_frequency", type=int, default=2)
-    parser.add_argument("--target_network_frequency", type=int, default=1)
-    parser.add_argument("--alpha", type=float, default=0.2)
-    parser.add_argument("--autotune", action="store_true", default=True)
-    parser.add_argument("--n_quantiles", type=int, default=32)
-    parser.add_argument("--n_target_quantiles", type=int, default=32)
-    parser.add_argument("--hide_seek_bins_per_dim", type=int, default=3)
-
-    args = parser.parse_args()
-    if not args.env_id:
-        args.env_id = args.env_name
+    # Use parse_known_args to prevent crashes if your wrapper script passes outdated flags
+    args, _ = parser.parse_known_args()
+    
     args.is_benchmark = True
+    args = process_args(args)
 
     return args
 
 
 def run_grid_search(args, total_steps=2000):
     devices = args.search_devices
-    num_envs_list = [1, 4, 8, 12, 16]
+    num_envs_list = [1, 4, 8, 12, 16, 64, 128]
 
     if args.replace_existing:
         best_results = {}
@@ -131,33 +94,51 @@ def run_grid_search(args, total_steps=2000):
         }
 
         for dev in devices:
+            ram_measurements = [] # Track tuples of (num_envs, rss_memory_bytes)
+
             for num_envs in num_envs_list:
                 args.device = dev
                 args.num_envs = num_envs
 
                 if (not args.replace_existing) and ((dev, num_envs) in existing_trials):
-                    print(
-                        f"Skipping existing trial: ablation={ablation}, device={dev}, num_envs={num_envs}"
-                    )
+                    print(f"Skipping existing trial: ablation={ablation}, device={dev}, num_envs={num_envs}")
                     continue
 
-                vec_env = create_vec_env(args, num_envs=num_envs)
+                # --- RAM Prediction Logic ---
+                if HAS_PSUTIL and len(ram_measurements) >= 2:
+                    x = np.array([m[0] for m in ram_measurements])
+                    y = np.array([m[1] for m in ram_measurements])
+                    slope, intercept = np.polyfit(x, y, 1)
+                    predicted_ram = (slope * num_envs) + intercept
+                    
+                    sys_mem = psutil.virtual_memory()
+                    safe_limit = sys_mem.total * 0.85 # Cut off if approaching 85% of total system memory
+                    
+                    if predicted_ram > safe_limit:
+                        print(f"⚠️ Skipping {num_envs}+ envs: Predicted RAM usage ({predicted_ram / 1024**3:.2f} GB) exceeds safe threshold.")
+                        break # Exits the num_envs loop cleanly, moving to next device/ablation
+
                 try:
+                    vec_env = create_vec_env(args, num_envs=num_envs)
+                    
+                    # Measure process memory right after environment instantiation
+                    if HAS_PSUTIL:
+                        current_ram = psutil.Process().memory_info().rss
+                        ram_measurements.append((num_envs, current_ram))
+
                     device = resolve_torch_device(dev)
                     agent, _ = build_agent(args, vec_env, device)
                     actual_num_envs = int(getattr(vec_env, "num_envs", num_envs))
 
                     if args.algo == "ppo":
                         results = rollout_online_rl(
-                            vec_env,
-                            agent,
-                            args,
-                            device,
+                            vec_env, agent, args, device,
                             max_wall_time_seconds=args.max_wall_time,
                             total_steps_override=total_steps,
                         )
                     else:
-                        results = rollout_offline_rl(vec_env, agent, args, device,
+                        results = rollout_offline_rl(
+                            vec_env, agent, args, device,
                             max_wall_time_seconds=args.max_wall_time,
                             total_steps_override=total_steps,
                         )
@@ -170,31 +151,25 @@ def run_grid_search(args, total_steps=2000):
                     }
 
                     if args.replace_existing and ((dev, num_envs) in existing_trials):
-                        for idx, entry in enumerate(
-                            all_results[f"ablation_{ablation}"]
-                        ):
+                        for idx, entry in enumerate(all_results[f"ablation_{ablation}"]):
                             if (
                                 isinstance(entry, dict)
                                 and entry.get("device") == dev
                                 and entry.get("num_envs") == num_envs
                             ):
-                                all_results[f"ablation_{ablation}"][
-                                    idx
-                                ] = current_config
+                                all_results[f"ablation_{ablation}"][idx] = current_config
                                 break
                     else:
                         all_results[f"ablation_{ablation}"].append(current_config)
                         existing_trials.add((dev, num_envs))
 
                     ablation_entries = [
-                        e
-                        for e in all_results[f"ablation_{ablation}"]
+                        e for e in all_results[f"ablation_{ablation}"]
                         if isinstance(e, dict) and "steps_per_sec" in e
                     ]
                     if ablation_entries:
                         best_results[f"ablation_{ablation}"] = max(
-                            ablation_entries,
-                            key=lambda e: e["steps_per_sec"],
+                            ablation_entries, key=lambda e: e["steps_per_sec"],
                         )
 
                     save_grid_search_results(args, args.algo, best_results, all_results)
@@ -204,10 +179,14 @@ def run_grid_search(args, total_steps=2000):
                         best_config = current_config
 
                 except Exception as e:
+                    print(f"Failed on ablation={ablation}, envs={num_envs}, dev={dev}. Skipping.")
                     traceback.print_exc()
-                    exit()
+                    # Do NOT call exit() here so the benchmark loop continues
                 finally:
-                    vec_env.close()
+                    if 'vec_env' in locals():
+                        vec_env.close()
+                        del vec_env
+                    gc.collect() # Force GC to clear process memory for accurate subsequent RAM readings
 
         if best_config is None and all_results.get(f"ablation_{ablation}"):
             best_config = max(
@@ -219,10 +198,7 @@ def run_grid_search(args, total_steps=2000):
 
     save_grid_search_results(args, args.algo, best_results, all_results)
     import json
-
-    print(
-        json.dumps({"best_results": best_results, "all_results": all_results}, indent=4)
-    )
+    print(json.dumps({"best_results": best_results, "all_results": all_results}, indent=4))
 
 
 def benchmark_updates(
@@ -288,7 +264,8 @@ def _action_dim_for_space(space):
 def main():
     args = get_args()
 
-    probe_env = create_vec_env(args, num_envs=max(1, args.num_envs))
+    # FORCE num_envs to 1 for the probe environment to ensure we never OOM just grabbing the shape
+    probe_env = create_vec_env(args, num_envs=1)
     obs_shape = probe_env.single_observation_space.shape
     if obs_shape is None:
         raise ValueError("Environment observation space shape is undefined")
@@ -308,6 +285,7 @@ def main():
         run_grid_search(args, total_steps=args.benchmark_steps)
         return
 
+    # Create the standard vec_env only if not running the grid search block
     vec_env = create_vec_env(args, num_envs=max(1, args.num_envs))
     args._vec_env = vec_env
     try:
@@ -367,7 +345,8 @@ def main():
                 finally:
                     rollout_env.close()
     finally:
-        delattr(args, "_vec_env")
+        if hasattr(args, "_vec_env"):
+            delattr(args, "_vec_env")
         vec_env.close()
 
 

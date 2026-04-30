@@ -1,0 +1,14 @@
+{
+    "ablation_0": {
+        "device": "cpu",
+        "num_envs": 12,
+        "steps_per_sec": 182.68847739712714,
+        "updates_per_sec": 45.672119349281786
+    },
+    "ablation_1": {
+        "device": "cpu",
+        "num_envs": 4,
+        "steps_per_sec": 163.6399869100544,
+        "updates_per_sec": 40.9099967275136
+    }
+}
