@@ -3,9 +3,9 @@
 set -euo pipefail
 
 # Default parameters
-ALGOS=("ppo" "sac" "dqn")
-ENVS=("cartpole" "mujoco" "minigrid") 
-ABLATIONS=(0 1 2 3 4 5 6)
+ALGOS=("sac")
+ENVS=("minigrid") 
+ABLATIONS=(6 0 1 2 3 4 5)
 RUNS=5
 DEVICE_NAME=""
 

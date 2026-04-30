@@ -173,6 +173,7 @@ def plot_algo_stats(
 
 def main():
 
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, required=True)
     parser.add_argument("--runs", type=int, nargs="*", default=[1, 2, 3])
@@ -190,7 +191,7 @@ def main():
     with open(args.yaml, "r") as f:
         env_config = yaml.safe_load(f)
 
-    results_root = Path("results")
+    results_root = Path("all_results")
     if not results_root.exists():
         print("Error: 'results/' directory not found.")
         return
@@ -207,15 +208,19 @@ def main():
         if not env_dir.exists():
             continue
 
-        # Determine max_steps for this algo/env if needed
-        max_steps = args.max_steps
-        if args.xaxis == "steps" and max_steps is None:
-            env_cfg = env_config.get(args.env, {})
-            max_steps_cfg = env_cfg.get("max_steps", 1000000)
-            if isinstance(max_steps_cfg, dict):
-                max_steps = int(max_steps_cfg.get(algo_name, 1000000))
+        # Always get max_steps from env_config.yaml if xaxis==steps, unless --max_steps is explicitly provided
+        if args.xaxis == "steps":
+            if args.max_steps is not None:
+                max_steps = args.max_steps
             else:
-                max_steps = int(max_steps_cfg)
+                env_cfg = env_config.get(args.env, {})
+                max_steps_cfg = env_cfg.get("max_steps", 1000000)
+                if isinstance(max_steps_cfg, dict):
+                    max_steps = int(max_steps_cfg.get(algo_name, 1000000))
+                else:
+                    max_steps = int(max_steps_cfg)
+        else:
+            max_steps = args.max_steps
 
         print(f"Processing algorithm: {algo_name}...")
         stats = collect_for_algo(env_dir, args.runs, args.weight, args.xaxis, max_steps)

@@ -144,7 +144,7 @@ def _maybe_load_best_params(args):
         pass
 
 
-def create_vec_env(args, num_envs: int | None = None):
+def create_vec_env_old(args, num_envs: int | None = None):
     env_id = getattr(args, "env_id", args.env_name)
     if env_id == "hide-and-seek-engine" or args.env_name == "hide-and-seek-engine":
         vec_env = make_hide_and_seek_vec_env(
@@ -161,6 +161,68 @@ def create_vec_env(args, num_envs: int | None = None):
     ]
     return gym.vector.SyncVectorEnv(env_fns)
 
+def create_vec_env(args, num_envs: int | None = None):
+    env_id = getattr(args, "env_id", args.env_name)
+    n_envs = int(num_envs if num_envs is not None else args.num_envs)
+
+    # 1. Native C++ Hide-and-Seek
+    if env_id == "hide-and-seek-engine" or args.env_name == "hide-and-seek-engine":
+        vec_env = make_hide_and_seek_vec_env(
+            num_envs=n_envs,
+            device="cpu",
+        )
+        args.num_envs = int(vec_env.num_envs)
+        return vec_env
+        
+    run = getattr(args, "run", 999) if getattr(args, "run", None) is not None else 999
+    
+    # 2. Fast EnvPool Execution for Supported Classic/MuJoCo Envs
+    if args.env_name in ["mujoco", "cartpole"]:
+        try:
+            import envpool
+            
+            # Determine explicit environment ID for envpool
+            resolved_env_id = env_id if (env_id and env_id != args.env_name) else None
+            if not resolved_env_id:
+                # MuJoCo v4 is typically more widely natively-supported by Envpool out-of-the-box
+                resolved_env_id = "HalfCheetah-v4" if args.env_name == "mujoco" else "CartPole-v1"
+            
+            # Use env_type="gymnasium" to perfectly match your step returns natively
+            vec_env = envpool.make(
+                resolved_env_id,
+                env_type="gymnasium",
+                num_envs=n_envs,
+                seed=run
+            )
+            
+            # Proxy standard Gymnasium vector env attributes to EnvPool object
+            if not hasattr(vec_env, "single_observation_space"):
+                vec_env.single_observation_space = vec_env.observation_space
+            if not hasattr(vec_env, "single_action_space"):
+                vec_env.single_action_space = vec_env.action_space
+            if not hasattr(vec_env, "num_envs"):
+                vec_env.num_envs = n_envs # <-- Add this line
+                
+            args.num_envs = n_envs
+            return vec_env
+            
+        except ImportError:
+            print("EnvPool is not installed. Falling back to Gymnasium SyncVectorEnv.")
+        except Exception as e:
+            print(f"Warning: EnvPool failed to initialize ({e}). Falling back to Gymnasium SyncVectorEnv.")
+
+    # 3. Fallback to standard Gymnasium SyncVectorEnv (used natively for minigrid or fallback)
+    env_fns = [
+        make_env_thunk(
+            args.fully_obs, 
+            args.env_name, 
+            env_id=(env_id if env_id != args.env_name else None), 
+            seed=run + i, 
+            idx=i
+        )
+        for i in range(n_envs)
+    ]
+    return gym.vector.SyncVectorEnv(env_fns)
 
 def _encoder_factory_from_vec_env(
     args, vec_env

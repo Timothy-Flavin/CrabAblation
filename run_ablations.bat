@@ -1,45 +1,48 @@
 @echo off
-setlocal enabledelayedexpansion
+REM Auto-generated ablation runner for Windows Batch
+REM Usage: Edit ALGOS, ENVS, ABLATIONS, RUNS, DEVICE_NAME as needed
 
-:: Default parameters
-set ALGOS=sac
-set ENVS=mujoco cartpole minigrid
-set ABLATIONS=0 1 2 3 4 5
-set RUNS=3
-set DEVICE=cpu
-set DEVICE_NAME=%COMPUTERNAME%
+REM Set parameters (space-separated lists)
+set "ALGOS=sac"
+set "ENVS=minigrid"
+set "ABLATIONS=6 0 1 2 3 4 5"
+set "RUNS=2"
+set "DEVICE_NAME=laptop"
 
-:: Parse named arguments
-:parse_args
-if "%~1"=="" goto end_parse
-if "%~1"=="--algos" set "ALGOS=%~2" & shift & shift & goto parse_args
-if "%~1"=="--envs" set "ENVS=%~2" & shift & shift & goto parse_args
-if "%~1"=="--ablations" set "ABLATIONS=%~2" & shift & shift & goto parse_args
-if "%~1"=="--runs" set "RUNS=%~2" & shift & shift & goto parse_args
-if "%~1"=="--device" set "DEVICE=%~2" & shift & shift & goto parse_args
-if "%~1"=="--device_name" set "DEVICE_NAME=%~2" & shift & shift & goto parse_args
-echo Unknown parameter: %1
-exit /b 1
-:end_parse
+REM Parse named arguments (not supported in batch, edit above)
+REM If you want to pass arguments, use a PowerShell script instead
 
-:: Ensure results directory exists
+if "%DEVICE_NAME%"=="" (
+    echo Error: DEVICE_NAME is required. Set it at the top of this file.
+    pause
+    exit /b 1
+)
+
+REM Ensure results directory exists
 if not exist results mkdir results
 
-echo Starting Ablations on device: %DEVICE% (%DEVICE_NAME%)
+echo Starting Ablations on device computer: %DEVICE_NAME%
 echo ==================================================
 
 for %%A in (%ALGOS%) do (
     for %%E in (%ENVS%) do (
         for %%B in (%ABLATIONS%) do (
-            for /L %%R in (1, 1, %RUNS%) do (
-                echo [%DATE% %TIME%] Running Algo: %%A ^| Env: %%E ^| Ablation: %%B ^| Run: %%R
-                python runner.py --algo %%A --env_name %%E --ablation %%B --run %%R --device !DEVICE! --device_name !DEVICE_NAME!
+            for /L %%R in (1,1,%RUNS%) do (
+                set "RESULT_FILE=results/%%A/%%E/train_scores_%%R_%%B.npy"
+                if exist results\%%A\%%E\train_scores_%%R_%%B.npy (
+                    echo [SKIP] results/%%A/%%E/train_scores_%%R_%%B.npy exists. Algo: %%A ^| Env: %%E ^| Ablation: %%B ^| Run: %%R
+                ) else (
+                    echo [RUN ] Algo: %%A ^| Env: %%E ^| Ablation: %%B ^| Run: %%R
+                    if not exist results\%%A mkdir results\%%A
+                    if not exist results\%%A\%%E mkdir results\%%A\%%E
+                    python runner.py --algo %%A --env_name %%E --ablation %%B --run %%R --device_name %DEVICE_NAME%
+                )
             )
         )
     )
 )
 
 echo ==================================================
-echo All trials completed successfully.
+echo All trials completed.
 echo ==================================================
-endlocal
+pause
