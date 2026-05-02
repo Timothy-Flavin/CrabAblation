@@ -8,7 +8,7 @@ set -euo pipefail
 #
 # Note: user request listed "gemnasium[all]"; correct package name is "gymnasium[all]".
 
-TORCH_MODE="cpu"
+TORCH_MODE="--cuda-cu124"
 
 for arg in "$@"; do
   case "$arg" in
@@ -49,14 +49,15 @@ python -m pip install --upgrade \
   tyro \
   tensorboard \
   "gymnasium[all]" \
-  "pettingzoo[classic]" \
+  "pettingzoo" \
   minigrid \
   cleanrl \
   wandb \
   ortools \
   minigrid \
   envpool \
-  psutil
+  psutil \
+  pyyaml
 
 echo "==> Dependency installation complete"
 echo "If using a venv, activate first: source .venv/bin/activate"
