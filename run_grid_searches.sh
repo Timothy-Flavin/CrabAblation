@@ -24,11 +24,11 @@ case $MACHINE in
     "alienware")
         DEV1_NAME="alienware_gpu_0"
         DEV1_PRE="OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES=0 taskset -c 0,1,4,5"
-        DEV1_SEARCH_DEVS="cpu cuda:0"
+        DEV1_SEARCH_DEVS="cuda:0"
         
         DEV2_NAME="alienware_gpu_1"
         DEV2_PRE="OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES=1 taskset -c 2,3,6,7"
-        DEV2_SEARCH_DEVS="cpu cuda:0"
+        DEV2_SEARCH_DEVS="cuda:0"
         ;;
     "lab-comp")
         DEV1_NAME="lab-comp_cpu"
