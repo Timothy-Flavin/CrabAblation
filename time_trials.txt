@@ -8,3 +8,17 @@ Float64 replaced with Float32
 Requires grad fix
   11.98, 11.86, 11.59
 
+conda deactivate
+source .venv/bin/activate
+git pull origin main
+git add -A 
+git commit -m"more time trials"
+git push origin main
+
+
+git pull origin main
+mv results results_before_may2
+chmod +x ./time_files/*.sh
+tmux new -s ablation
+source .venv/bin/activate
+

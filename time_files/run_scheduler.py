@@ -112,7 +112,7 @@ def solve_scheduling_problem():
     
     # Optional: Set a time limit (e.g., 5 minutes = 300,000 milliseconds)
     # The solver will return the best schedule found within this time frame.
-    solver.SetTimeLimit(300000) 
+    solver.SetTimeLimit(600000) 
 
     # ---------------------------------------------------
     # 3. Variables
