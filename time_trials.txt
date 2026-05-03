@@ -22,3 +22,5 @@ chmod +x ./time_files/*.sh
 tmux new -s ablation
 source .venv/bin/activate
 
+./time_files/run_white-machine_gpu0_experiments.sh &
+./time_files/run_white-machine_gpu1_experiments.sh
