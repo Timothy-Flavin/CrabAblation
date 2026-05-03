@@ -239,9 +239,9 @@ class BasePPOAgent(Agent):
         if not hasattr(self, "agent_obs"):
             if (
                 torch.cuda.is_available()
-                or torch.xpu.is_available()
-                or torch.backends.mps.is_available()
-                or torch.mps.is_available()
+                or (hasattr(torch, "xpu") and torch.xpu.is_available())
+                or False
+                or False
             ):
                 self.agent_obs = torch.zeros(
                     (self.num_steps, self.num_envs) + self.obs_shape, device="cpu"
@@ -753,9 +753,9 @@ class BasePPOAgent(Agent):
                     t = torch.as_tensor(true_obs, dtype=torch.float32, device=device)
                     if hasattr(t, "pin_memory") and (
                         torch.cuda.is_available()
-                        or torch.xpu.is_available()
-                        or torch.backends.mps.is_available()
-                        or torch.mps.is_available()
+                        or (hasattr(torch, "xpu") and torch.xpu.is_available())
+                        or False
+                        or False
                     ):
                         t = t.pin_memory()
                     self.trunc_obs_list.append(t)
