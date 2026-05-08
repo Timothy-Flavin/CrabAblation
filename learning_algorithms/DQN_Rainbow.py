@@ -577,7 +577,7 @@ class EVRainbowDQN(RainbowBase):
         self.optim.step()
 
         # --- ALPHA AUTO-TUNING UPDATE ---
-        alpha_loss = torch.tensor(0.0, device=self.log_alpha.device)
+        alpha_loss = torch.tensor(0.0, device=self.device)
         if self.soft:
             with torch.no_grad():
                 q_fresh = self.ext_online(b_obs, normalized=True).detach()
