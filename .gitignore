@@ -15,3 +15,4 @@ all_results/
 timing_*.json
 results copy
 all_results_old
+.claude 

@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import argparse
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from learning_algorithms.DQN_Rainbow import EVRainbowDQN
+from learning_algorithms.DQN_Rainbow import EVRainbowDQN, IQNRainbowDQN
 from learning_algorithms.SAC_Rainbow import EVSAC
 from learning_algorithms.PG_Rainbow import StandardPPOAgent
 
@@ -72,7 +72,7 @@ def train_dqn(use_rnd=False):
     agent = EVRainbowDQN(
         input_dim=10, n_action_dims=1, n_action_bins=2, n_envs=1,
         Beta=1.0 if use_rnd else 0.0, lr=1e-3, burn_in_updates=20, 
-        beta_half_life_steps=2500, buffer_size=10000
+        beta_half_life_steps=2500, buffer_size=10000, munchausen_constant=0.0,
     )
     
     returns = []
@@ -197,21 +197,17 @@ def run_multiple_seeds(train_func, use_rnd, n_seeds=5):
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        
         returns = train_func(use_rnd=use_rnd)
         all_returns.append(returns)
-        
     returns_array = np.array(all_returns)
     mean_returns = np.mean(returns_array, axis=0)
     sem_returns = np.std(returns_array, axis=0) / np.sqrt(n_seeds)
-    
     return mean_returns, sem_returns
 
 def plot_with_shaded_error(mean, sem, label, weight=0.9):
     smoothed_mean = smooth_ema(mean, weight=weight)
     smoothed_sem = smooth_ema(sem, weight=weight)
     episodes = np.arange(len(mean))
-    
     line = plt.plot(episodes, smoothed_mean, label=label)[0]
     plt.fill_between(
         episodes, 

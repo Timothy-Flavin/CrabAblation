@@ -133,6 +133,35 @@ class PopArtDuelingIQNLayer(nn.Module):
         self.nu.copy_(new_nu)
         self.sigma.copy_(new_sigma)
 
+    @torch.no_grad()
+    def set_initial_stats(self, sample_mean, sample_std):
+        """Replace running stats with provided sample statistics, preserving unnormalized outputs."""
+        new_mu = torch.as_tensor(
+            sample_mean, dtype=self.mu.dtype, device=self.mu.device
+        ).reshape_as(self.mu)
+        new_sigma = torch.clamp(
+            torch.as_tensor(
+                sample_std, dtype=self.sigma.dtype, device=self.sigma.device
+            ).reshape_as(self.sigma),
+            min=self.epsilon,
+        )
+        new_nu = new_sigma**2 + new_mu**2
+
+        weight_scale = self.sigma / new_sigma
+        bias_shift = (self.mu - new_mu) / new_sigma
+
+        # Value head: scale + shift
+        self.value_head.weight.mul_(weight_scale)
+        self.value_head.bias.mul_(weight_scale).add_(bias_shift)
+
+        # Advantage head: scale only
+        self.adv_head.weight.mul_(weight_scale)
+        self.adv_head.bias.mul_(weight_scale)
+
+        self.mu.copy_(new_mu)
+        self.nu.copy_(new_nu)
+        self.sigma.copy_(new_sigma)
+
     def normalize(self, x):
         return (x - self.mu) / self.sigma
 

@@ -261,6 +261,7 @@ class BaseSAC(Agent):
         device: str = "cpu",
         buffer_device: str = "cpu",
         min_std: float = 0.01,
+        burn_in_updates: int = 0,
     ):
         super().__init__()
         self.device = torch.device(device)
@@ -385,6 +386,11 @@ class BaseSAC(Agent):
         self.rnd = RNDModel(obs_dim, rnd_output_dim).float()
         self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.obs_rms = RunningMeanStd(shape=(obs_dim,))
+
+        # Hard-start PopArt at burn-in end from raw reward stats (see
+        # _seed_popart_from_buffer). This flag tracks one-shot seeding.
+        self.burn_in_updates = int(burn_in_updates)
+        self._popart_burn_in_seeded = False
 
     def _init_critics(
         self, qf1_kwargs, qf2_kwargs, qf1_target_kwargs, qf2_target_kwargs
@@ -518,6 +524,57 @@ class BaseSAC(Agent):
         return torch.cat([obs, act.to(dtype=obs.dtype)], dim=1)
 
     @torch.no_grad()
+    def _seed_popart_from_buffer(self, sample_size: int = 8192):
+        """Hard-start calibration of PopArt from raw reward stats, scaled to
+        infinite-horizon returns (μ_R/(1-γ), σ_R/√(1-γ²))."""
+        if self._popart_burn_in_seeded:
+            return
+        buffer = getattr(self, "buffer", None)
+        if buffer is None or buffer.size() == 0:
+            self._popart_burn_in_seeded = True
+            return
+
+        valid_pos = int(buffer.size())
+        n = min(int(sample_size), valid_pos * int(buffer.n_envs))
+        batch_inds = torch.randint(0, valid_pos, (n,))
+        env_inds = torch.randint(0, buffer.n_envs, (n,))
+        rewards = buffer.rewards[batch_inds, env_inds].float().view(-1)
+
+        gamma = float(self.gamma)
+        scale_mu = 1.0 / max(1.0 - gamma, 1e-6)
+        scale_sigma = 1.0 / max((1.0 - gamma * gamma) ** 0.5, 1e-6)
+        eps = 1e-4
+
+        if rewards.numel() > 0:
+            mu_R = float(rewards.mean().item())
+            sigma_R = float(rewards.std(unbiased=False).item())
+            mu = mu_R * scale_mu
+            sigma = max(sigma_R * scale_sigma, eps)
+            self.qf1.output_layer.set_initial_stats(mu, sigma)
+            self.qf2.output_layer.set_initial_stats(mu, sigma)
+
+            if self.Beta > 0.0:
+                next_obs = buffer.next_observations[batch_inds, env_inds].to(
+                    self.device
+                ).float()
+                norm_next_obs = self.obs_rms.normalize(next_obs).float()
+                rnd_errors = self.rnd(norm_next_obs).detach().reshape(-1)
+                rnd_errors = torch.clamp(rnd_errors, -5.0, 5.0)
+                mu_I = float(rnd_errors.mean().item())
+                sigma_I = float(rnd_errors.std(unbiased=False).item())
+                mu_int = mu_I * scale_mu
+                sigma_int = max(sigma_I * scale_sigma, eps)
+                self.qf1_int.output_layer.set_initial_stats(mu_int, sigma_int)
+                self.qf2_int.output_layer.set_initial_stats(mu_int, sigma_int)
+
+        # Re-sync target networks so they match the rescaled online critics.
+        self.qf1_target.load_state_dict(self.qf1.state_dict())
+        self.qf2_target.load_state_dict(self.qf2.state_dict())
+        self.qf1_target_int.load_state_dict(self.qf1_int.state_dict())
+        self.qf2_target_int.load_state_dict(self.qf2_int.state_dict())
+        self._popart_burn_in_seeded = True
+
+    @torch.no_grad()
     def update_target(self):
         if not self.delayed_critics:
             return
@@ -575,6 +632,19 @@ class BaseSAC(Agent):
             "updating the random network distilation (rnd)", 0.0
         ) + (time.time() - t0)
         current_sigma = self.qf1.output_layer.sigma.detach()
+
+        # Burn-in: skip critic / actor / alpha / target updates. RND has already
+        # been refreshed above so its obs running stats are warm. On the last
+        # burn-in call we hard-start PopArt from raw reward stats so that by
+        # the time the user finishes their burn-in phase, sigma is calibrated.
+        if self.update_steps <= self.burn_in_updates:
+            if (
+                self.update_steps == self.burn_in_updates
+                and not self._popart_burn_in_seeded
+                and self.burn_in_updates > 0
+            ):
+                self._seed_popart_from_buffer()
+            return 0.0
 
         t0 = time.time()
         m_r_val = 0.0
