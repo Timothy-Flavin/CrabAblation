@@ -194,6 +194,7 @@ class TestPopartIntegration(unittest.TestCase):
                 munchausen=False,
                 beta_rnd=0.0,
                 entropy_coef_zero=True,
+                burn_in_updates=200,
             ).to(torch.device("cpu"))
 
             orig_sigma = agent.qf1.output_layer.sigma.item()

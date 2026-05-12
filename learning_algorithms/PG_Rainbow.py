@@ -144,6 +144,7 @@ class BasePPOAgent(Agent):
         use_gae: bool = True,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
         device="cpu",
+        burn_in_updates: int = 0,
     ):
         super().__init__()
         self.anneal_lr = anneal_lr
@@ -208,6 +209,9 @@ class BasePPOAgent(Agent):
         self.rnd_optim = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         self.step = 0
         self.step_idx = 0
+
+        self.burned_in = False
+
         self._init_buffers()
 
     def _build_actor(self, encoder_factory, hidden_layer_sizes):
@@ -597,8 +601,14 @@ class BasePPOAgent(Agent):
         )
         approx_kl, old_approx_kl = 0.0, 0.0
 
-        with torch.no_grad():
-            self._update_popart_stats(ext_returns, int_returns)
+        if not getattr(self, "burned_in", False):
+            with torch.no_grad():
+                int_rewards_val = int_rewards if self.Beta > 0.0 else None
+                self._hard_popart_update(rewards_tensor, int_rewards_val)
+            self.burned_in = True
+        else:
+            with torch.no_grad():
+                self._soft_popart_update(ext_returns, int_returns)
 
         # --- Shared Epoch Loop ---
         for epoch in range(self.update_epochs):
@@ -791,7 +801,10 @@ class BasePPOAgent(Agent):
     def _get_advantages_scaling(self):
         raise NotImplementedError
 
-    def _update_popart_stats(self, b_ext_returns, b_int_returns):
+    def _soft_popart_update(self, b_ext_returns, b_int_returns):
+        raise NotImplementedError
+
+    def _hard_popart_update(self, b_ext_returns, b_int_returns):
         raise NotImplementedError
 
     def _compute_value_losses(
@@ -896,10 +909,28 @@ class StandardPPOAgent(BasePPOAgent):
             self.int_critic_head.sigma.detach() if self.popart else 1.0
         )
 
-    def _update_popart_stats(self, b_ext_returns, b_int_returns):
+    def _soft_popart_update(self, b_ext_returns, b_int_returns):
         if self.popart:
             self.ext_critic_head.update_stats(b_ext_returns.unsqueeze(1))
             self.int_critic_head.update_stats(b_int_returns.unsqueeze(1))
+
+    def _hard_popart_update(self, raw_ext_rewards, raw_int_rewards):
+        if not self.popart:
+            return
+        gamma = float(self.gamma)
+        scale_mu = 1.0 / max(1.0 - gamma, 1e-6)
+        scale_sigma = 1.0 / max((1.0 - gamma * gamma) ** 0.5, 1e-6)
+        eps = 1e-4
+
+        if raw_ext_rewards is not None:
+            ext_mean = float(raw_ext_rewards.mean().item()) * scale_mu
+            ext_std = max(float(raw_ext_rewards.std(unbiased=False).item()) * scale_sigma, eps)
+            self.ext_critic_head.set_initial_stats(ext_mean, ext_std)
+
+        if raw_int_rewards is not None:
+            int_mean = float(raw_int_rewards.mean().item()) * scale_mu
+            int_std = max(float(raw_int_rewards.std(unbiased=False).item()) * scale_sigma, eps)
+            self.int_critic_head.set_initial_stats(int_mean, int_std)
 
     def _compute_value_losses(
         self,
@@ -1109,10 +1140,28 @@ class DistributionalPPOAgent(BasePPOAgent):
             self.int_critic.output_layer.sigma.detach() if self.popart else 1.0
         )
 
-    def _update_popart_stats(self, b_ext_returns, b_int_returns):
+    def _soft_popart_update(self, b_ext_returns, b_int_returns):
         if self.popart:
             self.ext_critic.output_layer.update_stats(b_ext_returns)
             self.int_critic.output_layer.update_stats(b_int_returns)
+
+    def _hard_popart_update(self, raw_ext_rewards, raw_int_rewards):
+        if not self.popart:
+            return
+        gamma = float(self.gamma)
+        scale_mu = 1.0 / max(1.0 - gamma, 1e-6)
+        scale_sigma = 1.0 / max((1.0 - gamma * gamma) ** 0.5, 1e-6)
+        eps = 1e-4
+
+        if raw_ext_rewards is not None:
+            ext_mean = float(raw_ext_rewards.mean().item()) * scale_mu
+            ext_std = max(float(raw_ext_rewards.std(unbiased=False).item()) * scale_sigma, eps)
+            self.ext_critic.output_layer.set_initial_stats(ext_mean, ext_std)
+
+        if raw_int_rewards is not None:
+            int_mean = float(raw_int_rewards.mean().item()) * scale_mu
+            int_std = max(float(raw_int_rewards.std(unbiased=False).item()) * scale_sigma, eps)
+            self.int_critic.output_layer.set_initial_stats(int_mean, int_std)
 
     def _quantile_huber_loss(self, pred, target, taus, kappa=1.0):
         """

@@ -1,10 +1,13 @@
 INFO:root:Starting DQN PopArt Integration Test (25 Seeds)
-INFO:root:DQN Convergence steps -> Large: 100.00 +- 0.00, Small: 181.51 +- 69.40
+INFO:root:DQN PopArt Sigma updated from 1.0 to 25417.67578125
+INFO:root:DQN Convergence steps -> Large: 128.50 +- 17.90, Small: 128.50 +- 17.90
 INFO:root:Starting PPO PopArt Integration Test (25 Seeds)
-INFO:root:PPO PopArt Sigma updated from 1.0 to 271.2384948730469
-INFO:root:PPO Convergence steps -> Large: 17.90 +- 1.97, Small: 124.84 +- 29.99
+INFO:root:PPO PopArt Sigma updated from 1.0 to 29804.55078125
+INFO:root:PPO Convergence steps -> Large: 18.16 +- 2.00, Small: 18.16 +- 2.00
 INFO:root:Starting SAC PopArt Integration Test (25 Seeds)
-INFO:root:SAC scale=1e+04 burn-in sigma=2.841e+03
-INFO:root:SAC scale=1e-04 burn-in sigma=9.048e-01
-INFO:root:SAC scale=1e-04 PopArt sigma: 1.000e+00 -> 8.998e-01
-INFO:root:SAC sigma ratio large/small = 3.142e+03 (expected ~1e8)
+INFO:root:SAC scale=1e+04 burn-in sigma=6.364e+03
+INFO:root:SAC scale=1e+04 PopArt sigma: 1.000e+00 -> 6.364e+03
+INFO:root:SAC scale=1e-04 burn-in sigma=1.000e-04
+INFO:root:SAC scale=1e-04 PopArt sigma: 1.000e+00 -> 9.967e-05
+INFO:root:SAC sigma ratio large/small = 6.313e+07 (expected ~1e8)
+INFO:root:SAC Convergence steps -> Large: 307.28 +- 47.51, Small: 297.34 +- 48.20

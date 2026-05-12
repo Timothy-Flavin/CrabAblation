@@ -108,6 +108,10 @@ class RainbowBase(Agent):
         self.update_timings = None
         self.buffer = self._init_buffer()
 
+        # Hard-start PopArt at burn-in end from raw reward stats (see
+        # _seed_popart_from_buffer). This flag tracks one-shot seeding.
+        self._popart_burn_in_seeded = False
+
         # RND and running stats setup
         rnd_target_encoder = encoder_factory() if encoder_factory is not None else None
         rnd_predictor_encoder = (
@@ -294,6 +298,49 @@ class RainbowBase(Agent):
     #     #     ):
     #     #         tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
 
+    @torch.no_grad()
+    def _seed_popart_from_buffer(self, ext_layer=None, int_layer=None, sample_size: int = 8192):
+        """Hard-start calibration of PopArt from raw reward stats, scaled to
+        infinite-horizon returns (μ_R/(1-γ), σ_R/√(1-γ²)).
+
+        Avoids contaminating PopArt with random Q_target noise from an untrained
+        critic, which would normalize the real reward signal toward zero.
+        """
+        if self._popart_burn_in_seeded:
+            return
+        buffer = getattr(self, "buffer", None)
+        if buffer is None or buffer.size() == 0:
+            self._popart_burn_in_seeded = True
+            return
+
+        valid_pos = int(buffer.size())
+        n = min(int(sample_size), valid_pos * int(buffer.n_envs))
+        batch_inds = torch.randint(0, valid_pos, (n,))
+        env_inds = torch.randint(0, buffer.n_envs, (n,))
+        rewards = buffer.rewards[batch_inds, env_inds].float().view(-1)
+
+        gamma = float(self.gamma)
+        scale_mu = 1.0 / max(1.0 - gamma, 1e-6)
+        scale_sigma = 1.0 / max((1.0 - gamma * gamma) ** 0.5, 1e-6)
+        eps = 1e-4
+
+        if ext_layer is not None and rewards.numel() > 0:
+            mu_R = float(rewards.mean().item())
+            sigma_R = float(rewards.std(unbiased=False).item())
+            ext_layer.set_initial_stats(mu_R * scale_mu, max(sigma_R * scale_sigma, eps))
+
+        # Intrinsic head: compute RND error stats on a fresh batch and scale.
+        if int_layer is not None and self.Beta > 0.0 and rewards.numel() > 0:
+            next_obs = buffer.next_observations[batch_inds, env_inds].to(self.device).float()
+            norm_next_obs = self.obs_rms.normalize(next_obs).float()
+            rnd_errors = self.rnd(norm_next_obs).detach().reshape(-1)
+            rnd_errors = torch.clamp(rnd_errors, -float(self.int_r_clip), float(self.int_r_clip))
+            mu_I = float(rnd_errors.mean().item())
+            sigma_I = float(rnd_errors.std(unbiased=False).item())
+            int_layer.set_initial_stats(mu_I * scale_mu, max(sigma_I * scale_sigma, eps))
+
+        self._popart_burn_in_seeded = True
+
     def _update_RND(self, next_obs: torch.Tensor):
         with torch.no_grad():
             norm_next_obs = self.obs_rms.normalize(next_obs).float()
@@ -469,6 +516,18 @@ class EVRainbowDQN(RainbowBase):
                 rnd_errors, rnd_loss = self._update_RND(b_next_obs)
                 return 0.0
             return 0.0
+
+        # First post-burn-in step: hard-start PopArt from raw reward stats
+        # scaled to infinite-horizon returns. Avoids being polluted by an
+        # untrained Q_target's massive noise.
+        if not self._popart_burn_in_seeded and self.burn_in_updates > 0:
+            self._seed_popart_from_buffer(
+                ext_layer=self.ext_online.output_layer,
+                int_layer=self.int_online.output_layer,
+            )
+            if self.delayed_target:
+                self.ext_target.load_state_dict(self.ext_online.state_dict())
+                self.int_target.load_state_dict(self.int_online.state_dict())
 
         b_obs = b_obs.to(self.device, non_blocking=True)
         b_a = b_a.to(self.device, non_blocking=True)
@@ -921,6 +980,17 @@ class IQNRainbowDQN(RainbowBase):
             if self.Beta > 0.0 or getattr(self, "always_update_rnd", False):
                 rnd_errors, rnd_loss = self._update_RND(b_next_obs)
             return 0.0
+
+        # First post-burn-in step: hard-start PopArt from raw reward stats
+        # scaled to infinite-horizon returns.
+        if not self._popart_burn_in_seeded and self.burn_in_updates > 0:
+            self._seed_popart_from_buffer(
+                ext_layer=self.ext_online.output_layer,
+                int_layer=self.int_online.output_layer,
+            )
+            if self.delayed_target:
+                self.ext_target.load_state_dict(self.ext_online.state_dict())
+                self.int_target.load_state_dict(self.int_online.state_dict())
 
         b_obs = b_obs.to(self.device, non_blocking=True)
         b_a = b_a.to(self.device, non_blocking=True)
