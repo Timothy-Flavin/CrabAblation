@@ -58,24 +58,34 @@ class MAAgentWrapper:
             action = self.agent.sample_action(
                 obs_t, eps=eps, step=step, n_steps=total_steps, action_mask=mask_t
             )
-            return action, None
+            val = action.item() if hasattr(action, 'item') else int(action)
+            return val, val, None
             
         elif self.algo == "ppo":
             # PPO sample_action expects (obs)
             # We added action_mask support to it.
             action, logprob = self.agent.sample_action(obs_t, action_mask=mask_t)
-            return action.item(), logprob.item()
+            return int(action.item()), action.item(), logprob.item()
             
         elif self.algo == "sac":
             # SAC sample_action expects (obs, deterministic)
             # We added action_mask support to it.
             action = self.agent.sample_action(obs_t, deterministic=deterministic, action_mask=mask_t)
-            # SAC returns [act_dim] or [B, act_dim]
-            if isinstance(action, np.ndarray):
-                return int(action.flatten()[0]), None
-            return int(action), None
+            action_np = action if isinstance(action, np.ndarray) else action.cpu().numpy()
+            if action_np.ndim == 2:
+                action_np = action_np[0]
+
+            # Argmax over valid actions only
+            valid_actions = np.where(mask > 0)[0]
+            if len(valid_actions) > 0:
+                best_valid_idx = np.argmax(action_np[valid_actions])
+                env_act = int(valid_actions[best_valid_idx])
+            else:
+                env_act = int(np.argmax(action_np))
+                
+            return env_act, action_np, None
         
-        return None, None
+        return None, None, None
 
     def _get_probs(self, obs_t, mask_t):
         # Internal helper to extract policy probabilities for tracking
@@ -135,7 +145,12 @@ class MAAgentWrapper:
         else:
             # DQN/SAC observe expects (obs, action, reward, next_obs, term, trunc, info)
             # action should be (num_envs, action_dim)
-            act_to_store = np.array([[action]]) if self.algo == "dqn" else np.array([[action]]) # SAC might need more but here it's 1D proxy
+            if self.algo == "dqn":
+                act_to_store = np.array([[action]])
+            else:
+                # SAC: action is an array of shape (act_dim,)
+                act_to_store = np.array([action])
+                
             self.agent.observe(
                 obs[np.newaxis, ...], 
                 act_to_store, 
@@ -239,28 +254,20 @@ def train_ma(args):
                 )
             
             if termination or truncation:
-                action = None
+                env_act = None
             else:
                 obs = flatten_obs(obs_dict)
                 mask = obs_dict["action_mask"]
                 
-                action, logprob = agents[agent_id].get_action(
+                env_act, raw_act, logprob = agents[agent_id].get_action(
                     obs, mask, step=total_steps, total_steps=args.total_steps
                 )
                 
-                # Ensure action is a Python scalar for PettingZoo
-                if isinstance(action, (np.ndarray, torch.Tensor)):
-                    action = int(action.item())
-                elif isinstance(action, (list, tuple)):
-                    action = int(action[0])
-                else:
-                    action = int(action)
-                
                 last_data[agent_id]["obs"] = obs
-                last_data[agent_id]["action"] = action
+                last_data[agent_id]["action"] = raw_act
                 last_data[agent_id]["logprob"] = logprob
                 
-            env.step(action)
+            env.step(env_act)
             total_steps += 1
             
             # Periodic update
