@@ -69,8 +69,8 @@ class MAAgentWrapper:
             
         elif self.algo == "sac":
             # SAC sample_action expects (obs, deterministic)
-            # We added action_mask support to it.
-            action = self.agent.sample_action(obs_t, deterministic=deterministic, action_mask=mask_t)
+            # We will handle masking manually so we get the raw continuous outputs back
+            action = self.agent.sample_action(obs_t, deterministic=deterministic)
             action_np = action if isinstance(action, np.ndarray) else action.cpu().numpy()
             if action_np.ndim == 2:
                 action_np = action_np[0]
