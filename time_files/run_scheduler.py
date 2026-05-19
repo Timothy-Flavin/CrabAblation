@@ -8,11 +8,11 @@ def solve_scheduling_problem():
     # 1. Data Setup & Hardware Topology
     # ---------------------------------------------------
     devices = [
-        "timpc", 
+        #"timpc", 
         "mac", 
-        "laptop", 
-        "white-machine_gpu0", 
-        "white-machine_gpu1", 
+        #"laptop", 
+        #"white-machine_gpu0", 
+        #"white-machine_gpu1", 
         "alienware_gpu_0", 
         "alienware_gpu_1", 
         "lab-comp_cpu", 
@@ -35,7 +35,7 @@ def solve_scheduling_problem():
         "lab-comp_gpu": "OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 numactl --cpunodebind=1 --membind=1 ", 
     }
 
-    envs = ["minigrid", "cartpole", "mujoco"]
+    envs = ["minigrid"]#, "cartpole", "mujoco"]
     models = ["dqn", "ppo", "sac"]
     ablations = [0, 1, 2, 3, 4, 5]
     runs = [1, 2, 3, 4, 5]

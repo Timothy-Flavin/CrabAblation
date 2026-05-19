@@ -33,7 +33,7 @@ def get_env_benchmark_spec(env_name: str):
         }
     return {
         "n_action_dims": 1,
-        "n_action_bins": 7,
+        "n_action_bins": 3,
         "hidden_layer_sizes": [128, 128],
     }
 
@@ -88,6 +88,16 @@ class FastObsWrapper(gym.ObservationWrapper):
         return super().reset(**kwargs)
 
 
+class MinigridRestrictActionWrapper(gym.ActionWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.action_space = gym.spaces.Discrete(3)
+
+    def action(self, act):
+        # Already 0, 1, or 2 from our agent so it safely maps directly to the same indices in original Minigrid.
+        return int(act)
+
+
 class RandomStartWrapper(gym.Wrapper):
     def __init__(self, env, max_random_start_steps=0, rng_seed=None):
         super().__init__(env)
@@ -132,6 +142,7 @@ def make_env_thunk(
             resolved_env_id = env_id if env_id is not None else "MiniGrid-FourRooms-v0"
             env = gym.make(resolved_env_id)
             env = FastObsWrapper(env)
+            env = MinigridRestrictActionWrapper(env)
         elif env_name == "cartpole":
             resolved_env_id = env_id if env_id is not None else "CartPole-v1"
             env = gym.make(resolved_env_id, max_episode_steps=500)
@@ -557,7 +568,7 @@ class ActionTransformHandler:
             if self.algo in ("dqn", "ppo"):
                 return self._dummy
             if self.algo == "sac":
-                return self._continuous_to_discrete_classic
+                return self._continuous_to_discrete_argmax
 
         if self.env_name == "mujoco":
             if self.algo in ("dqn", "ppo"):
@@ -604,23 +615,17 @@ class ActionTransformHandler:
             return float(arr.item())
         return arr
 
-    def _continuous_to_discrete_classic(self, continuous_action):
+    def _continuous_to_discrete_argmax(self, continuous_action):
         arr = np.asarray(continuous_action, dtype=np.float32)
 
         if isinstance(self.action_space, gym.spaces.Discrete):
             if self.batched:
-                if arr.ndim == 0:
-                    arr = arr.reshape(1, 1)
-                elif arr.ndim == 1:
-                    arr = arr.reshape(-1, 1)
-                x = np.clip(arr[:, 0], 0.0, 1.0 - 1e-8)
-                bins = (x * self.action_space.n).astype(np.int64)
-                return np.clip(bins, 0, self.action_space.n - 1)
+                if arr.ndim == 1:
+                    arr = arr.reshape(1, -1)
+                return np.argmax(arr, axis=-1)
 
-            x = float(np.clip(np.asarray(arr).reshape(-1)[0], 0.0, 1.0 - 1e-8))
-            return int(
-                np.clip(int(x * self.action_space.n), 0, self.action_space.n - 1)
-            )
+            arr = arr.reshape(-1)
+            return int(np.argmax(arr))
 
         if isinstance(self.action_space, gym.spaces.MultiDiscrete):
             nvec = np.asarray(self.action_space.nvec, dtype=np.int64)
@@ -628,16 +633,18 @@ class ActionTransformHandler:
                 if arr.ndim == 1:
                     arr = arr.reshape(1, -1)
                 out = np.zeros((arr.shape[0], len(nvec)), dtype=np.int64)
+                offset = 0
                 for dim, n in enumerate(nvec):
-                    x = np.clip(arr[:, dim], 0.0, 1.0 - 1e-8)
-                    out[:, dim] = np.clip((x * n).astype(np.int64), 0, n - 1)
+                    out[:, dim] = np.argmax(arr[:, offset:offset+n], axis=-1)
+                    offset += n
                 return out
 
             arr1 = np.asarray(arr).reshape(-1)
             out = np.zeros((len(nvec),), dtype=np.int64)
+            offset = 0
             for dim, n in enumerate(nvec):
-                x = float(np.clip(arr1[dim], 0.0, 1.0 - 1e-8))
-                out[dim] = int(np.clip(int(x * n), 0, n - 1))
+                out[dim] = int(np.argmax(arr1[offset:offset+n]))
+                offset += n
             return out
 
         raise ValueError(
@@ -713,15 +720,15 @@ def _proxy_action_space(action_space):
         return action_space
     if isinstance(action_space, gym.spaces.Discrete):
         return gym.spaces.Box(
-            low=np.zeros((1,), dtype=np.float32),
-            high=np.ones((1,), dtype=np.float32),
+            low=-np.ones((action_space.n,), dtype=np.float32),
+            high=np.ones((action_space.n,), dtype=np.float32),
             dtype=np.float32,
         )
     if isinstance(action_space, gym.spaces.MultiDiscrete):
-        n_dims = int(len(action_space.nvec))
+        total_dims = int(sum(action_space.nvec))
         return gym.spaces.Box(
-            low=np.zeros((n_dims,), dtype=np.float32),
-            high=np.ones((n_dims,), dtype=np.float32),
+            low=-np.ones((total_dims,), dtype=np.float32),
+            high=np.ones((total_dims,), dtype=np.float32),
             dtype=np.float32,
         )
     raise NotImplementedError(f"Unsupported action space: {action_space}")
