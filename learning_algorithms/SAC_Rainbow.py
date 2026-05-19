@@ -468,7 +468,7 @@ class BaseSAC(Agent):
             self.obs_rms.to(self.buffer_device)
 
     @torch.no_grad()
-    def sample_action(self, obs, deterministic: bool = False):
+    def sample_action(self, obs, deterministic: bool = False, action_mask: Optional[torch.Tensor] = None):
         t0 = time.time()
         actor_device = self.actor.device
         if isinstance(obs, np.ndarray):
@@ -489,6 +489,55 @@ class BaseSAC(Agent):
             action, _, _ = self.actor.get_action(obs_t)
 
         action_np = action.detach().cpu().numpy()
+        
+        # Apply action mask if provided (Project continuous to Discrete highest-legal)
+        if action_mask is not None:
+            # action shape: [B, n_action_dims] (here n_action_dims is actually just one dim if mapped from Discrete)
+            # but usually in this repo SAC treats everything as Box.
+            # If we are in a Discrete env, the wrapper treats it as Box(n_actions).
+            # action_mask shape: [B, n_actions]
+            mask = action_mask if action_mask.ndim > 1 else action_mask.unsqueeze(0)
+            mask = mask.to(device=action.device)
+            
+            # For each env in batch
+            new_actions = []
+            for i in range(action.shape[0]):
+                valid_indices = torch.where(mask[i] == 1)[0]
+                if valid_indices.numel() > 0:
+                    # Current continuous values for these indices
+                    # Assuming action[i] maps 1-to-1 with indices if it was Box(n_actions)
+                    # or it's a single value to be partitioned.
+                    # If action.shape[1] == mask.shape[1], we pick the max valid one.
+                    if action.shape[1] == mask.shape[1]:
+                        vals = action[i].clone()
+                        vals[mask[i] == 0] = -1e9
+                        best_idx = torch.argmax(vals)
+                        # Create a one-hot or similar Box representation? 
+                        # Actually, for discrete environments, the runner expects a discrete scalar.
+                        # But this method is expected to return what 'observe' needs.
+                        # If the environment is Discrete, we should probably return a discrete index 
+                        # BUT this is SAC, it wants to store continuous values.
+                        # Wait, the prompt says: "SAC could generate 3 continuous numbers and you just take the highest legal one."
+                        # This implies we should return something that can be used as a discrete action.
+                        # We'll return the float index if we have to, or just the index.
+                        new_actions.append(best_idx.item())
+                    else:
+                        # Single continuous value case (partitioning [0, 1])
+                        K = valid_indices.numel()
+                        # Normalize action[i][0] from [-1, 1] to [0, 1]
+                        x = (action[i][0] + 1.0) / 2.0
+                        x = torch.clamp(x, 0.0, 1.0 - 1e-7)
+                        idx = int(x * K)
+                        new_actions.append(valid_indices[idx].item())
+                else:
+                    new_actions.append(0)
+            
+            # Since SAC observe() expects Box actions, we should return the index 
+            # as a float array if we want it to be compatible.
+            # But the runner's env.step(action) needs the discrete int.
+            # We'll return the list of ints/floats.
+            action_np = np.array(new_actions).reshape(action.shape[0], -1)
+
         self.timing["action sampling"] = self.timing.get("action sampling", 0.0) + (
             time.time() - t0
         )

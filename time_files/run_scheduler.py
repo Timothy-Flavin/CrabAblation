@@ -19,6 +19,10 @@ def solve_scheduling_problem():
         "lab-comp_gpu"
     ]
     
+    env_activations = {
+        "mac": "source ../.venv/bin/activate",
+    }
+    
     command_pre_appends = {
         "timpc": "",
         "mac": "",
@@ -171,10 +175,13 @@ def solve_scheduling_problem():
             device_time = 0
             dev_experiments = []
 
+            activation_cmd = env_activations.get(device, "source .venv/bin/activate")
+
             sh_lines = [
                 "#!/usr/bin/env bash\n",
                 f"# Auto-generated schedule for {device}\n",
                 "set -euo pipefail\n\n",
+                f"{activation_cmd}\n\n",
             ]
 
             preamble = command_pre_appends.get(device, "")
