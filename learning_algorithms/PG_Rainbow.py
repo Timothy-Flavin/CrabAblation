@@ -377,12 +377,22 @@ class BasePPOAgent(Agent):
             self._init_buffers()
         return self
 
-    def _get_action(self, obs, action=None, entropy=False):
+    def _get_action(self, obs, action=None, entropy=False, action_mask=None):
+        if obs.ndim == 1:
+            obs = obs.unsqueeze(0)
         logits = self.actor(obs)
         if self.n_action_dims > 1:
             logits = logits.view(-1, self.n_action_dims, self.n_action_bins)
+            if action_mask is not None:
+                mask = action_mask if action_mask.ndim > 2 else action_mask.unsqueeze(0)
+                logits = logits.clone()
+                logits[mask == 0] = -1e9
             probs = Categorical(logits=logits)
         else:
+            if action_mask is not None:
+                mask = action_mask if action_mask.ndim > 1 else action_mask.unsqueeze(0)
+                logits = logits.clone()
+                logits[mask == 0] = -1e9
             probs = Categorical(logits=logits)
         if action is None:
             action = probs.sample()
@@ -401,15 +411,15 @@ class BasePPOAgent(Agent):
         return action, log_prob, entropy_calc
 
     # Getting action and values for training with gradient's attached
-    def get_action_and_values(self, obs, action=None):
-        action, logprob, entropy = self._get_action(obs, action, entropy=True)
+    def get_action_and_values(self, obs, action=None, action_mask=None):
+        action, logprob, entropy = self._get_action(obs, action, entropy=True, action_mask=action_mask)
         ext_v, int_v = self._get_values(obs)
         return action, logprob, entropy, ext_v, int_v
 
     # Grad free just action for buffer
     @torch.no_grad()
-    def sample_action(self, obs):
-        action, logprob, _ = self._get_action(obs, entropy=False)
+    def sample_action(self, obs, action_mask=None):
+        action, logprob, _ = self._get_action(obs, entropy=False, action_mask=action_mask)
         return action, logprob
 
     @torch.no_grad()

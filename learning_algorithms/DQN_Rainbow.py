@@ -759,6 +759,7 @@ class EVRainbowDQN(RainbowBase):
         n_steps: int = 100000,
         min_ent=0.01,
         verbose: bool = False,
+        action_mask: Optional[torch.Tensor] = None,
     ):
         self.last_eps = eps
         is_batched = obs.ndim > self.obs_ndim
@@ -771,6 +772,15 @@ class EVRainbowDQN(RainbowBase):
                 int_q = self.int_online(obs_b, normalized=True)
                 q_ext = (1.0 - self.Beta) * q_ext + self.Beta * int_q
 
+            # Apply action mask if provided
+            if action_mask is not None:
+                mask = action_mask if action_mask.ndim > 1 else action_mask.unsqueeze(0)
+                # Ensure mask is same device as q_ext
+                mask = mask.to(q_ext.device)
+                q_ext = q_ext.clone()
+                # For categorical sampling (soft/munchausen) and argmax, -1e9 works.
+                q_ext[mask == 0] = -1e9
+
             if self.soft or self.munchausen:
                 actions = torch.distributions.Categorical(
                     logits=q_ext / self.alpha
@@ -781,12 +791,28 @@ class EVRainbowDQN(RainbowBase):
                 explore_mask = (rand_vals < min_ent) | (rand_vals < eps)
 
                 if explore_mask.any():
-                    explore_actions = torch.randint(
-                        0,
-                        self.n_action_bins,
-                        (batch_size, self.n_action_dims),
-                        device=obs_b.device,
-                    )
+                    if action_mask is not None:
+                        # Explore only among valid actions
+                        mask = action_mask if action_mask.ndim > 1 else action_mask.unsqueeze(0)
+                        mask = mask.to(q_ext.device)
+                        explore_actions = []
+                        for i in range(batch_size):
+                            valid_indices = torch.where(mask[i] == 1)[0]
+                            if valid_indices.numel() > 0:
+                                idx = torch.randint(0, valid_indices.numel(), (1,), device=obs_b.device)
+                                explore_actions.append(valid_indices[idx])
+                            else:
+                                # Fallback if mask is all zeros
+                                explore_actions.append(torch.tensor([0], device=obs_b.device))
+                        explore_actions = torch.cat(explore_actions)
+                    else:
+                        explore_actions = torch.randint(
+                            0,
+                            self.n_action_bins,
+                            (batch_size, self.n_action_dims),
+                            device=obs_b.device,
+                        )
+                    
                     actions = torch.where(
                         explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask,
                         explore_actions,
@@ -1348,6 +1374,7 @@ class IQNRainbowDQN(RainbowBase):
         n_steps: int = 100000,
         min_eps=0.01,
         verbose: bool = False,
+        action_mask: Optional[torch.Tensor] = None,
     ):
         self.last_eps = eps
         is_batched = obs.ndim > self.obs_ndim
@@ -1364,6 +1391,18 @@ class IQNRainbowDQN(RainbowBase):
                 int_q = self.int_online(obs_b, int_taus, normalized=True).mean(dim=1)
                 ext_q = (1.0 - self.Beta) * ext_q + self.Beta * int_q
 
+            # Apply action mask if provided
+            if action_mask is not None:
+                mask = action_mask if action_mask.ndim > 1 else action_mask.unsqueeze(0)
+                mask = mask.to(ext_q.device)
+                ext_q = ext_q.clone()
+                # ext_q can be [B, n_quantiles, n_actions] or [B, n_actions]
+                if ext_q.ndim == 3:
+                    # Broadcast mask to quantiles
+                    ext_q[mask.unsqueeze(1).expand_as(ext_q) == 0] = -1e9
+                else:
+                    ext_q[mask == 0] = -1e9
+
             if self.soft or self.munchausen:
                 logits = ext_q / self.alpha
                 actions = torch.distributions.Categorical(
@@ -1374,12 +1413,25 @@ class IQNRainbowDQN(RainbowBase):
                 rand_vals = torch.rand(batch_size, device=obs_b.device)
                 explore_mask = (rand_vals < min_eps) | (rand_vals < eps)
                 if explore_mask.any():
-                    explore_actions = torch.randint(
-                        0,
-                        self.n_action_bins,
-                        (batch_size, self.n_action_dims),
-                        device=obs_b.device,
-                    )
+                    if action_mask is not None:
+                        mask = action_mask if action_mask.ndim > 1 else action_mask.unsqueeze(0)
+                        mask = mask.to(ext_q.device)
+                        explore_actions = []
+                        for i in range(batch_size):
+                            valid_indices = torch.where(mask[i] == 1)[0]
+                            if valid_indices.numel() > 0:
+                                idx = torch.randint(0, valid_indices.numel(), (1,), device=obs_b.device)
+                                explore_actions.append(valid_indices[idx])
+                            else:
+                                explore_actions.append(torch.tensor([0], device=obs_b.device))
+                        explore_actions = torch.cat(explore_actions)
+                    else:
+                        explore_actions = torch.randint(
+                            0,
+                            self.n_action_bins,
+                            (batch_size, self.n_action_dims),
+                            device=obs_b.device,
+                        )
                     actions = torch.where(
                         explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask,
                         explore_actions,

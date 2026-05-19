@@ -8,16 +8,20 @@ def solve_scheduling_problem():
     # 1. Data Setup & Hardware Topology
     # ---------------------------------------------------
     devices = [
-        "timpc", 
+        #"timpc", 
         "mac", 
-        "laptop", 
-        "white-machine_gpu0", 
-        "white-machine_gpu1", 
-        #"alienware_gpu_0", 
-        #"alienware_gpu_1", 
+        #"laptop", 
+        #"white-machine_gpu0", 
+        #"white-machine_gpu1", 
+        "alienware_gpu_0", 
+        "alienware_gpu_1", 
         "lab-comp_cpu", 
         "lab-comp_gpu"
     ]
+    
+    env_activations = {
+        "mac": "source ../.venv/bin/activate",
+    }
     
     command_pre_appends = {
         "timpc": "",
@@ -31,7 +35,7 @@ def solve_scheduling_problem():
         "lab-comp_gpu": "OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 numactl --cpunodebind=1 --membind=1 ", 
     }
 
-    envs = ["minigrid", "cartpole", "mujoco"]
+    envs = ["minigrid"]#, "cartpole", "mujoco"]
     models = ["dqn", "ppo", "sac"]
     ablations = [0, 1, 2, 3, 4, 5]
     runs = [1, 2, 3, 4, 5]
@@ -171,10 +175,13 @@ def solve_scheduling_problem():
             device_time = 0
             dev_experiments = []
 
+            activation_cmd = env_activations.get(device, "source .venv/bin/activate")
+
             sh_lines = [
                 "#!/usr/bin/env bash\n",
                 f"# Auto-generated schedule for {device}\n",
                 "set -euo pipefail\n\n",
+                f"{activation_cmd}\n\n",
             ]
 
             preamble = command_pre_appends.get(device, "")

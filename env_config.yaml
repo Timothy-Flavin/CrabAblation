@@ -25,3 +25,15 @@ minigrid:
   buffer_size: 50000
   n_action_dims: 1
   n_action_bins: 3
+tictactoe:
+  hidden_layer_sizes: [64, 64]
+  max_steps: 100000
+  buffer_size: 10000
+  n_action_dims: 1
+  n_action_bins: 9
+leduc:
+  hidden_layer_sizes: [128, 128]
+  max_steps: 500000
+  buffer_size: 50000
+  n_action_dims: 1
+  n_action_bins: 4

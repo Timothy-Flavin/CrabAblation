@@ -818,7 +818,7 @@ def rollout_offline_rl(
                 if isinstance(vec_env.single_action_space, gym.spaces.Box):
                     actions = np.array([vec_env.single_action_space.sample() for _ in range(vec_env.num_envs)], dtype=np.float32)
                 else:
-                    actions = np.random.uniform(low=0.0, high=1.0, size=(vec_env.num_envs, proxy_action_dim)).astype(np.float32)
+                    actions = np.random.uniform(low=proxy_action_space.low[0], high=proxy_action_space.high[0], size=(vec_env.num_envs, proxy_action_dim)).astype(np.float32)
             else:
                 actions = agent.sample_action(torch.as_tensor(obs, dtype=torch.float32, device=device))
 
