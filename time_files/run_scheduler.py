@@ -13,8 +13,8 @@ def solve_scheduling_problem():
         "laptop", 
         "white-machine_gpu0", 
         "white-machine_gpu1", 
-        #"alienware_gpu_0", 
-        #"alienware_gpu_1", 
+        "alienware_gpu_0", 
+        "alienware_gpu_1", 
         "lab-comp_cpu", 
         "lab-comp_gpu"
     ]
