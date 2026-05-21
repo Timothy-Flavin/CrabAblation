@@ -3,11 +3,15 @@ import os
 import time
 import numpy as np
 import torch
-from pettingzoo.classic import tictactoe_v3, leduc_holdem_v4
+import pyspiel
+from open_spiel.python.algorithms.exploitability import exploitability
+from open_spiel.python.policy import Policy
+from shimmy.openspiel_compatibility import OpenSpielCompatibilityV0
 from runner import build_agent, process_args, get_parser
 from runner_utils import resolve_torch_device
 import gymnasium as gym
 from types import SimpleNamespace
+import os
 
 def get_ma_args():
     parser = get_parser()
@@ -29,6 +33,77 @@ def get_ma_args():
         
     return process_args(args)
 
+class MAWrapperPolicy(Policy):
+    def __init__(self, game, agent_wrappers):
+        super().__init__(game, [0, 1])
+        self.agent_wrappers = agent_wrappers
+        self.game_type = game.get_type()
+
+    def action_probabilities(self, state, player_id=None):
+        if player_id is None:
+            player_id = state.current_player()
+            
+        if self.game_type.provides_observation_tensor:
+            obs = np.array(state.observation_tensor(player_id), dtype=np.float32)
+        else:
+            obs = np.array(state.information_state_tensor(player_id), dtype=np.float32)
+            
+        legal_actions = state.legal_actions(player_id)
+        wrapper = self.agent_wrappers[f"player_{player_id}"]
+        
+        mask_t = torch.zeros(wrapper.args.n_actions, dtype=torch.float32, device=wrapper.device)
+        mask_t[legal_actions] = 1.0
+        
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=wrapper.device).unsqueeze(0)
+        
+        with torch.no_grad():
+            probs = wrapper._get_probs(obs_t, mask_t)
+            probs_np = probs.cpu().numpy()
+        
+        dict_probs = {}
+        total = 0.0
+        for act in legal_actions:
+            str_p = float(probs_np[act])
+            dict_probs[act] = max(1e-8, str_p) # safety
+            total += dict_probs[act]
+        
+        if total > 0:
+            for act in legal_actions:
+                dict_probs[act] /= total
+        else:
+            for act in legal_actions:
+                dict_probs[act] = 1.0 / len(legal_actions)
+                
+        return dict_probs
+
+def evaluate_vs_random(agent_wrappers, env_name, agent_id_to_eval, num_episodes=50):
+    eval_env = OpenSpielCompatibilityV0(game_name="tic_tac_toe" if env_name == "tictactoe" else "leduc_poker")
+    returns = []
+    
+    for _ in range(num_episodes):
+        eval_env.reset()
+        ep_ret = 0.0
+        for agent_id in eval_env.agent_iter():
+            obs, reward, term, trunc, info = eval_env.last()
+            
+            if agent_id == agent_id_to_eval:
+                ep_ret += reward
+                
+            if term or trunc:
+                eval_env.step(None)
+                continue
+                
+            mask = info["action_mask"]
+            if agent_id == agent_id_to_eval:
+                act, _, _ = agent_wrappers[agent_id].get_action(obs.flatten(), mask, deterministic=True)
+                eval_env.step(act)
+            else:
+                valid = np.where(mask)[0]
+                eval_env.step(np.random.choice(valid))
+        returns.append(ep_ret)
+    eval_env.close()
+    return np.mean(returns)
+
 class MAAgentWrapper:
     def __init__(self, agent, algo, device, args):
         self.agent = agent
@@ -48,8 +123,16 @@ class MAAgentWrapper:
         # For simplicity, we can log the logits/probs for the current state if it's tictactoe
         if self.args.ma_env == "tictactoe":
             with torch.no_grad():
-                probs = self._get_probs(obs_t, mask_t)
-                self.action_dist_log.append(probs.cpu().numpy())
+                if self.algo == "sac":
+                    # Save mu and sigma for probability integration later
+                     # mean and log_std normally returned by actor(obs)
+                    mean, log_std = self.agent.actor(obs_t)
+                    std = log_std.exp()
+                    dist_to_log = np.stack([mean.cpu().numpy()[0], std.cpu().numpy()[0]])
+                    self.action_dist_log.append(dist_to_log)
+                else:
+                    probs = self._get_probs(obs_t, mask_t)
+                    self.action_dist_log.append(probs.cpu().numpy())
 
         if self.algo == "dqn":
             eps = max(0.5 - 2.0 * (step / total_steps), 0.05)
@@ -58,6 +141,8 @@ class MAAgentWrapper:
             action = self.agent.sample_action(
                 obs_t, eps=eps, step=step, n_steps=total_steps, action_mask=mask_t
             )
+            if isinstance(action, (list, np.ndarray)) and len(action) == 1:
+                action = action[0]
             val = action.item() if hasattr(action, 'item') else int(action)
             return val, val, None
             
@@ -124,8 +209,24 @@ class MAAgentWrapper:
             
         elif self.algo == "sac":
             # SAC is continuous, distribution tracking is harder. 
-            # We'll just return zeros for now or a dummy.
-            return torch.zeros_like(mask_t)
+            # We treat the deterministic choice as probability 1.0
+            probs = torch.zeros_like(mask_t[0] if mask_t.ndim > 1 else mask_t)
+            with torch.no_grad():
+                action = self.agent.sample_action(obs_t, deterministic=True)
+                action_np = action if isinstance(action, np.ndarray) else action.cpu().numpy()
+                if action_np.ndim == 2:
+                    action_np = action_np[0]
+                
+                valid_actions = torch.where(mask_t > 0)[0] if mask_t.ndim == 1 else torch.where(mask_t[0] > 0)[0]
+                if len(valid_actions) > 0:
+                    valid_np = valid_actions.cpu().numpy()
+                    best_valid_idx = np.argmax(action_np[valid_np])
+                    env_act = int(valid_np[best_valid_idx])
+                    probs[env_act] = 1.0
+                else:
+                    if action_np.size > 0:
+                        probs[int(np.argmax(action_np))] = 1.0
+            return probs
 
     def observe(self, obs, action, reward, next_obs, term, trunc, logprob=None):
         # Flattened obs
@@ -188,21 +289,30 @@ def train_ma(args):
     device = resolve_torch_device(args.device)
     
     if args.ma_env == "tictactoe":
-        env_fn = tictactoe_v3
-        obs_dim = 3 * 3 * 2
-        n_actions = 9
+        game_name = "tic_tac_toe"
     else:
-        env_fn = leduc_holdem_v4
-        obs_dim = 36
-        n_actions = 4
+        game_name = "leduc_poker"
+        
+    game = pyspiel.load_game(game_name)
+    env = OpenSpielCompatibilityV0(game_name=game_name)
+    env.reset()
+    
+    obs_dim = env.observation_space("player_0").shape[0] if (
+        game.get_type().provides_observation_tensor) else np.prod(env.observation_space("player_0").shape)
+    
+    if args.ma_env == "tictactoe":
+        obs_dim = 27
+    else:
+        obs_dim = 16
+        
+    n_actions = env.action_space("player_0").n
+    args.n_actions = n_actions
         
     mock_env = SimpleNamespace(
         single_observation_space=gym.spaces.Box(low=0, high=1, shape=(obs_dim,), dtype=np.float32),
         single_action_space=gym.spaces.Discrete(n_actions),
         num_envs=1
     )
-    
-    env = env_fn.env()
     
     # Build two agents (self-play)
     agent_raws = []
@@ -220,6 +330,9 @@ def train_ma(args):
     
     total_steps = 0
     ep_rewards = {agent_id: [] for agent_id in env.possible_agents}
+    exploitability_hist = []
+    rand_scores_0 = []
+    rand_scores_1 = []
     
     start_time = time.time()
     
@@ -233,7 +346,7 @@ def train_ma(args):
         }
         
         for agent_id in env.agent_iter():
-            obs_dict, reward, termination, truncation, info = env.last()
+            obs, reward, termination, truncation, info = env.last()
             
             # Accumulate reward for the agent
             current_ep_rewards[agent_id] += reward
@@ -247,7 +360,7 @@ def train_ma(args):
                     last_data[agent_id]["obs"],
                     last_data[agent_id]["action"],
                     reward,
-                    flatten_obs(obs_dict),
+                    obs.flatten(),
                     termination,
                     truncation,
                     logprob=last_data[agent_id]["logprob"]
@@ -256,14 +369,14 @@ def train_ma(args):
             if termination or truncation:
                 env_act = None
             else:
-                obs = flatten_obs(obs_dict)
-                mask = obs_dict["action_mask"]
+                flat_obs = obs.flatten()
+                mask = info["action_mask"]
                 
                 env_act, raw_act, logprob = agents[agent_id].get_action(
-                    obs, mask, step=total_steps, total_steps=args.total_steps
+                    flat_obs, mask, step=total_steps, total_steps=args.total_steps
                 )
                 
-                last_data[agent_id]["obs"] = obs
+                last_data[agent_id]["obs"] = flat_obs
                 last_data[agent_id]["action"] = raw_act
                 last_data[agent_id]["logprob"] = logprob
                 
@@ -289,8 +402,40 @@ def train_ma(args):
             fps = total_steps / (time.time() - start_time)
             msg += f" | FPS {fps:.1f}"
             print(msg)
+            
+        if (ep + 1) % args.eval_every == 0 or (ep + 1) == args.total_episodes:
+            # Eval against random
+            r0 = evaluate_vs_random(agents, args.ma_env, "player_0", num_episodes=args.eval_episodes)
+            r1 = evaluate_vs_random(agents, args.ma_env, "player_1", num_episodes=args.eval_episodes)
+            rand_scores_0.append(r0)
+            rand_scores_1.append(r1)
+            
+            # Exploitability
+            eval_policy = MAWrapperPolicy(game, agents)
+            expl = exploitability(game, eval_policy)
+            exploitability_hist.append(expl)
+            
+            print(f"Eval Ep {ep+1}: vsRand(P0)={r0:.2f}, vsRand(P1)={r1:.2f}, Ext={expl:.4f}")
 
     env.close()
+    
+    results_dir = os.path.join("results", args.algo, args.env_name)
+    os.makedirs(results_dir, exist_ok=True)
+    
+    for agent_id, rewards in ep_rewards.items():
+        # Save as train_scores_<agent_id>_<ablation>.npy
+        np.save(os.path.join(results_dir, f"train_scores_{agent_id}_{args.ablation}.npy"), np.array(rewards))
+        
+    np.save(os.path.join(results_dir, f"exploitability_{args.ablation}.npy"), np.array(exploitability_hist))
+    np.save(os.path.join(results_dir, f"evaluate_vs_random_p0_{args.ablation}.npy"), np.array(rand_scores_0))
+    np.save(os.path.join(results_dir, f"evaluate_vs_random_p1_{args.ablation}.npy"), np.array(rand_scores_1))
+    
+    if args.ma_env == "tictactoe":
+        p0_dist = agents["player_0"].action_dist_log
+        p1_dist = agents["player_1"].action_dist_log
+        np.save(os.path.join(results_dir, f"action_dist_p0_{args.ablation}.npy"), np.array(p0_dist))
+        np.save(os.path.join(results_dir, f"action_dist_p1_{args.ablation}.npy"), np.array(p1_dist))
+    
     return ep_rewards
 
 if __name__ == "__main__":
