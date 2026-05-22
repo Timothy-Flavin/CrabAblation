@@ -9,14 +9,14 @@ def solve_scheduling_problem():
     # ---------------------------------------------------
     devices = [
         #"timpc", 
-        "mac", 
+        #"mac", 
         #"laptop", 
-        #"white-machine_gpu0", 
-        #"white-machine_gpu1", 
+        "white-machine_gpu0", 
+        "white-machine_gpu1", 
         "alienware_gpu_0", 
         "alienware_gpu_1", 
-        "lab-comp_cpu", 
-        "lab-comp_gpu"
+        #"lab-comp_cpu", 
+        #"lab-comp_gpu"
     ]
     
     env_activations = {
@@ -35,8 +35,8 @@ def solve_scheduling_problem():
         "lab-comp_gpu": "OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 numactl --cpunodebind=1 --membind=1 ", 
     }
 
-    envs = ["minigrid"]#, "cartpole", "mujoco"]
-    models = ["dqn", "ppo", "sac"]
+    envs = ["minigrid", "cartpole"]#, "mujoco"]
+    models = ["sac"]
     ablations = [0, 1, 2, 3, 4, 5]
     runs = [1, 2, 3, 4, 5]
 
