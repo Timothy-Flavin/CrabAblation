@@ -15,7 +15,7 @@ import os
 
 def get_ma_args():
     parser = get_parser()
-    parser.add_argument("--ma_env", type=str, default="tictactoe", choices=["tictactoe", "leduc"])
+    parser.add_argument("--ma_env", type=str, default="tictactoe", choices=["tictactoe", "leduc", "rps"])
     parser.add_argument("--total_episodes", type=int, default=10000)
     parser.add_argument("--eval_every", type=int, default=500)
     parser.add_argument("--eval_episodes", type=int, default=100)
@@ -28,8 +28,10 @@ def get_ma_args():
     # Sync env_name with ma_env for build_agent
     if args.ma_env == "tictactoe":
         args.env_name = "tictactoe"
-    else:
+    elif args.ma_env == "leduc":
         args.env_name = "leduc"
+    else:
+        args.env_name = "rps"
         
     return process_args(args)
 
@@ -77,32 +79,94 @@ class MAWrapperPolicy(Policy):
         return dict_probs
 
 def evaluate_vs_random(agent_wrappers, env_name, agent_id_to_eval, num_episodes=50):
-    eval_env = OpenSpielCompatibilityV0(game_name="tic_tac_toe" if env_name == "tictactoe" else "leduc_poker")
+    if env_name == "tictactoe":
+        game_name = "tic_tac_toe"
+    elif env_name == "leduc":
+        game_name = "leduc_poker"
+    else:
+        game_name = "matrix_rps"
+        
+    eval_env = OpenSpielCompatibilityV0(game_name=game_name)
     returns = []
+    
+    is_simultaneous = (env_name == "rps")
     
     for _ in range(num_episodes):
         eval_env.reset()
         ep_ret = 0.0
-        for agent_id in eval_env.agent_iter():
-            obs, reward, term, trunc, info = eval_env.last()
-            
-            if agent_id == agent_id_to_eval:
-                ep_ret += reward
-                
-            if term or trunc:
-                eval_env.step(None)
-                continue
-                
-            mask = info["action_mask"]
-            if agent_id == agent_id_to_eval:
-                act, _, _ = agent_wrappers[agent_id].get_action(obs.flatten(), mask, deterministic=True)
+        
+        if is_simultaneous:
+            # Simultaneous games in AEC usually have a fixed order but results are applied at the end
+            # or they are stepped one by one. Shimmy/OpenSpiel AEC for Matrix games:
+            # player_0 acts, then player_1 acts, then both get rewards.
+            for agent_id in eval_env.agent_iter():
+                obs, reward, term, trunc, info = eval_env.last()
+                if agent_id == agent_id_to_eval:
+                    ep_ret += reward
+                if term or trunc:
+                    eval_env.step(None)
+                    continue
+                mask = info["action_mask"]
+                if agent_id == agent_id_to_eval:
+                    act, _, _ = agent_wrappers[agent_id].get_action(obs.flatten(), mask, deterministic=True)
+                else:
+                    valid = np.where(mask)[0]
+                    act = np.random.choice(valid)
                 eval_env.step(act)
-            else:
-                valid = np.where(mask)[0]
-                eval_env.step(np.random.choice(valid))
+        else:
+            for agent_id in eval_env.agent_iter():
+                obs, reward, term, trunc, info = eval_env.last()
+                if agent_id == agent_id_to_eval:
+                    ep_ret += reward
+                if term or trunc:
+                    eval_env.step(None)
+                    continue
+                mask = info["action_mask"]
+                if agent_id == agent_id_to_eval:
+                    act, _, _ = agent_wrappers[agent_id].get_action(obs.flatten(), mask, deterministic=True)
+                    eval_env.step(act)
+                else:
+                    valid = np.where(mask)[0]
+                    eval_env.step(np.random.choice(valid))
         returns.append(ep_ret)
     eval_env.close()
     return np.mean(returns)
+
+def get_rps_exploitability(agents):
+    # RPS is a matrix game. player_0 and player_1 are symmetric.
+    # Obs is usually constant. We get probs for a dummy obs.
+    dummy_obs = torch.zeros((1, 1), device=agents["player_0"].device)
+    dummy_mask = torch.ones((1, 3), device=agents["player_0"].device)
+    
+    with torch.no_grad():
+        probs0 = agents["player_0"]._get_probs(dummy_obs, dummy_mask).detach().cpu().numpy()
+        probs1 = agents["player_1"]._get_probs(dummy_obs, dummy_mask).detach().cpu().numpy()
+    
+    # Payoff matrix for player 0: 0: Rock, 1: Paper, 2: Scissors
+    # R vs R: 0, R vs P: -1, R vs S: 1
+    # P vs R: 1, P vs P: 0, P vs S: -1
+    # S vs R: -1, S vs P: 1, S vs S: 0
+    payoffs = np.array([
+        [0, -1, 1],
+        [1, 0, -1],
+        [-1, 1, 0]
+    ])
+    
+    # Expected value for player 0 if they play action i: sum_j payoffs[i, j] * probs1[j]
+    ev0 = payoffs @ probs1
+    br0_val = np.max(ev0)
+    
+    # Expected value for player 1 if they play action j: sum_i payoffs_p1[j, i] * probs0[i]
+    # payoffs_p1 = -payoffs.T
+    ev1 = (-payoffs.T) @ probs0
+    br1_val = np.max(ev1)
+    
+    # Exploitability in zero-sum symmetric is often (BR0 + BR1)/2
+    # Current value for P0 is probs0 @ payoffs @ probs1
+    v0 = probs0 @ payoffs @ probs1
+    v1 = -v0
+    
+    return (br0_val - v0 + br1_val - v1) / 2.0
 
 class MAAgentWrapper:
     def __init__(self, agent, algo, device, args):
@@ -112,20 +176,17 @@ class MAAgentWrapper:
         self.args = args
         self.action_dist_log = [] # List of policy distributions for Tic-Tac-Toe
         
-    def get_action(self, obs, mask, deterministic=False, step=0, total_steps=1000000):
+    def get_action(self, obs, mask, deterministic=False, step=0, total_steps=1000000, log_dist=False):
         # We now use the agent's built-in sample_action
         # Prepare inputs
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
         mask_t = torch.as_tensor(mask, dtype=torch.float32, device=self.device)
         
-        # Track action distribution for Tic-Tac-Toe ternary plots
-        # We'll log the probabilities for the first few turns or fixed states
-        # For simplicity, we can log the logits/probs for the current state if it's tictactoe
-        if self.args.ma_env == "tictactoe":
+        # Track action distribution for Tic-Tac-Toe ternary plots or RPS strategy tracking
+        if log_dist and self.args.ma_env in ["tictactoe", "rps"]:
             with torch.no_grad():
                 if self.algo == "sac":
                     # Save mu and sigma for probability integration later
-                     # mean and log_std normally returned by actor(obs)
                     mean, log_std = self.agent.actor(obs_t)
                     std = log_std.exp()
                     dist_to_log = np.stack([mean.cpu().numpy()[0], std.cpu().numpy()[0]])
@@ -177,6 +238,12 @@ class MAAgentWrapper:
         if obs_t.ndim == 1:
             obs_t = obs_t.unsqueeze(0)
         
+        # Ensure mask_t is at least 1D and matches q shape later
+        if mask_t.ndim == 2:
+            mask_t_1d = mask_t[0]
+        else:
+            mask_t_1d = mask_t
+
         if self.algo == "dqn":
             if hasattr(self.agent, "n_quantiles"):
                 # IQN: mean over quantiles
@@ -189,35 +256,36 @@ class MAAgentWrapper:
                 q = self.agent.ext_online(obs_t, normalized=True)
                 q = q.view(1, -1)
             
-            q[0][mask_t == 0] = -1e9
+            # Use the 1D version for indexing q[0]
+            q[0][mask_t_1d == 0] = -1e9
             if self.agent.soft or self.agent.munchausen:
                 return torch.softmax(q / self.agent.alpha, dim=-1)[0]
             else:
                 # Epsilon-greedy approx distribution
                 probs = torch.zeros_like(q[0])
                 best_act = torch.argmax(q[0])
-                eps = self.agent.last_eps
-                valid_count = mask_t.sum()
-                probs[mask_t == 1] = eps / valid_count
+                eps = getattr(self.agent, "last_eps", 0.05)
+                valid_count = mask_t_1d.sum()
+                probs[mask_t_1d == 1] = eps / valid_count
                 probs[best_act] += (1.0 - eps)
                 return probs
                 
         elif self.algo == "ppo":
             logits = self.agent.actor(obs_t)
-            logits[0][mask_t == 0] = -1e9
+            logits[0][mask_t_1d == 0] = -1e9
             return torch.softmax(logits, dim=-1)[0]
             
         elif self.algo == "sac":
             # SAC is continuous, distribution tracking is harder. 
             # We treat the deterministic choice as probability 1.0
-            probs = torch.zeros_like(mask_t[0] if mask_t.ndim > 1 else mask_t)
+            probs = torch.zeros_like(mask_t_1d)
             with torch.no_grad():
                 action = self.agent.sample_action(obs_t, deterministic=True)
                 action_np = action if isinstance(action, np.ndarray) else action.cpu().numpy()
                 if action_np.ndim == 2:
                     action_np = action_np[0]
                 
-                valid_actions = torch.where(mask_t > 0)[0] if mask_t.ndim == 1 else torch.where(mask_t[0] > 0)[0]
+                valid_actions = torch.where(mask_t_1d > 0)[0]
                 if len(valid_actions) > 0:
                     valid_np = valid_actions.cpu().numpy()
                     best_valid_idx = np.argmax(action_np[valid_np])
@@ -290,20 +358,23 @@ def train_ma(args):
     
     if args.ma_env == "tictactoe":
         game_name = "tic_tac_toe"
-    else:
+    elif args.ma_env == "leduc":
         game_name = "leduc_poker"
+    else:
+        game_name = "matrix_rps"
         
     game = pyspiel.load_game(game_name)
     env = OpenSpielCompatibilityV0(game_name=game_name)
     env.reset()
     
-    obs_dim = env.observation_space("player_0").shape[0] if (
-        game.get_type().provides_observation_tensor) else np.prod(env.observation_space("player_0").shape)
-    
+    # Standardize obs_dim
     if args.ma_env == "tictactoe":
         obs_dim = 27
-    else:
+    elif args.ma_env == "leduc":
         obs_dim = 16
+    else:
+        # RPS observation is usually just a constant or dummy in OpenSpiel
+        obs_dim = env.observation_space("player_0").shape[0] if len(env.observation_space("player_0").shape) > 0 else 1
         
     n_actions = env.action_space("player_0").n
     args.n_actions = n_actions
@@ -314,6 +385,11 @@ def train_ma(args):
         num_envs=1
     )
     
+    # Smaller buffers for tiny games to save RAM
+    if args.ma_env in ["tictactoe", "rps"]:
+        args.dqn_buffer_size = min(getattr(args, "dqn_buffer_size", 10000), 10000)
+        args.buffer_size = min(getattr(args, "buffer_size", 10000), 10000)
+
     # Build two agents (self-play)
     agent_raws = []
     for _ in range(len(env.possible_agents)):
@@ -345,16 +421,15 @@ def train_ma(args):
             for agent_id in env.possible_agents
         }
         
+        # Only log distribution every 10 episodes to save memory
+        log_this_ep = (ep % 10 == 0)
+        
         for agent_id in env.agent_iter():
             obs, reward, termination, truncation, info = env.last()
             
             # Accumulate reward for the agent
             current_ep_rewards[agent_id] += reward
             
-            # AEC Reward handling: 
-            # When it's agent_id's turn, 'reward' is the reward they got 
-            # as a result of the PREVIOUS agent's action (or their own previous action).
-            # We store the transition for the agent who just acted.
             if last_data[agent_id]["obs"] is not None:
                 agents[agent_id].observe(
                     last_data[agent_id]["obs"],
@@ -373,7 +448,7 @@ def train_ma(args):
                 mask = info["action_mask"]
                 
                 env_act, raw_act, logprob = agents[agent_id].get_action(
-                    flat_obs, mask, step=total_steps, total_steps=args.total_steps
+                    flat_obs, mask, step=total_steps, total_steps=args.total_steps, log_dist=log_this_ep
                 )
                 
                 last_data[agent_id]["obs"] = flat_obs
@@ -383,8 +458,9 @@ def train_ma(args):
             env.step(env_act)
             total_steps += 1
             
-            # Periodic update
-            for a in agents.values():
+            # Periodic update: only update the agent who just acted to be more efficient
+            if env_act is not None:
+                a = agents[agent_id]
                 if args.algo == "ppo":
                     if a.agent.step_idx >= a.agent.num_steps:
                         a.update(total_steps)
@@ -394,7 +470,7 @@ def train_ma(args):
         for agent_id in env.possible_agents:
             ep_rewards[agent_id].append(current_ep_rewards[agent_id])
         
-        if (ep + 1) % max(1, args.total_episodes // 10) == 0:
+        if (ep + 1) % max(1, args.total_episodes // 100) == 0:
             msg = f"Ep {ep+1}/{args.total_episodes} | Steps {total_steps}"
             for agent_id in env.possible_agents:
                 avg_r = np.mean(ep_rewards[agent_id][-max(1, args.total_episodes // 10):])
@@ -411,8 +487,12 @@ def train_ma(args):
             rand_scores_1.append(r1)
             
             # Exploitability
-            eval_policy = MAWrapperPolicy(game, agents)
-            expl = exploitability(game, eval_policy)
+            if args.ma_env == "rps":
+                expl = get_rps_exploitability(agents)
+            else:
+                eval_policy = MAWrapperPolicy(game, agents)
+                expl = exploitability(game, eval_policy)
+            
             exploitability_hist.append(expl)
             
             print(f"Eval Ep {ep+1}: vsRand(P0)={r0:.2f}, vsRand(P1)={r1:.2f}, Ext={expl:.4f}")
@@ -423,20 +503,22 @@ def train_ma(args):
     os.makedirs(results_dir, exist_ok=True)
     
     for agent_id, rewards in ep_rewards.items():
-        # Save as train_scores_<agent_id>_<ablation>.npy
         np.save(os.path.join(results_dir, f"train_scores_{agent_id}_{args.ablation}.npy"), np.array(rewards))
         
     np.save(os.path.join(results_dir, f"exploitability_{args.ablation}.npy"), np.array(exploitability_hist))
     np.save(os.path.join(results_dir, f"evaluate_vs_random_p0_{args.ablation}.npy"), np.array(rand_scores_0))
     np.save(os.path.join(results_dir, f"evaluate_vs_random_p1_{args.ablation}.npy"), np.array(rand_scores_1))
     
-    if args.ma_env == "tictactoe":
+    if args.ma_env in ["tictactoe", "rps"]:
         p0_dist = agents["player_0"].action_dist_log
         p1_dist = agents["player_1"].action_dist_log
-        np.save(os.path.join(results_dir, f"action_dist_p0_{args.ablation}.npy"), np.array(p0_dist))
-        np.save(os.path.join(results_dir, f"action_dist_p1_{args.ablation}.npy"), np.array(p1_dist))
+        if len(p0_dist) > 0:
+            np.save(os.path.join(results_dir, f"action_dist_p0_{args.ablation}.npy"), np.array(p0_dist, dtype=object))
+        if len(p1_dist) > 0:
+            np.save(os.path.join(results_dir, f"action_dist_p1_{args.ablation}.npy"), np.array(p1_dist, dtype=object))
     
     return ep_rewards
+
 
 if __name__ == "__main__":
     args = get_ma_args()
