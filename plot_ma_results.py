@@ -22,10 +22,16 @@ def plot_ma_results(algo, env_name):
     ax.set_ylabel("Exploitability")
     
     for i in ablations:
-        path = os.path.join(results_dir, f"exploitability_{i}.npy")
-        if os.path.exists(path):
-            data = np.load(path)
-            ax.plot(data, label=f"Ablation {i}", color=colors[i])
+        seed_data = []
+        for seed in range(5):
+            path = os.path.join(results_dir, f"exploitability_{i}_seed{seed}.npy")
+            if os.path.exists(path):
+                seed_data.append(np.load(path))
+        if seed_data:
+            min_len = min(len(s) for s in seed_data)
+            seed_data = [s[:min_len] for s in seed_data]
+            median_data = np.median(np.array(seed_data), axis=0)
+            ax.plot(median_data, label=f"Ablation {i}", color=colors[i])
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -36,12 +42,18 @@ def plot_ma_results(algo, env_name):
     ax.set_ylabel("Reward")
     
     for i in ablations:
-        path = os.path.join(results_dir, f"train_scores_player_0_{i}.npy")
-        if os.path.exists(path):
-            data = np.load(path)
+        seed_data = []
+        for seed in range(5):
+            path = os.path.join(results_dir, f"train_scores_player_0_{i}_seed{seed}.npy")
+            if os.path.exists(path):
+                seed_data.append(np.load(path))
+        if seed_data:
+            min_len = min(len(s) for s in seed_data)
+            seed_data = [s[:min_len] for s in seed_data]
+            median_data = np.median(np.array(seed_data), axis=0)
             # Smooth data
-            window = max(1, len(data) // 50)
-            smoothed = np.convolve(data, np.ones(window)/window, mode='valid')
+            window = max(1, len(median_data) // 50)
+            smoothed = np.convolve(median_data, np.ones(window)/window, mode='valid')
             ax.plot(smoothed, label=f"Ablation {i}", color=colors[i], alpha=0.8)
     ax.grid(True, alpha=0.3)
 
@@ -52,10 +64,16 @@ def plot_ma_results(algo, env_name):
     ax.set_ylabel("Average Reward")
     
     for i in ablations:
-        path = os.path.join(results_dir, f"evaluate_vs_random_p0_{i}.npy")
-        if os.path.exists(path):
-            data = np.load(path)
-            ax.plot(data, label=f"Ablation {i}", color=colors[i])
+        seed_data = []
+        for seed in range(5):
+            path = os.path.join(results_dir, f"evaluate_vs_random_p0_{i}_seed{seed}.npy")
+            if os.path.exists(path):
+                seed_data.append(np.load(path))
+        if seed_data:
+            min_len = min(len(s) for s in seed_data)
+            seed_data = [s[:min_len] for s in seed_data]
+            median_data = np.median(np.array(seed_data), axis=0)
+            ax.plot(median_data, label=f"Ablation {i}", color=colors[i])
     ax.grid(True, alpha=0.3)
 
     # 4. Action Distribution (for RPS or Tic-Tac-Toe if applicable)
@@ -66,8 +84,10 @@ def plot_ma_results(algo, env_name):
     ax.set_ylabel("Probability")
     
     # Try to find a representative ablation for strategy plotting
-    rep_ablation = 6 if os.path.exists(os.path.join(results_dir, f"action_dist_p0_6.npy")) else 0
-    path = os.path.join(results_dir, f"action_dist_p0_{rep_ablation}.npy")
+    rep_ablation = 6 if any(os.path.exists(os.path.join(results_dir, f"action_dist_p0_6_seed{s}.npy")) for s in range(5)) else 0
+    
+    # Just use seed 0 for action distribution it's too complicated to median objects
+    path = os.path.join(results_dir, f"action_dist_p0_{rep_ablation}_seed0.npy")
     if os.path.exists(path):
         try:
             data = np.load(path, allow_pickle=True)

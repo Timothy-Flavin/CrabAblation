@@ -338,7 +338,13 @@ def flatten_obs(obs):
         return obs["observation"].flatten()
     return obs.flatten()
 
-def train_ma(args):
+def train_ma(args, seed=0):
+    import random
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+    args.seed = seed
+    
     device = resolve_torch_device(args.device)
     
     if args.ma_env == "tictactoe":
@@ -396,6 +402,7 @@ def train_ma(args):
     rand_scores_1 = []
     
     start_time = time.time()
+    eval_interval = max(1, args.total_episodes // 10)
     
     for ep in range(args.total_episodes):
         env.reset()
@@ -464,7 +471,7 @@ def train_ma(args):
             msg += f" | FPS {fps:.1f}"
             print(msg)
             
-        if (ep + 1) % args.eval_every == 0 or (ep + 1) == args.total_episodes:
+        if (ep + 1) % eval_interval == 0 or (ep + 1) == args.total_episodes:
             # Eval against random
             r0 = evaluate_vs_random(agents, args.ma_env, "player_0", num_episodes=args.eval_episodes)
             r1 = evaluate_vs_random(agents, args.ma_env, "player_1", num_episodes=args.eval_episodes)
@@ -488,23 +495,25 @@ def train_ma(args):
     os.makedirs(results_dir, exist_ok=True)
     
     for agent_id, rewards in ep_rewards.items():
-        np.save(os.path.join(results_dir, f"train_scores_{agent_id}_{args.ablation}.npy"), np.array(rewards))
+        np.save(os.path.join(results_dir, f"train_scores_{agent_id}_{args.ablation}_seed{seed}.npy"), np.array(rewards))
         
-    np.save(os.path.join(results_dir, f"exploitability_{args.ablation}.npy"), np.array(exploitability_hist))
-    np.save(os.path.join(results_dir, f"evaluate_vs_random_p0_{args.ablation}.npy"), np.array(rand_scores_0))
-    np.save(os.path.join(results_dir, f"evaluate_vs_random_p1_{args.ablation}.npy"), np.array(rand_scores_1))
+    np.save(os.path.join(results_dir, f"exploitability_{args.ablation}_seed{seed}.npy"), np.array(exploitability_hist))
+    np.save(os.path.join(results_dir, f"evaluate_vs_random_p0_{args.ablation}_seed{seed}.npy"), np.array(rand_scores_0))
+    np.save(os.path.join(results_dir, f"evaluate_vs_random_p1_{args.ablation}_seed{seed}.npy"), np.array(rand_scores_1))
     
     if args.ma_env in ["tictactoe", "rps"]:
         p0_dist = agents["player_0"].action_dist_log
         p1_dist = agents["player_1"].action_dist_log
         if len(p0_dist) > 0:
-            np.save(os.path.join(results_dir, f"action_dist_p0_{args.ablation}.npy"), np.array(p0_dist, dtype=object))
+            np.save(os.path.join(results_dir, f"action_dist_p0_{args.ablation}_seed{seed}.npy"), np.array(p0_dist, dtype=object))
         if len(p1_dist) > 0:
-            np.save(os.path.join(results_dir, f"action_dist_p1_{args.ablation}.npy"), np.array(p1_dist, dtype=object))
+            np.save(os.path.join(results_dir, f"action_dist_p1_{args.ablation}_seed{seed}.npy"), np.array(p1_dist, dtype=object))
     
     return ep_rewards
 
 
 if __name__ == "__main__":
     args = get_ma_args()
-    train_ma(args)
+    for seed in range(5):
+        print(f"--- Running Seed {seed} ---")
+        train_ma(args, seed=seed)

@@ -4,7 +4,7 @@
 # Ablations 0-5 are the same as runner.py
 # Ablation 6 is the "Base" algorithm (Default params, high entropy for PPO)
 
-ENVS=("tictactoe" "leduc")
+ENVS=("tictactoe" "leduc" "rps")
 ALGOS=("sac" "dqn" "ppo") 
 ABLATIONS=(0 1 2 3 4 5 6)
 
