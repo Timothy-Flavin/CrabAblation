@@ -185,15 +185,8 @@ class MAAgentWrapper:
         # Track action distribution for Tic-Tac-Toe ternary plots or RPS strategy tracking
         if log_dist and self.args.ma_env in ["tictactoe", "rps"]:
             with torch.no_grad():
-                if self.algo == "sac":
-                    # Save mu and sigma for probability integration later
-                    mean, log_std = self.agent.actor(obs_t)
-                    std = log_std.exp()
-                    dist_to_log = np.stack([mean.cpu().numpy()[0], std.cpu().numpy()[0]])
-                    self.action_dist_log.append(dist_to_log)
-                else:
-                    probs = self._get_probs(obs_t, mask_t)
-                    self.action_dist_log.append(probs.cpu().numpy())
+                probs = self._get_probs(obs_t, mask_t)
+                self.action_dist_log.append(probs.cpu().numpy())
 
         if self.algo == "dqn":
             eps = max(0.5 - 2.0 * (step / total_steps), 0.05)
@@ -276,24 +269,16 @@ class MAAgentWrapper:
             return torch.softmax(logits, dim=-1)[0]
             
         elif self.algo == "sac":
-            # SAC is continuous, distribution tracking is harder. 
-            # We treat the deterministic choice as probability 1.0
-            probs = torch.zeros_like(mask_t_1d)
+            # SAC is continuous. For discrete actions via Box proxy, 
+            # we interpret the continuous outputs as logits.
             with torch.no_grad():
-                action = self.agent.sample_action(obs_t, deterministic=True)
-                action_np = action if isinstance(action, np.ndarray) else action.cpu().numpy()
-                if action_np.ndim == 2:
-                    action_np = action_np[0]
-                
-                valid_actions = torch.where(mask_t_1d > 0)[0]
-                if len(valid_actions) > 0:
-                    valid_np = valid_actions.cpu().numpy()
-                    best_valid_idx = np.argmax(action_np[valid_np])
-                    env_act = int(valid_np[best_valid_idx])
-                    probs[env_act] = 1.0
-                else:
-                    if action_np.size > 0:
-                        probs[int(np.argmax(action_np))] = 1.0
+                mean, _ = self.agent.actor(obs_t)
+                # Apply mask to mean before softmax
+                m = mean[0].clone()
+                m[mask_t_1d == 0] = -1e9
+                # Use a temperature to convert continuous 'scores' to a distribution
+                # 0.2 gives a reasonably smooth distribution
+                probs = torch.softmax(m / 0.2, dim=-1)
             return probs
 
     def observe(self, obs, action, reward, next_obs, term, trunc, logprob=None):

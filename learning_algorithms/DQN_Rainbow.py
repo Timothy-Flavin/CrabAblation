@@ -767,7 +767,8 @@ class EVRainbowDQN(RainbowBase):
         batch_size = obs_b.size(0)
 
         with torch.no_grad():
-            q_ext = self.ext_online(obs_b, normalized=True)  # [B,n_actions]
+            q_ext = self.ext_online(obs_b, normalized=True)  # [B,D,Bins] or [B,n_actions]
+            
             if self.Beta > 0.0:
                 int_q = self.int_online(obs_b, normalized=True)
                 q_ext = (1.0 - self.Beta) * q_ext + self.Beta * int_q
@@ -779,7 +780,14 @@ class EVRainbowDQN(RainbowBase):
                 mask = mask.to(q_ext.device)
                 q_ext = q_ext.clone()
                 # For categorical sampling (soft/munchausen) and argmax, -1e9 works.
-                q_ext[mask == 0] = -1e9
+                if q_ext.ndim == 3:
+                    # If mask is [B, Bins] and q_ext is [B, 1, Bins], this expands correctly.
+                    # For true MultiDiscrete, mask would need to be [B, D, Bins].
+                    if mask.ndim == 2 and q_ext.shape[1] == 1:
+                        mask = mask.unsqueeze(1)
+                    q_ext[mask.expand_as(q_ext) == 0] = -1e9
+                else:
+                    q_ext[mask == 0] = -1e9
 
             if self.soft or self.munchausen:
                 actions = torch.distributions.Categorical(
@@ -1386,6 +1394,7 @@ class IQNRainbowDQN(RainbowBase):
             ext_q = self.ext_online(obs_b, taus, normalized=True).mean(
                 dim=1
             )  # [B,D,Bins]
+                
             if self.Beta > 0.0:
                 int_taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)
                 int_q = self.int_online(obs_b, int_taus, normalized=True).mean(dim=1)
@@ -1399,7 +1408,9 @@ class IQNRainbowDQN(RainbowBase):
                 # ext_q can be [B, n_quantiles, n_actions] or [B, n_actions]
                 if ext_q.ndim == 3:
                     # Broadcast mask to quantiles
-                    ext_q[mask.unsqueeze(1).expand_as(ext_q) == 0] = -1e9
+                    if mask.ndim == 2 and ext_q.shape[1] == 1:
+                        mask = mask.unsqueeze(1)
+                    ext_q[mask.expand_as(ext_q) == 0] = -1e9
                 else:
                     ext_q[mask == 0] = -1e9
 

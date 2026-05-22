@@ -2,8 +2,8 @@
 # Ablations 0-5 are the same as runner.py
 # Ablation 6 is the "Base" algorithm (Default params, high entropy for PPO)
 
-$ENVS = @("leduc")#"tictactoe","rps", 
-$ALGOS = @("dqn")#, "sac", "ppo")
+$ENVS = @("leduc", "rps")#"tictactoe","rps", 
+$ALGOS = @("dqn", "sac")#, "ppo")
 $ABLATIONS = 0..6
 
 foreach ($env in $ENVS) {

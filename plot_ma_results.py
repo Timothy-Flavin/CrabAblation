@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import argparse
 
 def plot_ma_results(algo, env_name):
-    results_dir = f"all_results/{algo}/{env_name}"
+    results_dir = f"results/{algo}/{env_name}"
     if not os.path.exists(results_dir):
         print(f"Directory {results_dir} not found.")
         return
@@ -69,17 +69,30 @@ def plot_ma_results(algo, env_name):
     rep_ablation = 6 if os.path.exists(os.path.join(results_dir, f"action_dist_p0_6.npy")) else 0
     path = os.path.join(results_dir, f"action_dist_p0_{rep_ablation}.npy")
     if os.path.exists(path):
-        data = np.load(path, allow_pickle=True)
-        if len(data.shape) == 2 and data.shape[1] == 3: # RPS
-            labels = ["Rock", "Paper", "Scissors"]
-            for j in range(3):
-                ax.plot(data[:, j], label=labels[j])
-            ax.set_title(f"Action Probs (P0, Ablation {rep_ablation})")
-            ax.legend()
-        elif len(data.shape) == 2: # Discrete actions
-            for j in range(min(data.shape[1], 9)):
-                ax.plot(data[:, j], label=f"Act {j}")
-            ax.legend()
+        try:
+            data = np.load(path, allow_pickle=True)
+            # If it's a list of arrays, convert to 2D
+            if data.dtype == object:
+                data = np.array(list(data))
+            
+            # Squeeze unnecessary dims
+            data = data.squeeze()
+            
+            if data.ndim == 2:
+                n_cols = data.shape[1]
+                if n_cols == 3 and env_name == "rps":
+                    labels = ["Rock", "Paper", "Scissors"]
+                else:
+                    labels = [f"Act {j}" for j in range(n_cols)]
+                
+                for j in range(min(n_cols, 9)):
+                    ax.plot(data[:, j], label=labels[j])
+                ax.set_title(f"Action Probs (P0, Ablation {rep_ablation})")
+                ax.legend()
+            else:
+                ax.text(0.5, 0.5, f"Unexpected data shape: {data.shape}", ha='center', va='center')
+        except Exception as e:
+            ax.text(0.5, 0.5, f"Error plotting dist: {str(e)}", ha='center', va='center')
     else:
         ax.text(0.5, 0.5, "No distribution data found", ha='center', va='center')
 
