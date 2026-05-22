@@ -17,11 +17,11 @@ source .venv/bin/activate
                     echo "[lab-comp_cpu] Running MA: Env=$env | Algo=$algo | Ablation=$ablation | Run=$run"
                     
                     # Default episodes
-                    EPISODES=10000
+                    EPISODES=25000
                     if [ "$env" == "leduc" ]; then
-                        EPISODES=20000
+                        EPISODES=100000
                     elif [ "$env" == "rps" ]; then
-                        EPISODES=5000
+                        EPISODES=10000
                     fi
 
                     EXTRA_FLAGS=""
