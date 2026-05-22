@@ -514,6 +514,6 @@ def train_ma(args, seed=0):
 
 if __name__ == "__main__":
     args = get_ma_args()
-    for seed in range(5):
-        print(f"--- Running Seed {seed} ---")
-        train_ma(args, seed=seed)
+    seed = args.run - 1
+    print(f"--- Running Seed {seed} (Run {args.run}) ---")
+    train_ma(args, seed=seed)

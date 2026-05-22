@@ -5,37 +5,41 @@
 $ENVS = @("tictactoe", "leduc", "rps")
 $ALGOS = @("dqn", "sac", "ppo")
 $ABLATIONS = 0..6
+$RUNS = 1..5
 
 foreach ($env in $ENVS) {
     foreach ($algo in $ALGOS) {
         foreach ($ablation in $ABLATIONS) {
-            Write-Host "Starting MA Ablation: Env=$env, Algo=$algo, Ablation=$ablation" -ForegroundColor Cyan
-            
-            # Default episodes
-            $EPISODES = 10000
-            if ($env -eq "leduc") {
-                $EPISODES = 20000
-            }
-            if ($env -eq "rps") {
-                $EPISODES = 5000
-            }
+            foreach ($run in $RUNS) {
+                Write-Host "Starting MA Ablation: Env=$env, Algo=$algo, Ablation=$ablation, Run=$run" -ForegroundColor Cyan
+                
+                # Default episodes
+                $EPISODES = 10000
+                if ($env -eq "leduc") {
+                    $EPISODES = 20000
+                }
+                if ($env -eq "rps") {
+                    $EPISODES = 5000
+                }
 
-            # Prepare arguments
-            $ArgList = @(
-                "multiagent_runner.py",
-                "--algo", $algo,
-                "--ma_env", $env,
-                "--ablation", $ablation,
-                "--total_episodes", $EPISODES
-            )
+                # Prepare arguments
+                $ArgList = @(
+                    "multiagent_runner.py",
+                    "--algo", $algo,
+                    "--ma_env", $env,
+                    "--ablation", $ablation,
+                    "--run", $run,
+                    "--total_episodes", $EPISODES
+                )
 
-            # Extra flags for Ablation 6 PPO to ensure high entropy for Nash
-            if ($algo -eq "ppo" -and $ablation -eq 6) {
-                $ArgList += "--ent_coef_override", "0.1"
+                # Extra flags for Ablation 6 PPO to ensure high entropy for Nash
+                if ($algo -eq "ppo" -and $ablation -eq 6) {
+                    $ArgList += "--ent_coef_override", "0.1"
+                }
+
+                # Run using the local venv python
+                & ".\.venv\Scripts\python.exe" $ArgList
             }
-
-            # Run using the local venv python
-            & ".\.venv\Scripts\python.exe" $ArgList
         }
     }
 }
