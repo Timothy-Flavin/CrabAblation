@@ -528,6 +528,9 @@ SUPPORTED_ENVIRONMENTS = (
     "mujoco",
     "cartpole",
     "hide-and-seek-engine",
+    "rps",
+    "leduc",
+    "tictactoe",
 )
 SUPPORTED_ALGOS = ("dqn", "ppo", "sac")
 
@@ -564,17 +567,26 @@ class ActionTransformHandler:
         self.transform_action = self._assign_transform()
 
     def _assign_transform(self):
+        # Generic handling for SAC on discrete/multi-discrete spaces (multiple-action argmax formulation)
+        if self.algo == "sac":
+            if isinstance(self.action_space, (gym.spaces.Discrete, gym.spaces.MultiDiscrete)):
+                return self._continuous_to_discrete_argmax
+            
+            if self.env_name == "mujoco":
+                return self._continuous_passthrough
+            
+            if self.env_name == "hide-and-seek-engine":
+                if isinstance(self.action_space, gym.spaces.Box):
+                    return self._dummy
+                return self._continuous_to_hybrid_hide_and_seek
+
         if self.env_name in ("cartpole", "minigrid"):
             if self.algo in ("dqn", "ppo"):
                 return self._dummy
-            if self.algo == "sac":
-                return self._continuous_to_discrete_argmax
 
         if self.env_name == "mujoco":
             if self.algo in ("dqn", "ppo"):
                 return self._discrete_to_continuous_mujoco
-            if self.algo == "sac":
-                return self._continuous_passthrough
 
         if self.env_name == "hide-and-seek-engine":
             if self.algo in ("dqn", "ppo"):
@@ -584,11 +596,12 @@ class ActionTransformHandler:
                 if self.algo == "ppo" and isinstance(self.action_space, gym.spaces.Box):
                     return self._dummy # PPO produces identical box tensor shape
                 return self._discrete_to_continuous_mujoco # DQN needs discrete wrapping mapped to Box
-            if self.algo == "sac":
-                if isinstance(self.action_space, gym.spaces.Box):
-                    return self._dummy
-                return self._continuous_to_hybrid_hide_and_seek
 
+        # Fallback for other environments (like RPS, Leduc, TicTacToe) if run via runner.py
+        if isinstance(self.action_space, (gym.spaces.Discrete, gym.spaces.MultiDiscrete)):
+            if self.algo in ("dqn", "ppo"):
+                return self._dummy
+            
         raise ValueError(
             f"Unsupported env/algo combination: env='{self.env_name}', algo='{self.algo}'"
         )

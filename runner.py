@@ -787,6 +787,9 @@ def rollout_offline_rl(
         bins_per_dim=int(getattr(args, "hide_seek_bins_per_dim", 3)),
         discrete_bins=int(env_cfg.get("n_action_bins", 2)), batched=True,
     )
+    # For SAC on discrete environments, we use a multi-dimensional proxy action space
+    # where each dimension corresponds to a discrete action preference. 
+    # ActionTransformHandler will then take the argmax of these preferences.
     proxy_action_space = _proxy_action_space(vec_env.single_action_space)
     proxy_action_dim = int(np.prod(proxy_action_space.shape))
 
