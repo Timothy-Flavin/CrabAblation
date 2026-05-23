@@ -31,7 +31,7 @@ class RainbowBase(Agent):
         alpha: float = 0.001,
         munchausen_constant: float = 0.1,
         polyak_tau: float = 0.03,
-        l_clip: float = -1.0,
+        l_clip: float = -10.0,
         soft: bool = False,
         munchausen: bool = False,
         Thompson: bool = False,
@@ -370,7 +370,7 @@ class EVRainbowDQN(RainbowBase):
         alpha: float = 0.9,
         munchausen_constant: float = 0.1,
         polyak_tau: float = 0.005,
-        l_clip: float = -1.0,
+        l_clip: float = -10.0,
         soft: bool = False,
         Thompson: bool = False,
         dueling: bool = False,
@@ -530,7 +530,7 @@ class EVRainbowDQN(RainbowBase):
                 self.int_target.load_state_dict(self.int_online.state_dict())
 
         b_obs = b_obs.to(self.device, non_blocking=True)
-        b_a = b_a.to(self.device, non_blocking=True)
+        b_a = b_a.to(self.device, non_blocking=True).long()
         b_term = b_term.to(self.device, non_blocking=True).view(-1)
         b_trunc = b_trunc.to(self.device, non_blocking=True).view(-1)
         b_r_ext = b_r_ext.to(self.device, non_blocking=True).view(-1)
@@ -848,7 +848,7 @@ class IQNRainbowDQN(RainbowBase):
         gamma: float = 0.99,
         alpha: float = 0.9,
         polyak_tau: float = 0.03,
-        l_clip: float = -1.0,
+        l_clip: float = -10.0,
         soft: bool = False,
         munchausen_constant: float = 0.1,
         Thompson: bool = False,
@@ -1027,7 +1027,7 @@ class IQNRainbowDQN(RainbowBase):
                 self.int_target.load_state_dict(self.int_online.state_dict())
 
         b_obs = b_obs.to(self.device, non_blocking=True)
-        b_a = b_a.to(self.device, non_blocking=True)
+        b_a = b_a.to(self.device, non_blocking=True).long()
         b_term = b_term.to(self.device, non_blocking=True).view(-1)
         b_trunc = b_trunc.to(self.device, non_blocking=True).view(-1)
         b_r_ext = b_r_ext.to(self.device, non_blocking=True).view(-1)

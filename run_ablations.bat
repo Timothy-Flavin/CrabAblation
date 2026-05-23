@@ -3,9 +3,9 @@ REM Auto-generated ablation runner for Windows Batch
 REM Usage: Edit ALGOS, ENVS, ABLATIONS, RUNS, DEVICE_NAME as needed
 
 REM Set parameters (space-separated lists)
-set "ALGOS=sac"
-set "ENVS=minigrid"
-set "ABLATIONS=6 0 1 2 3 4 5"
+set "ALGOS=dqn"
+set "ENVS=mujoco"
+set "ABLATIONS=0 1 2 3 4 5"
 set "RUNS=2"
 set "DEVICE_NAME=laptop"
 

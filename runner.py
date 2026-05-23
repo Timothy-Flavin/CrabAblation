@@ -671,6 +671,7 @@ def rollout_online_rl(
             obs, action, logprob, reward, next_obs, terminations, truncations, infos
         )
 
+        old_ep = ep
         for env_i in range(args.num_envs):
             r_ep[env_i] += float(reward[env_i])
             if terminations[env_i] or truncations[env_i]:
@@ -681,15 +682,15 @@ def rollout_online_rl(
                 smooth_rhist.append(float(smooth_r))
                 ep += 1
 
-                if ep % eval_every_episodes == 0 and ep > 0:
-                    effective_step = int(progress * total_step_budget)
-                    eval_res = evaluate_agent(
-                        agent, args, device, step=effective_step, n_steps=total_step_budget
-                    )
-                    eval_hist.append(eval_res)
-
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0
+
+        if (ep // eval_every_episodes) > (old_ep // eval_every_episodes):
+            effective_step = int(progress * total_step_budget)
+            eval_res = evaluate_agent(
+                agent, args, device, step=effective_step, n_steps=total_step_budget
+            )
+            eval_hist.append(eval_res)
 
         obs = next_obs
         global_step += args.num_envs
@@ -848,6 +849,7 @@ def rollout_offline_rl(
 
         agent.observe(obs, actions_arr, rewards, real_next_obs, terminations, truncations, infos)
 
+        old_ep = ep
         for env_i in range(args.num_envs):
             total_samples += 1
             r_ep[env_i] += float(rewards[env_i])
@@ -857,12 +859,11 @@ def rollout_offline_rl(
                 smooth_r = float(sum(rhist)/len(rhist)) if len(rhist) < 20 else float(0.05 * rhist[-1] + 0.95 * smooth_r)
                 smooth_rhist.append(smooth_r)
                 ep += 1
-
-                if ep % eval_every_episodes == 0 and ep > 0:
-                    eval_hist.append(evaluate_agent(agent, args, device, step=effective_step, n_steps=total_step_budget))
-
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0
+
+        if (ep // eval_every_episodes) > (old_ep // eval_every_episodes):
+             eval_hist.append(evaluate_agent(agent, args, device, step=effective_step, n_steps=total_step_budget))
 
         obs = next_obs
         steps_since_update += args.num_envs

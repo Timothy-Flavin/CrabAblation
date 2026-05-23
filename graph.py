@@ -56,7 +56,18 @@ def aggregate_runs(
         return np.array([]), np.array([]), np.array([])
     min_len = min(arr.size for arr in runs_data)
     stacked = np.vstack([arr[:min_len] for arr in runs_data])
-    return stacked.mean(axis=0), stacked.min(axis=0), stacked.max(axis=0)
+    
+    num_runs = stacked.shape[0]
+    if num_runs <= 2:
+        iqm = stacked.mean(axis=0)
+    else:
+        sorted_stacked = np.sort(stacked, axis=0)
+        lower_idx = int(np.floor(num_runs * 0.25))
+        upper_idx = int(np.ceil(num_runs * 0.75))
+        trimmed = sorted_stacked[lower_idx:upper_idx, :]
+        iqm = trimmed.mean(axis=0)
+        
+    return iqm, stacked.min(axis=0), stacked.max(axis=0)
 
 
 def collect_for_algo(

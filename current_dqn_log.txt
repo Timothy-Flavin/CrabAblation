@@ -1,0 +1,828 @@
+[DQN] Step 180000/1000000 (Episodes: 176) smooth r 876.729611095614
+[DQN] Step 190000/1000000 (Episodes: 188) smooth r 901.1293801366245
+[DQN] Step 200000/1000000 (Episodes: 196) smooth r 772.6702779080595
+[DQN] Step 210000/1000000 (Episodes: 208) smooth r 639.8410355743656
+[DQN] Step 220000/1000000 (Episodes: 216) smooth r 869.2971800056251
+[DQN] Step 230000/1000000 (Episodes: 228) smooth r 925.3862042095599
+[DQN] Step 240000/1000000 (Episodes: 236) smooth r 1115.0613066806968
+[DQN] Step 250000/1000000 (Episodes: 248) smooth r 898.4921835931567
+[DQN] Step 260000/1000000 (Episodes: 256) smooth r 1008.68686000688
+[DQN] Step 270000/1000000 (Episodes: 268) smooth r 980.8277578145758
+[DQN] Step 280000/1000000 (Episodes: 276) smooth r 855.1549096789754
+[DQN] Step 290000/1000000 (Episodes: 288) smooth r 1144.7851326803966
+[DQN] Step 300000/1000000 (Episodes: 296) smooth r 1206.8457344479602
+[DQN] Step 310000/1000000 (Episodes: 308) smooth r 1141.230836828939
+[DQN] Step 320000/1000000 (Episodes: 316) smooth r 1082.7100585629457
+[DQN] Step 330000/1000000 (Episodes: 328) smooth r 1119.2949832390939
+[DQN] Step 340000/1000000 (Episodes: 336) smooth r 1167.1409150410109
+[DQN] Step 350000/1000000 (Episodes: 348) smooth r 962.8539492410346
+[DQN] Step 360000/1000000 (Episodes: 356) smooth r 808.9538225600905
+[DQN] Step 370000/1000000 (Episodes: 368) smooth r 937.1301660847173
+[DQN] Step 380000/1000000 (Episodes: 376) smooth r 1080.0860271230217
+[DQN] Step 390000/1000000 (Episodes: 388) smooth r 1115.4222076595006
+[DQN] Step 400000/1000000 (Episodes: 396) smooth r 983.0235411778696
+[DQN] Step 410000/1000000 (Episodes: 408) smooth r 990.4738214871411
+[DQN] Step 420000/1000000 (Episodes: 416) smooth r 1188.6275439523804
+[DQN] Step 430000/1000000 (Episodes: 428) smooth r 983.6838245166522
+[DQN] Step 440000/1000000 (Episodes: 436) smooth r 1027.2738505526975
+[DQN] Step 450000/1000000 (Episodes: 448) smooth r 1213.4594891863715
+[DQN] Step 460000/1000000 (Episodes: 456) smooth r 1262.3726242282683
+[DQN] Step 470000/1000000 (Episodes: 468) smooth r 1263.2289358372964
+[DQN] Step 480000/1000000 (Episodes: 476) smooth r 1225.2881897914058
+[DQN] Step 490000/1000000 (Episodes: 488) smooth r 994.5621100106669
+[DQN] Step 500000/1000000 (Episodes: 496) smooth r 1147.6631083892128
+[DQN] Step 510000/1000000 (Episodes: 508) smooth r 1397.7096901212687
+[DQN] Step 520000/1000000 (Episodes: 516) smooth r 1290.890661524537
+[DQN] Step 530000/1000000 (Episodes: 528) smooth r 1182.0124000681894
+[DQN] Step 540000/1000000 (Episodes: 536) smooth r 1139.545606479686
+[DQN] Step 550000/1000000 (Episodes: 548) smooth r 1010.1174560870994
+[DQN] Step 560000/1000000 (Episodes: 556) smooth r 1060.5828772256339
+[DQN] Step 570000/1000000 (Episodes: 568) smooth r 1215.8277317839518
+[DQN] Step 580000/1000000 (Episodes: 576) smooth r 910.9189341157708
+[DQN] Step 590000/1000000 (Episodes: 588) smooth r 907.9637899143192
+[DQN] Step 600000/1000000 (Episodes: 596) smooth r 1121.220170871417
+[DQN] Step 610000/1000000 (Episodes: 608) smooth r 1176.2707513131327
+[DQN] Step 620000/1000000 (Episodes: 616) smooth r 1170.7862902070317
+[DQN] Step 630000/1000000 (Episodes: 628) smooth r 996.3954817189712
+[DQN] Step 640000/1000000 (Episodes: 636) smooth r 1114.0427474994765
+[DQN] Step 650000/1000000 (Episodes: 648) smooth r 1393.1695264955965
+[DQN] Step 660000/1000000 (Episodes: 656) smooth r 1386.6923569562111
+[DQN] Step 670000/1000000 (Episodes: 668) smooth r 1354.996088606202
+[DQN] Step 680000/1000000 (Episodes: 676) smooth r 1361.7407179499837
+[DQN] Step 690000/1000000 (Episodes: 688) smooth r 1286.1490833277974
+[DQN] Step 700000/1000000 (Episodes: 696) smooth r 1228.4559880400193
+[DQN] Step 710000/1000000 (Episodes: 708) smooth r 1144.0569636471196
+[DQN] Step 720000/1000000 (Episodes: 716) smooth r 1187.910531776994
+[DQN] Step 730000/1000000 (Episodes: 728) smooth r 1327.0942791414034
+[DQN] Step 740000/1000000 (Episodes: 736) smooth r 1500.334345205278
+[DQN] Step 750000/1000000 (Episodes: 748) smooth r 1289.9555460007532
+[DQN] Step 760000/1000000 (Episodes: 756) smooth r 1504.1939650015258
+[DQN] Step 770000/1000000 (Episodes: 768) smooth r 1300.5729396706104
+[DQN] Step 780000/1000000 (Episodes: 776) smooth r 1218.9299044989793
+[DQN] Step 790000/1000000 (Episodes: 788) smooth r 1327.6252909531163
+[DQN] Step 800000/1000000 (Episodes: 796) smooth r 1285.8722747986074
+[DQN] Step 810000/1000000 (Episodes: 808) smooth r 1591.6497899001001
+[DQN] Step 820000/1000000 (Episodes: 816) smooth r 1435.0501586990167
+[DQN] Step 830000/1000000 (Episodes: 828) smooth r 1349.6628007756449
+[DQN] Step 840000/1000000 (Episodes: 836) smooth r 1318.024952457615
+[DQN] Step 850000/1000000 (Episodes: 848) smooth r 1495.8279190397957
+[DQN] Step 860000/1000000 (Episodes: 856) smooth r 1413.177262745412
+[DQN] Step 870000/1000000 (Episodes: 868) smooth r 1199.5463561026893
+[DQN] Step 880000/1000000 (Episodes: 876) smooth r 1092.5351238135972
+[DQN] Step 890000/1000000 (Episodes: 888) smooth r 1208.8506212472294
+[DQN] Step 900000/1000000 (Episodes: 896) smooth r 1019.1163251905858
+[DQN] Step 910000/1000000 (Episodes: 908) smooth r 1148.0632326823688
+[DQN] Step 920000/1000000 (Episodes: 916) smooth r 1153.6758520833273
+[DQN] Step 930000/1000000 (Episodes: 928) smooth r 1117.4887039751482
+[DQN] Step 940000/1000000 (Episodes: 936) smooth r 1228.6023286537888
+[DQN] Step 950000/1000000 (Episodes: 948) smooth r 1254.2472756427828
+[DQN] Step 960000/1000000 (Episodes: 956) smooth r 1294.430419855289
+[DQN] Step 970000/1000000 (Episodes: 968) smooth r 957.5695507273256
+[DQN] Step 980000/1000000 (Episodes: 976) smooth r 1310.6208132678812
+[DQN] Step 990000/1000000 (Episodes: 988) smooth r 1259.071188121677
+Time taken modular {'action_sample': 110.8730103969574, 'env_step': 145.46648406982422, 'update_agent': 2026.1959722042084, 'eval_agent': 0.0}
+Training wall clock time: 2361.33 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 6 | Run: 2
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cpu', ablation=6, fully_obs=False, run=2, num_envs=4, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+[DQN] Step 10000/1000000 (Episodes: 8) smooth r -417.4793930412283
+[DQN] Step 20000/1000000 (Episodes: 16) smooth r -247.79342450701617
+[DQN] Step 30000/1000000 (Episodes: 28) smooth r -179.28332095463077
+[DQN] Step 40000/1000000 (Episodes: 36) smooth r -109.1054192469634
+[DQN] Step 50000/1000000 (Episodes: 48) smooth r 144.49535375807338
+[DQN] Step 60000/1000000 (Episodes: 56) smooth r 555.3596391566628
+[DQN] Step 70000/1000000 (Episodes: 68) smooth r 639.3037165191954
+[DQN] Step 80000/1000000 (Episodes: 76) smooth r 583.4074212505079
+[DQN] Step 90000/1000000 (Episodes: 88) smooth r 495.74408101129353
+[DQN] Step 100000/1000000 (Episodes: 96) smooth r 486.64794430621924
+[DQN] Step 110000/1000000 (Episodes: 108) smooth r 434.65193693711467
+[DQN] Step 120000/1000000 (Episodes: 116) smooth r 388.534973821362
+[DQN] Step 130000/1000000 (Episodes: 128) smooth r 335.4068516553905
+[DQN] Step 140000/1000000 (Episodes: 136) smooth r 217.85952469703392
+[DQN] Step 150000/1000000 (Episodes: 148) smooth r 256.73618313775063
+[DQN] Step 160000/1000000 (Episodes: 156) smooth r 286.4560607897873
+[DQN] Step 170000/1000000 (Episodes: 168) smooth r 237.30653102890406
+[DQN] Step 180000/1000000 (Episodes: 176) smooth r 433.2135304736508
+[DQN] Step 190000/1000000 (Episodes: 188) smooth r 535.9434186646012
+[DQN] Step 200000/1000000 (Episodes: 196) smooth r 438.36124757391667
+[DQN] Step 210000/1000000 (Episodes: 208) smooth r 337.9198351790528
+[DQN] Step 220000/1000000 (Episodes: 216) smooth r 500.76227109134703
+[DQN] Step 230000/1000000 (Episodes: 228) smooth r 348.99331204744146
+[DQN] Step 240000/1000000 (Episodes: 236) smooth r 445.15687807727693
+[DQN] Step 250000/1000000 (Episodes: 248) smooth r 639.6408222110002
+[DQN] Step 260000/1000000 (Episodes: 256) smooth r 674.0087113029836
+[DQN] Step 270000/1000000 (Episodes: 268) smooth r 575.9363094902077
+[DQN] Step 280000/1000000 (Episodes: 276) smooth r 664.7629709062761
+[DQN] Step 290000/1000000 (Episodes: 288) smooth r 738.1735743406318
+[DQN] Step 300000/1000000 (Episodes: 296) smooth r 846.0462916389035
+[DQN] Step 310000/1000000 (Episodes: 308) smooth r 721.3370006037464
+[DQN] Step 320000/1000000 (Episodes: 316) smooth r 771.1897807141277
+[DQN] Step 330000/1000000 (Episodes: 328) smooth r 798.1928436406857
+[DQN] Step 340000/1000000 (Episodes: 336) smooth r 709.2857319716929
+[DQN] Step 350000/1000000 (Episodes: 348) smooth r 766.1292325685705
+[DQN] Step 360000/1000000 (Episodes: 356) smooth r 667.7416643005774
+[DQN] Step 370000/1000000 (Episodes: 368) smooth r 743.6186449044062
+[DQN] Step 380000/1000000 (Episodes: 376) smooth r 967.9815465002573
+[DQN] Step 390000/1000000 (Episodes: 388) smooth r 1065.555986768119
+[DQN] Step 400000/1000000 (Episodes: 396) smooth r 1067.4101549603356
+[DQN] Step 410000/1000000 (Episodes: 408) smooth r 989.5661634029063
+[DQN] Step 420000/1000000 (Episodes: 416) smooth r 834.8929684785311
+[DQN] Step 430000/1000000 (Episodes: 428) smooth r 1021.571303458201
+[DQN] Step 440000/1000000 (Episodes: 436) smooth r 1010.4559753260212
+[DQN] Step 450000/1000000 (Episodes: 448) smooth r 892.2555387504142
+[DQN] Step 460000/1000000 (Episodes: 456) smooth r 892.7357904637973
+[DQN] Step 470000/1000000 (Episodes: 468) smooth r 1066.6502381121086
+[DQN] Step 480000/1000000 (Episodes: 476) smooth r 850.1980642637321
+[DQN] Step 490000/1000000 (Episodes: 488) smooth r 848.2099802800262
+[DQN] Step 500000/1000000 (Episodes: 496) smooth r 856.5906286423123
+[DQN] Step 510000/1000000 (Episodes: 508) smooth r 747.0549974499834
+[DQN] Step 520000/1000000 (Episodes: 516) smooth r 620.5013357488968
+[DQN] Step 530000/1000000 (Episodes: 528) smooth r 1038.0084064514533
+[DQN] Step 540000/1000000 (Episodes: 536) smooth r 1139.5103834371346
+[DQN] Step 550000/1000000 (Episodes: 548) smooth r 1254.6285152005225
+[DQN] Step 560000/1000000 (Episodes: 556) smooth r 1050.2670008645678
+[DQN] Step 570000/1000000 (Episodes: 568) smooth r 1082.6650164820278
+[DQN] Step 580000/1000000 (Episodes: 576) smooth r 1224.1570388743542
+[DQN] Step 590000/1000000 (Episodes: 588) smooth r 1084.0978407065554
+[DQN] Step 600000/1000000 (Episodes: 596) smooth r 979.18154524838
+[DQN] Step 610000/1000000 (Episodes: 608) smooth r 885.5555044965768
+[DQN] Step 620000/1000000 (Episodes: 616) smooth r 870.5451269990267
+[DQN] Step 630000/1000000 (Episodes: 628) smooth r 1068.962992493441
+[DQN] Step 640000/1000000 (Episodes: 636) smooth r 1000.5470675741134
+[DQN] Step 650000/1000000 (Episodes: 648) smooth r 687.508404814902
+[DQN] Step 660000/1000000 (Episodes: 656) smooth r 700.9950887718462
+[DQN] Step 670000/1000000 (Episodes: 668) smooth r 1113.7610981874755
+[DQN] Step 680000/1000000 (Episodes: 676) smooth r 1277.3840188080924
+[DQN] Step 690000/1000000 (Episodes: 688) smooth r 1264.792037068951
+[DQN] Step 700000/1000000 (Episodes: 696) smooth r 1062.7831383922012
+[DQN] Step 710000/1000000 (Episodes: 708) smooth r 728.595310940054
+[DQN] Step 720000/1000000 (Episodes: 716) smooth r 851.9950986282436
+[DQN] Step 730000/1000000 (Episodes: 728) smooth r 1123.787647308159
+[DQN] Step 740000/1000000 (Episodes: 736) smooth r 1154.29365632927
+[DQN] Step 750000/1000000 (Episodes: 748) smooth r 1165.7257721942333
+[DQN] Step 760000/1000000 (Episodes: 756) smooth r 1483.1017453101047
+[DQN] Step 770000/1000000 (Episodes: 768) smooth r 1095.1360284470923
+[DQN] Step 780000/1000000 (Episodes: 776) smooth r 1053.5635231444792
+[DQN] Step 790000/1000000 (Episodes: 788) smooth r 946.005761378078
+[DQN] Step 800000/1000000 (Episodes: 796) smooth r 1007.8165644836995
+[DQN] Step 810000/1000000 (Episodes: 808) smooth r 1041.2891988699766
+[DQN] Step 820000/1000000 (Episodes: 816) smooth r 1158.4426871786586
+[DQN] Step 830000/1000000 (Episodes: 828) smooth r 1362.544816416824
+[DQN] Step 840000/1000000 (Episodes: 836) smooth r 1177.4110350727074
+[DQN] Step 850000/1000000 (Episodes: 848) smooth r 1090.287365355888
+[DQN] Step 860000/1000000 (Episodes: 856) smooth r 1157.823032233473
+[DQN] Step 870000/1000000 (Episodes: 868) smooth r 1147.8951583995254
+[DQN] Step 880000/1000000 (Episodes: 876) smooth r 1431.1581217491441
+[DQN] Step 890000/1000000 (Episodes: 888) smooth r 1403.3587266415402
+[DQN] Step 900000/1000000 (Episodes: 896) smooth r 1248.375484229303
+[DQN] Step 910000/1000000 (Episodes: 908) smooth r 1090.3840665179055
+[DQN] Step 920000/1000000 (Episodes: 916) smooth r 1032.6760619405418
+[DQN] Step 930000/1000000 (Episodes: 928) smooth r 1073.3449644660373
+[DQN] Step 940000/1000000 (Episodes: 936) smooth r 914.8341078150723
+[DQN] Step 950000/1000000 (Episodes: 948) smooth r 998.8331798442509
+[DQN] Step 960000/1000000 (Episodes: 956) smooth r 687.8229307975226
+[DQN] Step 970000/1000000 (Episodes: 968) smooth r 770.6111276005488
+[DQN] Step 980000/1000000 (Episodes: 976) smooth r 772.5786795816142
+[DQN] Step 990000/1000000 (Episodes: 988) smooth r 470.0729205230424
+Time taken modular {'action_sample': 109.01121926307678, 'env_step': 145.99944233894348, 'update_agent': 1993.425899028778, 'eval_agent': 0.0}
+Training wall clock time: 2326.59 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 6 | Run: 3
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cpu', ablation=6, fully_obs=False, run=3, num_envs=4, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+[DQN] Step 10000/1000000 (Episodes: 8) smooth r -434.2509658923391
+[DQN] Step 20000/1000000 (Episodes: 16) smooth r -359.70190370481987
+[DQN] Step 30000/1000000 (Episodes: 28) smooth r -290.19376480787906
+[DQN] Step 40000/1000000 (Episodes: 36) smooth r -231.52952414517026
+[DQN] Step 50000/1000000 (Episodes: 48) smooth r -8.226320180099918
+[DQN] Step 60000/1000000 (Episodes: 56) smooth r 123.94224240204703
+[DQN] Step 70000/1000000 (Episodes: 68) smooth r 203.63743951295686
+[DQN] Step 80000/1000000 (Episodes: 76) smooth r 362.49714350882294
+[DQN] Step 90000/1000000 (Episodes: 88) smooth r 590.1814598420493
+[DQN] Step 100000/1000000 (Episodes: 96) smooth r 627.2659976687415
+[DQN] Step 110000/1000000 (Episodes: 108) smooth r 668.1220367160394
+[DQN] Step 120000/1000000 (Episodes: 116) smooth r 655.6401995889515
+[DQN] Step 130000/1000000 (Episodes: 128) smooth r 459.39797613255007
+[DQN] Step 140000/1000000 (Episodes: 136) smooth r 350.6605482053507
+[DQN] Step 150000/1000000 (Episodes: 148) smooth r 285.8006955121541
+[DQN] Step 160000/1000000 (Episodes: 156) smooth r 232.17653172594984
+[DQN] Step 170000/1000000 (Episodes: 168) smooth r 232.50882213811835
+[DQN] Step 180000/1000000 (Episodes: 176) smooth r 265.9455612012007
+[DQN] Step 190000/1000000 (Episodes: 188) smooth r 285.33258080899657
+[DQN] Step 200000/1000000 (Episodes: 196) smooth r 246.59227540576467
+[DQN] Step 210000/1000000 (Episodes: 208) smooth r 299.9459783912128
+[DQN] Step 220000/1000000 (Episodes: 216) smooth r 297.5114249409919
+[DQN] Step 230000/1000000 (Episodes: 228) smooth r 399.6050384237259
+[DQN] Step 240000/1000000 (Episodes: 236) smooth r 420.3018775618851
+[DQN] Step 250000/1000000 (Episodes: 248) smooth r 399.68948224230076
+[DQN] Step 260000/1000000 (Episodes: 256) smooth r 417.99583902676596
+[DQN] Step 270000/1000000 (Episodes: 268) smooth r 384.6645908172909
+[DQN] Step 280000/1000000 (Episodes: 276) smooth r 251.00075418229565
+[DQN] Step 290000/1000000 (Episodes: 288) smooth r 214.0199731966235
+[DQN] Step 300000/1000000 (Episodes: 296) smooth r 327.55354560270854
+[DQN] Step 310000/1000000 (Episodes: 308) smooth r 386.1730031462368
+[DQN] Step 320000/1000000 (Episodes: 316) smooth r 393.7747380892644
+[DQN] Step 330000/1000000 (Episodes: 328) smooth r 442.7547790132503
+[DQN] Step 340000/1000000 (Episodes: 336) smooth r 493.7019310772381
+[DQN] Step 350000/1000000 (Episodes: 348) smooth r 431.2774999957715
+[DQN] Step 360000/1000000 (Episodes: 356) smooth r 357.41108309205055
+[DQN] Step 370000/1000000 (Episodes: 368) smooth r 602.3426049273482
+[DQN] Step 380000/1000000 (Episodes: 376) smooth r 674.2535035132099
+[DQN] Step 390000/1000000 (Episodes: 388) smooth r 509.9483580943023
+[DQN] Step 400000/1000000 (Episodes: 396) smooth r 490.13568257642726
+[DQN] Step 410000/1000000 (Episodes: 408) smooth r 344.83113076316687
+[DQN] Step 420000/1000000 (Episodes: 416) smooth r 493.6166579557288
+[DQN] Step 430000/1000000 (Episodes: 428) smooth r 562.541145077849
+[DQN] Step 440000/1000000 (Episodes: 436) smooth r 421.28652384021984
+[DQN] Step 450000/1000000 (Episodes: 448) smooth r 407.2885491865297
+[DQN] Step 460000/1000000 (Episodes: 456) smooth r 420.88780704289996
+[DQN] Step 470000/1000000 (Episodes: 468) smooth r 430.39914717759507
+[DQN] Step 480000/1000000 (Episodes: 476) smooth r 424.203677831533
+[DQN] Step 490000/1000000 (Episodes: 488) smooth r 403.28844975456104
+[DQN] Step 500000/1000000 (Episodes: 496) smooth r 652.8698509325548
+[DQN] Step 510000/1000000 (Episodes: 508) smooth r 445.7841022318661
+[DQN] Step 520000/1000000 (Episodes: 516) smooth r 308.6979512182731
+[DQN] Step 530000/1000000 (Episodes: 528) smooth r 753.2254837261103
+[DQN] Step 540000/1000000 (Episodes: 536) smooth r 724.8995151834558
+[DQN] Step 550000/1000000 (Episodes: 548) smooth r 864.2826536337808
+[DQN] Step 560000/1000000 (Episodes: 556) smooth r 887.7908716650036
+[DQN] Step 570000/1000000 (Episodes: 568) smooth r 733.1168064145076
+[DQN] Step 580000/1000000 (Episodes: 576) smooth r 807.8039797538037
+[DQN] Step 590000/1000000 (Episodes: 588) smooth r 616.3339741095016
+[DQN] Step 600000/1000000 (Episodes: 596) smooth r 530.4702364876681
+[DQN] Step 610000/1000000 (Episodes: 608) smooth r 477.1579607292331
+[DQN] Step 620000/1000000 (Episodes: 616) smooth r 295.64927741513924
+[DQN] Step 630000/1000000 (Episodes: 628) smooth r 717.7030549925579
+[DQN] Step 640000/1000000 (Episodes: 636) smooth r 602.7571948544966
+[DQN] Step 650000/1000000 (Episodes: 648) smooth r 585.9606147037554
+[DQN] Step 660000/1000000 (Episodes: 656) smooth r 541.588997696108
+[DQN] Step 670000/1000000 (Episodes: 668) smooth r 612.3647332659514
+[DQN] Step 680000/1000000 (Episodes: 676) smooth r 651.0571507486493
+[DQN] Step 690000/1000000 (Episodes: 688) smooth r 558.4964301584091
+[DQN] Step 700000/1000000 (Episodes: 696) smooth r 582.2180420689856
+[DQN] Step 710000/1000000 (Episodes: 708) smooth r 685.0288678933739
+[DQN] Step 720000/1000000 (Episodes: 716) smooth r 788.6412429729743
+[DQN] Step 730000/1000000 (Episodes: 728) smooth r 758.8967183858731
+[DQN] Step 740000/1000000 (Episodes: 736) smooth r 692.764692795234
+[DQN] Step 750000/1000000 (Episodes: 748) smooth r 836.844234197484
+[DQN] Step 760000/1000000 (Episodes: 756) smooth r 797.1167395214942
+[DQN] Step 770000/1000000 (Episodes: 768) smooth r 597.8916651597457
+[DQN] Step 780000/1000000 (Episodes: 776) smooth r 582.1045866867622
+[DQN] Step 790000/1000000 (Episodes: 788) smooth r 793.3489297940898
+[DQN] Step 800000/1000000 (Episodes: 796) smooth r 652.8648421366543
+[DQN] Step 810000/1000000 (Episodes: 808) smooth r 688.7853656844743
+[DQN] Step 820000/1000000 (Episodes: 816) smooth r 667.2324180296102
+[DQN] Step 830000/1000000 (Episodes: 828) smooth r 692.3218058354735
+[DQN] Step 840000/1000000 (Episodes: 836) smooth r 888.4415201714125
+[DQN] Step 850000/1000000 (Episodes: 848) smooth r 739.2437937855536
+[DQN] Step 860000/1000000 (Episodes: 856) smooth r 660.5667908976075
+[DQN] Step 870000/1000000 (Episodes: 868) smooth r 813.1010997035017
+[DQN] Step 880000/1000000 (Episodes: 876) smooth r 651.4486458240659
+[DQN] Step 890000/1000000 (Episodes: 888) smooth r 870.6308379264372
+[DQN] Step 900000/1000000 (Episodes: 896) smooth r 833.0350961246368
+[DQN] Step 910000/1000000 (Episodes: 908) smooth r 692.5299129664154
+[DQN] Step 920000/1000000 (Episodes: 916) smooth r 555.45826120095
+[DQN] Step 930000/1000000 (Episodes: 928) smooth r 773.3686253600109
+[DQN] Step 940000/1000000 (Episodes: 936) smooth r 636.1744095917243
+[DQN] Step 950000/1000000 (Episodes: 948) smooth r 634.2528070068587
+[DQN] Step 960000/1000000 (Episodes: 956) smooth r 805.4639986291697
+[DQN] Step 970000/1000000 (Episodes: 968) smooth r 643.217873518603
+[DQN] Step 980000/1000000 (Episodes: 976) smooth r 876.9604390471223
+[DQN] Step 990000/1000000 (Episodes: 988) smooth r 1039.736400720567
+Time taken modular {'action_sample': 110.60270833969116, 'env_step': 147.55379819869995, 'update_agent': 2008.8742876052856, 'eval_agent': 0.0}
+Training wall clock time: 2346.70 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 6 | Run: 4
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cpu', ablation=6, fully_obs=False, run=4, num_envs=4, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+[DQN] Step 10000/1000000 (Episodes: 8) smooth r -411.3179065504005
+[DQN] Step 20000/1000000 (Episodes: 16) smooth r -282.49547574052445
+[DQN] Step 30000/1000000 (Episodes: 28) smooth r -286.46853676337446
+[DQN] Step 40000/1000000 (Episodes: 36) smooth r -200.38187582613668
+[DQN] Step 50000/1000000 (Episodes: 48) smooth r -98.57487743129884
+[DQN] Step 60000/1000000 (Episodes: 56) smooth r 23.818358161469305
+[DQN] Step 70000/1000000 (Episodes: 68) smooth r 326.952319268412
+[DQN] Step 80000/1000000 (Episodes: 76) smooth r 188.47641478916316
+[DQN] Step 90000/1000000 (Episodes: 88) smooth r 278.9513965927096
+[DQN] Step 100000/1000000 (Episodes: 96) smooth r 266.3941702378705
+[DQN] Step 110000/1000000 (Episodes: 108) smooth r 545.9991671120905
+[DQN] Step 120000/1000000 (Episodes: 116) smooth r 801.9885831288228
+[DQN] Step 130000/1000000 (Episodes: 128) smooth r 863.8387704816919
+[DQN] Step 140000/1000000 (Episodes: 136) smooth r 797.949104671917
+[DQN] Step 150000/1000000 (Episodes: 148) smooth r 724.826646423957
+[DQN] Step 160000/1000000 (Episodes: 156) smooth r 628.1356637269924
+[DQN] Step 170000/1000000 (Episodes: 168) smooth r 744.9038378576043
+[DQN] Step 180000/1000000 (Episodes: 176) smooth r 727.612111549362
+[DQN] Step 190000/1000000 (Episodes: 188) smooth r 551.6479964120182
+[DQN] Step 200000/1000000 (Episodes: 196) smooth r 386.2104035634495
+[DQN] Step 210000/1000000 (Episodes: 208) smooth r 518.9730003573441
+[DQN] Step 220000/1000000 (Episodes: 216) smooth r 584.3688416773705
+[DQN] Step 230000/1000000 (Episodes: 228) smooth r 607.2811106049227
+[DQN] Step 240000/1000000 (Episodes: 236) smooth r 611.0582244500396
+[DQN] Step 250000/1000000 (Episodes: 248) smooth r 803.4349067809922
+[DQN] Step 260000/1000000 (Episodes: 256) smooth r 723.8729955410355
+[DQN] Step 270000/1000000 (Episodes: 268) smooth r 522.745072419751
+[DQN] Step 280000/1000000 (Episodes: 276) smooth r 412.93827209828686
+[DQN] Step 290000/1000000 (Episodes: 288) smooth r 674.9275316967623
+[DQN] Step 300000/1000000 (Episodes: 296) smooth r 751.2529668434242
+[DQN] Step 310000/1000000 (Episodes: 308) smooth r 653.6787142611286
+[DQN] Step 320000/1000000 (Episodes: 316) smooth r 580.1096959176962
+[DQN] Step 330000/1000000 (Episodes: 328) smooth r 668.1771590591123
+[DQN] Step 340000/1000000 (Episodes: 336) smooth r 630.7366869134469
+[DQN] Step 350000/1000000 (Episodes: 348) smooth r 670.1696157241339
+[DQN] Step 360000/1000000 (Episodes: 356) smooth r 553.9051841907345
+[DQN] Step 370000/1000000 (Episodes: 368) smooth r 693.0826872853388
+[DQN] Step 380000/1000000 (Episodes: 376) smooth r 698.6890657889231
+[DQN] Step 390000/1000000 (Episodes: 388) smooth r 590.111689111813
+[DQN] Step 400000/1000000 (Episodes: 396) smooth r 616.0375430706281
+[DQN] Step 410000/1000000 (Episodes: 408) smooth r 835.4066502675893
+[DQN] Step 420000/1000000 (Episodes: 416) smooth r 568.1491854080169
+[DQN] Step 430000/1000000 (Episodes: 428) smooth r 584.1022667695116
+[DQN] Step 440000/1000000 (Episodes: 436) smooth r 890.0944017944829
+[DQN] Step 450000/1000000 (Episodes: 448) smooth r 1011.951464968226
+[DQN] Step 460000/1000000 (Episodes: 456) smooth r 965.4492356090957
+[DQN] Step 470000/1000000 (Episodes: 468) smooth r 970.1311711724964
+[DQN] Step 480000/1000000 (Episodes: 476) smooth r 1010.8324340843863
+[DQN] Step 490000/1000000 (Episodes: 488) smooth r 632.3739458351464
+[DQN] Step 500000/1000000 (Episodes: 496) smooth r 691.8865957990961
+[DQN] Step 510000/1000000 (Episodes: 508) smooth r 792.0864713844164
+[DQN] Step 520000/1000000 (Episodes: 516) smooth r 779.1498105241292
+[DQN] Step 530000/1000000 (Episodes: 528) smooth r 661.0748706648816
+[DQN] Step 540000/1000000 (Episodes: 536) smooth r 867.4472334515797
+[DQN] Step 550000/1000000 (Episodes: 548) smooth r 925.8872837630186
+[DQN] Step 560000/1000000 (Episodes: 556) smooth r 745.0130196339795
+[DQN] Step 570000/1000000 (Episodes: 568) smooth r 638.5652398177541
+[DQN] Step 580000/1000000 (Episodes: 576) smooth r 758.5584671290123
+[DQN] Step 590000/1000000 (Episodes: 588) smooth r 949.4435439313031
+[DQN] Step 600000/1000000 (Episodes: 596) smooth r 873.2304562781173
+[DQN] Step 610000/1000000 (Episodes: 608) smooth r 724.8135369810641
+[DQN] Step 620000/1000000 (Episodes: 616) smooth r 847.3228605147642
+[DQN] Step 630000/1000000 (Episodes: 628) smooth r 638.0745601637494
+[DQN] Step 640000/1000000 (Episodes: 636) smooth r 529.3615411956416
+[DQN] Step 650000/1000000 (Episodes: 648) smooth r 490.6018512305765
+[DQN] Step 660000/1000000 (Episodes: 656) smooth r 441.87396367638036
+[DQN] Step 670000/1000000 (Episodes: 668) smooth r 555.8201491637684
+[DQN] Step 680000/1000000 (Episodes: 676) smooth r 752.1377482239784
+[DQN] Step 690000/1000000 (Episodes: 688) smooth r 1114.7130934983493
+[DQN] Step 700000/1000000 (Episodes: 696) smooth r 1015.3447705653903
+[DQN] Step 710000/1000000 (Episodes: 708) smooth r 865.9497904591688
+[DQN] Step 720000/1000000 (Episodes: 716) smooth r 788.619858814885
+[DQN] Step 730000/1000000 (Episodes: 728) smooth r 715.672209673438
+[DQN] Step 740000/1000000 (Episodes: 736) smooth r 778.2297178245697
+[DQN] Step 750000/1000000 (Episodes: 748) smooth r 786.9224194800652
+[DQN] Step 760000/1000000 (Episodes: 756) smooth r 706.6348960778439
+[DQN] Step 770000/1000000 (Episodes: 768) smooth r 1228.1907413511835
+[DQN] Step 780000/1000000 (Episodes: 776) smooth r 1060.3372206551064
+[DQN] Step 790000/1000000 (Episodes: 788) smooth r 890.9351808789168
+[DQN] Step 800000/1000000 (Episodes: 796) smooth r 554.6177070264915
+[DQN] Step 810000/1000000 (Episodes: 808) smooth r 471.8445414449695
+[DQN] Step 820000/1000000 (Episodes: 816) smooth r 475.18244220945087
+[DQN] Step 830000/1000000 (Episodes: 828) smooth r 439.95299515318874
+[DQN] Step 840000/1000000 (Episodes: 836) smooth r 372.31451010174897
+[DQN] Step 850000/1000000 (Episodes: 848) smooth r 841.3066256489105
+[DQN] Step 860000/1000000 (Episodes: 856) smooth r 894.2028191964935
+[DQN] Step 870000/1000000 (Episodes: 868) smooth r 599.0079796191571
+[DQN] Step 880000/1000000 (Episodes: 876) smooth r 710.7272021577472
+[DQN] Step 890000/1000000 (Episodes: 888) smooth r 765.3800437192148
+[DQN] Step 900000/1000000 (Episodes: 896) smooth r 739.0867737104123
+[DQN] Step 910000/1000000 (Episodes: 908) smooth r 816.3279272608519
+[DQN] Step 920000/1000000 (Episodes: 916) smooth r 785.0892543023024
+[DQN] Step 930000/1000000 (Episodes: 928) smooth r 813.7949495032829
+[DQN] Step 940000/1000000 (Episodes: 936) smooth r 931.5343656100763
+[DQN] Step 950000/1000000 (Episodes: 948) smooth r 892.4113204965645
+[DQN] Step 960000/1000000 (Episodes: 956) smooth r 783.9963269796676
+[DQN] Step 970000/1000000 (Episodes: 968) smooth r 1045.5908754963712
+[DQN] Step 980000/1000000 (Episodes: 976) smooth r 939.449564199292
+[DQN] Step 990000/1000000 (Episodes: 988) smooth r 848.3604482897513
+Time taken modular {'action_sample': 109.7656455039978, 'env_step': 146.12148475646973, 'update_agent': 1989.5423021316528, 'eval_agent': 0.0}
+Training wall clock time: 2324.71 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 6 | Run: 5
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cpu', ablation=6, fully_obs=False, run=5, num_envs=4, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+[DQN] Step 10000/1000000 (Episodes: 8) smooth r -388.6977309025933
+[DQN] Step 20000/1000000 (Episodes: 16) smooth r -217.89637366625595
+[DQN] Step 30000/1000000 (Episodes: 28) smooth r -141.10364990898566
+[DQN] Step 40000/1000000 (Episodes: 36) smooth r -188.84107228244568
+[DQN] Step 50000/1000000 (Episodes: 48) smooth r -169.48146304425526
+[DQN] Step 60000/1000000 (Episodes: 56) smooth r -101.32498599999555
+[DQN] Step 70000/1000000 (Episodes: 68) smooth r 167.35535994307457
+[DQN] Step 80000/1000000 (Episodes: 76) smooth r 310.6751431072728
+[DQN] Step 90000/1000000 (Episodes: 88) smooth r 451.6650343574572
+[DQN] Step 100000/1000000 (Episodes: 96) smooth r 514.0932231654565
+[DQN] Step 110000/1000000 (Episodes: 108) smooth r 577.8370118853023
+[DQN] Step 120000/1000000 (Episodes: 116) smooth r 596.5073514112211
+[DQN] Step 130000/1000000 (Episodes: 128) smooth r 632.6506774150428
+[DQN] Step 140000/1000000 (Episodes: 136) smooth r 636.7899867730144
+[DQN] Step 150000/1000000 (Episodes: 148) smooth r 616.090987425668
+[DQN] Step 160000/1000000 (Episodes: 156) smooth r 567.0696203704657
+[DQN] Step 170000/1000000 (Episodes: 168) smooth r 311.0622928916968
+[DQN] Step 180000/1000000 (Episodes: 176) smooth r 146.49648722394681
+[DQN] Step 190000/1000000 (Episodes: 188) smooth r 53.07415247930169
+[DQN] Step 200000/1000000 (Episodes: 196) smooth r 64.72550333378058
+[DQN] Step 210000/1000000 (Episodes: 208) smooth r 125.73602459352317
+[DQN] Step 220000/1000000 (Episodes: 216) smooth r 168.2856598716874
+[DQN] Step 230000/1000000 (Episodes: 228) smooth r 233.97534718534527
+[DQN] Step 240000/1000000 (Episodes: 236) smooth r 244.75488571726478
+[DQN] Step 250000/1000000 (Episodes: 248) smooth r 258.8219955469215
+[DQN] Step 260000/1000000 (Episodes: 256) smooth r 260.67463291647357
+[DQN] Step 270000/1000000 (Episodes: 268) smooth r 341.99060115410975
+[DQN] Step 280000/1000000 (Episodes: 276) smooth r 397.04398569906147
+[DQN] Step 290000/1000000 (Episodes: 288) smooth r 472.75996567560765
+[DQN] Step 300000/1000000 (Episodes: 296) smooth r 437.2814376297291
+[DQN] Step 310000/1000000 (Episodes: 308) smooth r 373.64871894799813
+[DQN] Step 320000/1000000 (Episodes: 316) smooth r 409.62387052573655
+[DQN] Step 330000/1000000 (Episodes: 328) smooth r 457.0789419531019
+[DQN] Step 340000/1000000 (Episodes: 336) smooth r 457.3682264483598
+[DQN] Step 350000/1000000 (Episodes: 348) smooth r 472.1983776882853
+[DQN] Step 360000/1000000 (Episodes: 356) smooth r 510.96980792370977
+[DQN] Step 370000/1000000 (Episodes: 368) smooth r 556.2227376464756
+[DQN] Step 380000/1000000 (Episodes: 376) smooth r 566.5364701474073
+[DQN] Step 390000/1000000 (Episodes: 388) smooth r 530.0384052347802
+[DQN] Step 400000/1000000 (Episodes: 396) smooth r 533.7826516464644
+[DQN] Step 410000/1000000 (Episodes: 408) smooth r 506.8011047166724
+[DQN] Step 420000/1000000 (Episodes: 416) smooth r 501.6603029882234
+[DQN] Step 430000/1000000 (Episodes: 428) smooth r 540.9606727445127
+[DQN] Step 440000/1000000 (Episodes: 436) smooth r 536.8523813412626
+[DQN] Step 450000/1000000 (Episodes: 448) smooth r 536.9215236770584
+[DQN] Step 460000/1000000 (Episodes: 456) smooth r 554.7806292000905
+[DQN] Step 470000/1000000 (Episodes: 468) smooth r 596.1036646123733
+[DQN] Step 480000/1000000 (Episodes: 476) smooth r 554.424513629396
+[DQN] Step 490000/1000000 (Episodes: 488) smooth r 541.0260515629195
+[DQN] Step 500000/1000000 (Episodes: 496) smooth r 548.2489455202442
+[DQN] Step 510000/1000000 (Episodes: 508) smooth r 560.109781959291
+[DQN] Step 520000/1000000 (Episodes: 516) smooth r 532.7059029828984
+[DQN] Step 530000/1000000 (Episodes: 528) smooth r 501.02155670231207
+[DQN] Step 540000/1000000 (Episodes: 536) smooth r 532.7863370314152
+[DQN] Step 550000/1000000 (Episodes: 548) smooth r 557.3949962090428
+[DQN] Step 560000/1000000 (Episodes: 556) smooth r 543.4303342471751
+[DQN] Step 570000/1000000 (Episodes: 568) smooth r 548.4668000874238
+[DQN] Step 580000/1000000 (Episodes: 576) smooth r 581.6996082806526
+[DQN] Step 590000/1000000 (Episodes: 588) smooth r 592.0436367890644
+[DQN] Step 600000/1000000 (Episodes: 596) smooth r 607.1781909150002
+[DQN] Step 610000/1000000 (Episodes: 608) smooth r 533.5666760742399
+[DQN] Step 620000/1000000 (Episodes: 616) smooth r 533.0051553548828
+[DQN] Step 630000/1000000 (Episodes: 628) smooth r 429.9375167908134
+[DQN] Step 640000/1000000 (Episodes: 636) smooth r 420.5589336343609
+[DQN] Step 650000/1000000 (Episodes: 648) smooth r 492.7186484664578
+[DQN] Step 660000/1000000 (Episodes: 656) smooth r 538.2425069494914
+[DQN] Step 670000/1000000 (Episodes: 668) smooth r 570.3464223190416
+[DQN] Step 680000/1000000 (Episodes: 676) smooth r 605.2713083761297
+[DQN] Step 690000/1000000 (Episodes: 688) smooth r 613.5067584997632
+[DQN] Step 700000/1000000 (Episodes: 696) smooth r 613.6365885621195
+[DQN] Step 710000/1000000 (Episodes: 708) smooth r 638.049672335399
+[DQN] Step 720000/1000000 (Episodes: 716) smooth r 641.547260580222
+[DQN] Step 730000/1000000 (Episodes: 728) smooth r 629.1546284400742
+[DQN] Step 740000/1000000 (Episodes: 736) smooth r 615.3502947592656
+[DQN] Step 750000/1000000 (Episodes: 748) smooth r 628.1871746747876
+[DQN] Step 760000/1000000 (Episodes: 756) smooth r 632.8204351286489
+[DQN] Step 770000/1000000 (Episodes: 768) smooth r 623.8145522069789
+[DQN] Step 780000/1000000 (Episodes: 776) smooth r 629.2229255833281
+[DQN] Step 790000/1000000 (Episodes: 788) smooth r 611.2624981209486
+[DQN] Step 800000/1000000 (Episodes: 796) smooth r 585.3305402111058
+[DQN] Step 810000/1000000 (Episodes: 808) smooth r 592.5228496867196
+[DQN] Step 820000/1000000 (Episodes: 816) smooth r 607.9879471625067
+[DQN] Step 830000/1000000 (Episodes: 828) smooth r 653.5722938710513
+[DQN] Step 840000/1000000 (Episodes: 836) smooth r 673.3297511933639
+[DQN] Step 850000/1000000 (Episodes: 848) smooth r 669.1288481402448
+[DQN] Step 860000/1000000 (Episodes: 856) smooth r 668.3892112396667
+[DQN] Step 870000/1000000 (Episodes: 868) smooth r 675.112792134774
+[DQN] Step 880000/1000000 (Episodes: 876) smooth r 688.3027632996797
+[DQN] Step 890000/1000000 (Episodes: 888) smooth r 681.9265782350509
+[DQN] Step 900000/1000000 (Episodes: 896) smooth r 691.3464074015313
+[DQN] Step 910000/1000000 (Episodes: 908) smooth r 695.8723043388266
+[DQN] Step 920000/1000000 (Episodes: 916) smooth r 665.8173012811529
+[DQN] Step 930000/1000000 (Episodes: 928) smooth r 653.4367284690844
+[DQN] Step 940000/1000000 (Episodes: 936) smooth r 584.028650413665
+[DQN] Step 950000/1000000 (Episodes: 948) smooth r 559.4361127733775
+[DQN] Step 960000/1000000 (Episodes: 956) smooth r 573.6013728172676
+[DQN] Step 970000/1000000 (Episodes: 968) smooth r 597.3406470697867
+[DQN] Step 980000/1000000 (Episodes: 976) smooth r 582.2629433900667
+[DQN] Step 990000/1000000 (Episodes: 988) smooth r 644.7049366267778
+Time taken modular {'action_sample': 109.01130628585815, 'env_step': 144.1181035041809, 'update_agent': 1989.8612728118896, 'eval_agent': 0.0}
+Training wall clock time: 2321.64 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 0 | Run: 1
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=0, fully_obs=False, run=1, num_envs=128, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft True selfmunch: True mc 0.9
+[DQN] Step 80000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r -94.07772845051842
+[DQN] Step 240000/1000000 (Episodes: 128) smooth r -94.07772845051842
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r -438.52073504069375
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r -409.115509017285
+[DQN] Step 480000/1000000 (Episodes: 384) smooth r -409.115509017285
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r -441.17128123502766
+[DQN] Step 640000/1000000 (Episodes: 512) smooth r -441.17128123502766
+[DQN] Step 720000/1000000 (Episodes: 640) smooth r -465.9240845616687
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r -398.33470664295265
+[DQN] Step 880000/1000000 (Episodes: 768) smooth r -398.33470664295265
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r -366.016960031266
+Time taken modular {'action_sample': 21.69627571105957, 'env_step': 28.94299054145813, 'update_agent': 5335.389537096024, 'eval_agent': 0.0}
+Training wall clock time: 5408.83 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 0 | Run: 2
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=0, fully_obs=False, run=2, num_envs=128, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft True selfmunch: True mc 0.9
+[DQN] Step 80000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r -89.53504340728378
+[DQN] Step 240000/1000000 (Episodes: 128) smooth r -89.53504340728378
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r -469.87289503900956
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r -499.98129113045314
+[DQN] Step 480000/1000000 (Episodes: 384) smooth r -499.98129113045314
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r -439.53689847672194
+[DQN] Step 640000/1000000 (Episodes: 512) smooth r -439.53689847672194
+[DQN] Step 720000/1000000 (Episodes: 640) smooth r -415.02743382552643
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r -412.58437439134224
+[DQN] Step 880000/1000000 (Episodes: 768) smooth r -412.58437439134224
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r -332.2929415550334
+Time taken modular {'action_sample': 21.523767232894897, 'env_step': 28.717766046524048, 'update_agent': 5339.692987680435, 'eval_agent': 0.0}
+Training wall clock time: 5412.98 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 0 | Run: 3
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=0, fully_obs=False, run=3, num_envs=128, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft True selfmunch: True mc 0.9
+[DQN] Step 80000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r 56.15502204581849
+[DQN] Step 240000/1000000 (Episodes: 128) smooth r 56.15502204581849
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r -471.22147887321586
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r -461.83926835312434
+[DQN] Step 480000/1000000 (Episodes: 384) smooth r -461.83926835312434
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r -420.4711574905125
+[DQN] Step 640000/1000000 (Episodes: 512) smooth r -420.4711574905125
+[DQN] Step 720000/1000000 (Episodes: 640) smooth r -449.1251923924758
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r -455.3311464243834
+[DQN] Step 880000/1000000 (Episodes: 768) smooth r -455.3311464243834
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r -507.6433006423106
+Time taken modular {'action_sample': 21.61732053756714, 'env_step': 29.238691329956055, 'update_agent': 5332.506932020187, 'eval_agent': 0.0}
+Training wall clock time: 5406.13 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 0 | Run: 4
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=0, fully_obs=False, run=4, num_envs=128, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft True selfmunch: True mc 0.9
+[DQN] Step 80000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r 56.788616562427684
+[DQN] Step 240000/1000000 (Episodes: 128) smooth r 56.788616562427684
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r -425.9918716316043
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r -458.9627688192034
+[DQN] Step 480000/1000000 (Episodes: 384) smooth r -458.9627688192034
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r -426.57318637038935
+[DQN] Step 640000/1000000 (Episodes: 512) smooth r -426.57318637038935
+[DQN] Step 720000/1000000 (Episodes: 640) smooth r -421.7092433693589
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r -407.13728375420453
+[DQN] Step 880000/1000000 (Episodes: 768) smooth r -407.13728375420453
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r -479.34961933628364
+Time taken modular {'action_sample': 21.542448043823242, 'env_step': 29.167895555496216, 'update_agent': 5332.665674209595, 'eval_agent': 0.0}
+Training wall clock time: 5406.37 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 0 | Run: 5
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=0, fully_obs=False, run=5, num_envs=128, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft True selfmunch: True mc 0.9
+[DQN] Step 80000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r 21.083626009467725
+[DQN] Step 240000/1000000 (Episodes: 128) smooth r 21.083626009467725
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r -441.34923870403156
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r -499.58040997286946
+[DQN] Step 480000/1000000 (Episodes: 384) smooth r -499.58040997286946
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r -482.6298891010822
+[DQN] Step 640000/1000000 (Episodes: 512) smooth r -482.6298891010822
+[DQN] Step 720000/1000000 (Episodes: 640) smooth r -478.4751102809908
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r -465.53492582886554
+[DQN] Step 880000/1000000 (Episodes: 768) smooth r -465.53492582886554
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r -452.7126553481017
+Time taken modular {'action_sample': 21.573817014694214, 'env_step': 28.572670698165894, 'update_agent': 5316.752841711044, 'eval_agent': 0.0}
+Training wall clock time: 5389.36 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 1 | Run: 1
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=1, fully_obs=False, run=1, num_envs=64, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft False selfmunch: False mc 0.0
+[DQN] Step 40000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 80000/1000000 (Episodes: 64) smooth r -387.44195910898134
+[DQN] Step 120000/1000000 (Episodes: 64) smooth r -387.44195910898134
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r -41.21912762193254
+[DQN] Step 200000/1000000 (Episodes: 192) smooth r 463.1758703443614
+[DQN] Step 240000/1000000 (Episodes: 192) smooth r 463.1758703443614
+[DQN] Step 280000/1000000 (Episodes: 256) smooth r 848.7887355716935
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r 848.7887355716935
+[DQN] Step 360000/1000000 (Episodes: 320) smooth r 920.4561790420967
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r 1083.9798482593926
+[DQN] Step 440000/1000000 (Episodes: 384) smooth r 1083.9798482593926
+[DQN] Step 480000/1000000 (Episodes: 448) smooth r 1997.3400230638088
+[DQN] Step 520000/1000000 (Episodes: 512) smooth r 1888.4234393044069
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r 1888.4234393044069
+[DQN] Step 600000/1000000 (Episodes: 576) smooth r 1811.0945790604949
+[DQN] Step 640000/1000000 (Episodes: 576) smooth r 1811.0945790604949
+[DQN] Step 680000/1000000 (Episodes: 640) smooth r 2413.853100536576
+[DQN] Step 720000/1000000 (Episodes: 704) smooth r 2753.62319464662
+[DQN] Step 760000/1000000 (Episodes: 704) smooth r 2753.62319464662
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r 1499.4413440256908
+[DQN] Step 840000/1000000 (Episodes: 832) smooth r 1965.9338899205702
+[DQN] Step 880000/1000000 (Episodes: 832) smooth r 1965.9338899205702
+[DQN] Step 920000/1000000 (Episodes: 896) smooth r 2236.949649371717
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r 2236.949649371717
+Time taken modular {'action_sample': 36.71840691566467, 'env_step': 31.454759120941162, 'update_agent': 4797.78071975708, 'eval_agent': 0.0}
+Training wall clock time: 4905.40 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 1 | Run: 2
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=1, fully_obs=False, run=2, num_envs=64, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft False selfmunch: False mc 0.0
+[DQN] Step 40000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 80000/1000000 (Episodes: 64) smooth r -345.35371752988596
+[DQN] Step 120000/1000000 (Episodes: 64) smooth r -345.35371752988596
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r -85.01142476086322
+[DQN] Step 200000/1000000 (Episodes: 192) smooth r 125.30144537890028
+[DQN] Step 240000/1000000 (Episodes: 192) smooth r 125.30144537890028
+[DQN] Step 280000/1000000 (Episodes: 256) smooth r 650.6366358441528
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r 650.6366358441528
+[DQN] Step 360000/1000000 (Episodes: 320) smooth r 1011.7969122102681
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r 476.96774936796936
+[DQN] Step 440000/1000000 (Episodes: 384) smooth r 476.96774936796936
+[DQN] Step 480000/1000000 (Episodes: 448) smooth r 1560.2498596310072
+[DQN] Step 520000/1000000 (Episodes: 512) smooth r 1517.6318374768252
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r 1517.6318374768252
+[DQN] Step 600000/1000000 (Episodes: 576) smooth r 1618.192228512638
+[DQN] Step 640000/1000000 (Episodes: 576) smooth r 1618.192228512638
+[DQN] Step 680000/1000000 (Episodes: 640) smooth r 1767.340866099022
+[DQN] Step 720000/1000000 (Episodes: 704) smooth r 1807.5959188721354
+[DQN] Step 760000/1000000 (Episodes: 704) smooth r 1807.5959188721354
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r 1572.5157679845001
+[DQN] Step 840000/1000000 (Episodes: 832) smooth r 1803.9862476242436
+[DQN] Step 880000/1000000 (Episodes: 832) smooth r 1803.9862476242436
+[DQN] Step 920000/1000000 (Episodes: 896) smooth r 1845.6983609680403
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r 1845.6983609680403
+Time taken modular {'action_sample': 36.91302490234375, 'env_step': 31.531741619110107, 'update_agent': 4803.394935131073, 'eval_agent': 0.0}
+Training wall clock time: 4911.27 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 1 | Run: 3
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=1, fully_obs=False, run=3, num_envs=64, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft False selfmunch: False mc 0.0
+[DQN] Step 40000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 80000/1000000 (Episodes: 64) smooth r -340.22623645361847
+[DQN] Step 120000/1000000 (Episodes: 64) smooth r -340.22623645361847
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r -87.1863610772988
+[DQN] Step 200000/1000000 (Episodes: 192) smooth r 451.5467919599073
+[DQN] Step 240000/1000000 (Episodes: 192) smooth r 451.5467919599073
+[DQN] Step 280000/1000000 (Episodes: 256) smooth r 1296.168574753208
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r 1296.168574753208
+[DQN] Step 360000/1000000 (Episodes: 320) smooth r 1364.5558267084728
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r 2091.193585288628
+[DQN] Step 440000/1000000 (Episodes: 384) smooth r 2091.193585288628
+[DQN] Step 480000/1000000 (Episodes: 448) smooth r 1879.8099827249357
+[DQN] Step 520000/1000000 (Episodes: 512) smooth r 2333.6360736743873
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r 2333.6360736743873
+[DQN] Step 600000/1000000 (Episodes: 576) smooth r 2290.1112099612164
+[DQN] Step 640000/1000000 (Episodes: 576) smooth r 2290.1112099612164
+[DQN] Step 680000/1000000 (Episodes: 640) smooth r 2359.6166339296633
+[DQN] Step 720000/1000000 (Episodes: 704) smooth r 2346.5270960484295
+[DQN] Step 760000/1000000 (Episodes: 704) smooth r 2346.5270960484295
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r 2101.192818128431
+[DQN] Step 840000/1000000 (Episodes: 832) smooth r 2747.006261170101
+[DQN] Step 880000/1000000 (Episodes: 832) smooth r 2747.006261170101
+[DQN] Step 920000/1000000 (Episodes: 896) smooth r 2005.0381696572294
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r 2005.0381696572294
+Time taken modular {'action_sample': 36.8028130531311, 'env_step': 31.474124908447266, 'update_agent': 4810.207117319107, 'eval_agent': 0.0}
+Training wall clock time: 4917.88 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 1 | Run: 4
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=1, fully_obs=False, run=4, num_envs=64, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft False selfmunch: False mc 0.0
+[DQN] Step 40000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 80000/1000000 (Episodes: 64) smooth r -368.1166583886609
+[DQN] Step 120000/1000000 (Episodes: 64) smooth r -368.1166583886609
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r -157.895534484585
+[DQN] Step 200000/1000000 (Episodes: 192) smooth r 213.4162433797107
+[DQN] Step 240000/1000000 (Episodes: 192) smooth r 213.4162433797107
+[DQN] Step 280000/1000000 (Episodes: 256) smooth r 829.0297795594067
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r 829.0297795594067
+[DQN] Step 360000/1000000 (Episodes: 320) smooth r 1216.8864075757588
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r 1306.313975325105
+[DQN] Step 440000/1000000 (Episodes: 384) smooth r 1306.313975325105
+[DQN] Step 480000/1000000 (Episodes: 448) smooth r 2345.2945453769125
+[DQN] Step 520000/1000000 (Episodes: 512) smooth r 1506.4900206017828
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r 1506.4900206017828
+[DQN] Step 600000/1000000 (Episodes: 576) smooth r 1237.6953387965718
+[DQN] Step 640000/1000000 (Episodes: 576) smooth r 1237.6953387965718
+[DQN] Step 680000/1000000 (Episodes: 640) smooth r 1884.7769685578457
+[DQN] Step 720000/1000000 (Episodes: 704) smooth r 2056.7039751995144
+[DQN] Step 760000/1000000 (Episodes: 704) smooth r 2056.7039751995144
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r 1945.375867098311
+[DQN] Step 840000/1000000 (Episodes: 832) smooth r 1803.4306131224553
+[DQN] Step 880000/1000000 (Episodes: 832) smooth r 1803.4306131224553
+[DQN] Step 920000/1000000 (Episodes: 896) smooth r 2137.143902207652
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r 2137.143902207652
+Time taken modular {'action_sample': 36.39466166496277, 'env_step': 31.360041856765747, 'update_agent': 4797.218832731247, 'eval_agent': 0.0}
+Training wall clock time: 4904.20 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 1 | Run: 5
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=1, fully_obs=False, run=5, num_envs=64, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft False selfmunch: False mc 0.0
+[DQN] Step 40000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 80000/1000000 (Episodes: 64) smooth r -378.2351611057331
+[DQN] Step 120000/1000000 (Episodes: 64) smooth r -378.2351611057331
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r -166.85253821358145
+[DQN] Step 200000/1000000 (Episodes: 192) smooth r 196.15336854928307
+[DQN] Step 240000/1000000 (Episodes: 192) smooth r 196.15336854928307
+[DQN] Step 280000/1000000 (Episodes: 256) smooth r 678.0947090951732
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r 678.0947090951732
+[DQN] Step 360000/1000000 (Episodes: 320) smooth r 1043.9853647706495
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r 1500.9801609232645
+[DQN] Step 440000/1000000 (Episodes: 384) smooth r 1500.9801609232645
+[DQN] Step 480000/1000000 (Episodes: 448) smooth r 1217.6207929709904
+[DQN] Step 520000/1000000 (Episodes: 512) smooth r 1324.8590194765827
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r 1324.8590194765827
+[DQN] Step 600000/1000000 (Episodes: 576) smooth r 1286.3522588161013
+[DQN] Step 640000/1000000 (Episodes: 576) smooth r 1286.3522588161013
+[DQN] Step 680000/1000000 (Episodes: 640) smooth r 1691.484173335919
+[DQN] Step 720000/1000000 (Episodes: 704) smooth r 2257.833947106849
+[DQN] Step 760000/1000000 (Episodes: 704) smooth r 2257.833947106849
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r 1924.3322928602495
+[DQN] Step 840000/1000000 (Episodes: 832) smooth r 2205.3896783993728
+[DQN] Step 880000/1000000 (Episodes: 832) smooth r 2205.3896783993728
+[DQN] Step 920000/1000000 (Episodes: 896) smooth r 1461.8209425140017
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r 1461.8209425140017
+Time taken modular {'action_sample': 36.418806314468384, 'env_step': 31.63320517539978, 'update_agent': 4789.524858951569, 'eval_agent': 0.0}
+Training wall clock time: 4896.99 seconds
+[RUN ] Algo: dqn | Env: mujoco | Ablation: 2 | Run: 1
+C:\Users\tcfla\Desktop\CrabRL\CrabAblation\.venv\Lib\site-packages\pygame\pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+--- Auto-configured MSVC: 14.50.35717 ---
+✅ MSVC Environment (including OpenMP) fully initialized.
+Args: Namespace(algo='dqn', env_name='mujoco', env_id='mujoco', device='cuda', ablation=2, fully_obs=False, run=1, num_envs=64, num_steps=2048, total_steps=1000000, total_steps_override=0, max_wall_time=86400.0, device_name='laptop', skip_best_params=False, dqn_buffer_size=20000.0, dqn_batch_size=64, update_every=4, rnd_burn_in=1000, buffer_size=20000.0, gamma=0.99, tau=3e-06, batch_size=128, learning_starts=10000, policy_lr=0.0003, q_lr=0.001, policy_frequency=4, target_network_frequency=1, alpha=0.001, autotune=True, n_quantiles=32, n_target_quantiles=32, hide_seek_bins_per_dim=3)
+Torch does not support int32 gather, switching to 64
+self soft False selfmunch: True mc 0.9
+[DQN] Step 40000/1000000 (Episodes: 0) smooth r 0.0
+[DQN] Step 80000/1000000 (Episodes: 64) smooth r -342.815280465112
+[DQN] Step 120000/1000000 (Episodes: 64) smooth r -342.815280465112
+[DQN] Step 160000/1000000 (Episodes: 128) smooth r -66.23186574653174
+[DQN] Step 200000/1000000 (Episodes: 192) smooth r 1547.0217886356172
+[DQN] Step 240000/1000000 (Episodes: 192) smooth r 1547.0217886356172
+[DQN] Step 280000/1000000 (Episodes: 256) smooth r 2349.6520172117707
+[DQN] Step 320000/1000000 (Episodes: 256) smooth r 2349.6520172117707
+[DQN] Step 360000/1000000 (Episodes: 320) smooth r 2147.024134354146
+[DQN] Step 400000/1000000 (Episodes: 384) smooth r 3062.845067693266
+[DQN] Step 440000/1000000 (Episodes: 384) smooth r 3062.845067693266
+[DQN] Step 480000/1000000 (Episodes: 448) smooth r 3500.609964071655
+[DQN] Step 520000/1000000 (Episodes: 512) smooth r 3864.5267027116975
+[DQN] Step 560000/1000000 (Episodes: 512) smooth r 3864.5267027116975
+[DQN] Step 600000/1000000 (Episodes: 576) smooth r 3959.7039295351005
+[DQN] Step 640000/1000000 (Episodes: 576) smooth r 3959.7039295351005
+[DQN] Step 680000/1000000 (Episodes: 640) smooth r 3980.3149620117424
+[DQN] Step 720000/1000000 (Episodes: 704) smooth r 4188.196869123003
+[DQN] Step 760000/1000000 (Episodes: 704) smooth r 4188.196869123003
+[DQN] Step 800000/1000000 (Episodes: 768) smooth r 4311.901510128034
+[DQN] Step 840000/1000000 (Episodes: 832) smooth r 4292.653774579845
+[DQN] Step 880000/1000000 (Episodes: 832) smooth r 4292.653774579845
+[DQN] Step 920000/1000000 (Episodes: 896) smooth r 4208.3621622156
+[DQN] Step 960000/1000000 (Episodes: 896) smooth r 4208.3621622156
