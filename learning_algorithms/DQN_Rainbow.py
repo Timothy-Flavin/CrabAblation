@@ -578,7 +578,8 @@ class EVRainbowDQN(RainbowBase):
                 if r_kl.ndim > 1:
                     r_kl = r_kl.mean(-1)
                 assert b_r_ext.ndim == r_kl.ndim
-                b_r_ext += current_sigma * self.alpha * self.munchausen_constant * r_kl
+                # Scale by (1-gamma) to match reward scale
+                b_r_ext += current_sigma * (1 - self.gamma) * self.alpha * self.munchausen_constant * r_kl
 
             # Next value with entropy and weighted sum over q values
             if self.munchausen or self.soft:
@@ -586,9 +587,10 @@ class EVRainbowDQN(RainbowBase):
                     torch.log_softmax(q_next_online_norm / self.alpha, dim=-1), min=-1e8
                 )
                 pi_next = torch.exp(logpi_next)
+                # Scale entropy bonus by (1-gamma) to match reward scale
                 next_head_vals = (
                     pi_next
-                    * (q_next_target_raw - current_sigma * self.alpha * logpi_next)
+                    * (q_next_target_raw - current_sigma * (1 - self.gamma) * self.alpha * logpi_next)
                 ).sum(-1)
             # Next value with no entropy or weighted sum, using argmax policy
             else:
@@ -1087,23 +1089,21 @@ class IQNRainbowDQN(RainbowBase):
                     min=-1e8,
                 )
                 pi_next = torch.exp(logpi_next)
-                # Entropy bonus: sum over D
-                ent_bonus = -(pi_next * logpi_next).mean(dim=-1)  # sum over bins
+                # Entropy bonus: sum over bins AND mean over D, scaled to reward scale
+                ent_bonus = -(pi_next * logpi_next).sum(dim=-1)  # sum over bins
                 if ent_bonus.ndim > 1:
                     ent_bonus = ent_bonus.mean(dim=-1).unsqueeze(
                         1
-                    )  # sum over D, then [B, 1]
+                    )  # mean over D, then [B, 1]
                 else:
                     ent_bonus = ent_bonus.unsqueeze(1)
-                # print(f"pi next: {pi_next.shape} logpinext: {logpi_next.shape}, ")
-                # if self.soft:
-                #     print(f"ent: {ent_bonus.shape}")
-                # Mixed target values
+
+                # Mixed target values: sum over bins AND mean over D
                 mixed_target = (pi_next.unsqueeze(1) * target_quantiles_all).sum(
                     dim=-1
                 )  # sum over bins -> [B, Nt, D]
                 if mixed_target.ndim > 2:
-                    mixed_target = mixed_target.mean(dim=-1)  # sum over D -> [B, Nt]
+                    mixed_target = mixed_target.mean(dim=-1)  # mean over D -> [B, Nt]
             else:
                 target_actions = online_next_q_norm.argmax(dim=-1)
                 action_idx = (
@@ -1117,9 +1117,8 @@ class IQNRainbowDQN(RainbowBase):
                     -1
                 )  # [B, Nt, D]
                 if mixed_target.ndim > 2:
-                    mixed_target = mixed_target.mean(dim=-1)  # sum over D -> [B, Nt]
+                    mixed_target = mixed_target.mean(dim=-1)  # mean over D -> [B, Nt]
 
-            # print(f"mixed target dim: {mixed_target.shape}")
             if self.munchausen:
                 t_expected = torch.linspace(
                     0.01, 0.99, self.n_quantiles, device=self.device
@@ -1128,26 +1127,22 @@ class IQNRainbowDQN(RainbowBase):
                 q_ext_norm_now = self.ext_online(
                     b_obs, t_expected, normalized=True
                 ).mean(dim=1)
-                # print(q_ext_norm_now.shape)
-                # print(q_ext_norm_now[0])
+
                 logpi_now = torch.log_softmax(q_ext_norm_now / self.alpha, dim=-1)
-                # print(f"logpi now: {logpi_now[0]} pi now: {torch.exp(logpi_now[0])}")
-                # print(f"logpi shape: {logpi_now.shape} actions shape: {b_actions_idx.shape}")
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(-1)
-                # print(f"actins: {b_actions_idx[0]} \nselected {selected_logpi[0]} \nlogpis {logpi_now[0]}")
-                # print(selected_logpi.shape)
-                # sum r_kl over D if needed
 
                 if selected_logpi.ndim > 1:
-                    # print("summed dim 1 logpis for multiple action dims")
+                    # Mean over D for MultiDiscrete Munchausen to match Alpha scale
                     r_kl = torch.clamp(
                         selected_logpi.mean(dim=-1), min=self.l_clip
                     ).view(-1)
                 else:
                     r_kl = torch.clamp(selected_logpi, min=self.l_clip).view(-1)
+                # Scale by (1-gamma) to match reward scale
                 m_r = (
-                    current_sigma * self.alpha * self.munchausen_constant * r_kl
+                    current_sigma * (1 - self.gamma) * self.alpha * self.munchausen_constant * r_kl
                 ).view(-1)
+
             b_r_final = b_r_ext.view(-1) + m_r
             # Target Q-distribution
             assert (
@@ -1156,9 +1151,10 @@ class IQNRainbowDQN(RainbowBase):
             assert (
                 b_term.ndim == mixed_target.ndim - 1
             ), "mixed target is going to broadcast bad"
+            # Scale entropy bonus by (1-gamma) to match reward scale
             target_values = b_r_final.unsqueeze(1) + (1 - b_term).unsqueeze(
                 1
-            ) * self.gamma * (mixed_target + current_sigma * self.alpha * ent_bonus)
+            ) * self.gamma * (mixed_target + current_sigma * (1 - self.gamma) * self.alpha * ent_bonus)
         # print(f"We made it past the target calculation br {b_r_final.unsqueeze(1).shape} bterm {(1 - b_term).unsqueeze(1).shape} mix_target {mixed_target.shape}, ")
         # if self.soft:
         #     print(f"ent: {ent_bonus.shape}")
@@ -1241,6 +1237,7 @@ class IQNRainbowDQN(RainbowBase):
         # ========================================================
         # Intrinsic Q update
         # ========================================================
+        
         if self.Beta > 0.0:
             with torch.no_grad():
                 int_taus = self._sample_taus(batch_size, self.n_quantiles, self.device)
@@ -1371,7 +1368,7 @@ class IQNRainbowDQN(RainbowBase):
                 ),
                 "last_eps": float(self.last_eps),
             }
-            # print(self.last_losses)
+            print(self.last_losses)
         return float(extrinsic_loss.item())
 
     def sample_action(

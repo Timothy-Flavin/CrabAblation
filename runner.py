@@ -241,7 +241,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     update_every = int(getattr(args, "update_every", 2))
     beta_half_life_steps = max(1, (total_steps // update_every) // 5)
     cfg = {
-        "munchausen_constant": 0.9,
+        "munchausen_constant": 0.1,
         "soft": True,
         "Beta": 1.0,  # Start fully intrinsic
         "dueling": True,
@@ -806,7 +806,7 @@ def rollout_offline_rl(
         if time_elapsed >= max_time:
             break
 
-        if total_samples > 0 and total_samples % 10000 == 0:
+        if total_samples > 0 and (total_samples // 10000) > ((total_samples - args.num_envs) // 10000):
             print(f"[{args.algo.upper()}] Step {total_samples}/{total_step_budget} (Episodes: {ep}) smooth r {smooth_r}")
 
         t_ = time.time()
