@@ -1,7 +1,7 @@
 {
     "ablation_0": {
         "device": "cuda",
-        "num_envs": 128,
+        "num_envs": 32,
         "steps_per_sec": 206.66013992246155,
         "updates_per_sec": 51.66503498061539
     },

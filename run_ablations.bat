@@ -29,14 +29,10 @@ for %%A in (%ALGOS%) do (
         for %%B in (%ABLATIONS%) do (
             for /L %%R in (1,1,%RUNS%) do (
                 set "RESULT_FILE=results/%%A/%%E/train_scores_%%R_%%B.npy"
-                if exist results\%%A\%%E\train_scores_%%R_%%B.npy (
-                    echo [SKIP] results/%%A/%%E/train_scores_%%R_%%B.npy exists. Algo: %%A ^| Env: %%E ^| Ablation: %%B ^| Run: %%R
-                ) else (
-                    echo [RUN ] Algo: %%A ^| Env: %%E ^| Ablation: %%B ^| Run: %%R
-                    if not exist results\%%A mkdir results\%%A
-                    if not exist results\%%A\%%E mkdir results\%%A\%%E
-                    python runner.py --algo %%A --env_name %%E --ablation %%B --run %%R --device_name %DEVICE_NAME%
-                )
+                echo [RUN ] Algo: %%A ^| Env: %%E ^| Ablation: %%B ^| Run: %%R
+                if not exist results\%%A mkdir results\%%A
+                if not exist results\%%A\%%E mkdir results\%%A\%%E
+                .\.venv\Scripts\python.exe runner.py --algo %%A --env_name %%E --ablation %%B --run %%R --device_name %DEVICE_NAME%
             )
         )
     )

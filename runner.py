@@ -269,7 +269,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         cfg["munchausen_constant"] = 0.9
         cfg["soft"] = True
         cfg["Beta"] = 0.0
-        cfg["distributional"] = False
+        cfg["distributional"] = True
         cfg["delayed"] = True
         cfg["dueling"] = False
 

@@ -28,10 +28,10 @@ class RainbowBase(Agent):
         hidden_layer_sizes=[128, 128],
         lr: float = 1e-3,
         gamma: float = 0.99,
-        alpha: float = 0.001,
-        munchausen_constant: float = 0.1,
+        alpha: float = 0.03,
+        munchausen_constant: float = 0.9,
         polyak_tau: float = 0.03,
-        l_clip: float = -10.0,
+        l_clip: float = -1.0,
         soft: bool = False,
         munchausen: bool = False,
         Thompson: bool = False,
@@ -273,31 +273,6 @@ class RainbowBase(Agent):
                     target_buffers, online_buffers, alpha=self.polyak_tau
                 )
 
-    # def update_target(self):
-    #     """Hard update: copy online to target every K steps."""
-    #     if not self.delayed_target:
-    #         return
-
-    #     # Assuming you trigger this every K steps instead of every frame
-    #     self.ext_target.load_state_dict(self.ext_online.state_dict())
-    #     self.int_target.load_state_dict(self.int_online.state_dict())
-    #     self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
-    #     self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
-    #     self.int_target.output_layer.sigma.copy_(self.int_online.output_layer.sigma)
-    #     self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
-    #     # """Polyak averaging: target = (1 - tau) * target + tau * online."""
-    #     # if not self.delayed_target:
-    #     #     return
-    #     # with torch.no_grad():
-    #     #     for tp, op in zip(
-    #     #         self.ext_target.parameters(), self.ext_online.parameters()
-    #     #     ):
-    #     #         tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
-    #     #     for tp, op in zip(
-    #     #         self.int_target.parameters(), self.int_online.parameters()
-    #     #     ):
-    #     #         tp.data.mul_(1.0 - self.polyak_tau).add_(op.data, alpha=self.polyak_tau)
-
     @torch.no_grad()
     def _seed_popart_from_buffer(self, ext_layer=None, int_layer=None, sample_size: int = 8192):
         """Hard-start calibration of PopArt from raw reward stats, scaled to
@@ -367,10 +342,10 @@ class EVRainbowDQN(RainbowBase):
         hidden_layer_sizes=[128, 128],
         lr: float = 1e-3,
         gamma: float = 0.99,
-        alpha: float = 0.9,
-        munchausen_constant: float = 0.1,
-        polyak_tau: float = 0.005,
-        l_clip: float = -10.0,
+        alpha: float = 0.03,
+        munchausen_constant: float = 0.9,
+        polyak_tau: float = 0.03,
+        l_clip: float = -1.0,
         soft: bool = False,
         Thompson: bool = False,
         dueling: bool = False,
@@ -427,11 +402,6 @@ class EVRainbowDQN(RainbowBase):
                 "encoder_out_dim": infer_encoder_out_dim(encoder, int(input_dim)),
             }
 
-        ext_online_kwargs = _encoder_kwargs()
-        ext_target_kwargs = _encoder_kwargs()
-        int_online_kwargs = _encoder_kwargs()
-        int_target_kwargs = _encoder_kwargs()
-
         self.ext_online = EV_Q_Network(
             input_dim,
             n_action_dims,
@@ -440,7 +410,7 @@ class EVRainbowDQN(RainbowBase):
             dueling=dueling,
             popart=True,
             min_std=min_std,
-            **ext_online_kwargs,
+            **_encoder_kwargs(),
         ).float()
         self.ext_target = EV_Q_Network(
             input_dim,
@@ -450,7 +420,7 @@ class EVRainbowDQN(RainbowBase):
             dueling=dueling,
             popart=True,
             min_std=min_std,
-            **ext_target_kwargs,
+            **_encoder_kwargs(),
         ).float()
         self.int_online = EV_Q_Network(
             input_dim,
@@ -460,7 +430,7 @@ class EVRainbowDQN(RainbowBase):
             dueling=dueling,
             popart=True,
             min_std=0.01,
-            **int_online_kwargs,
+            **_encoder_kwargs(),
         ).float()
         self.int_target = EV_Q_Network(
             input_dim,
@@ -470,7 +440,7 @@ class EVRainbowDQN(RainbowBase):
             dueling=dueling,
             popart=True,
             min_std=0.01,
-            **int_target_kwargs,
+            **_encoder_kwargs(),
         ).float()
 
         self.ext_target.requires_grad_(False)
@@ -484,7 +454,7 @@ class EVRainbowDQN(RainbowBase):
         # --- ALPHA AUTOTUNER SETUP ---
         if self.soft:
             # Max entropy per dim is ln(bins). Target ~80% of max entropy across all dims.
-            max_ent = np.log(self.n_action_bins)  # self.n_action_dims *
+            max_ent = np.log(self.n_action_bins)
             self.target_entropy = 0.8 * max_ent
             # Start alpha small so the penalty doesn't immediately crush Q-values
             self.log_alpha = nn.Parameter(torch.tensor([-3.0], device=self.device))
@@ -492,12 +462,11 @@ class EVRainbowDQN(RainbowBase):
             self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
             self.alpha = self.log_alpha.exp().item()
 
-    @torch.no_grad()
-    def _soft_policy(self, q_values: torch.Tensor):
-        logpi = torch.clamp(torch.log_softmax(q_values / self.alpha, dim=-1), min=-1e8)
-        pi = torch.exp(logpi)
-        ent = -(pi * logpi).sum(dim=-1)  # [B]
-        return pi, logpi, ent
+        if self.munchausen:
+            self.autotune = False
+            self.alpha = 0.03
+        else:
+            self.autotune = True
 
     def update(self, batch_size=None, step=None):
         self.step += 1
@@ -557,7 +526,11 @@ class EVRainbowDQN(RainbowBase):
 
         # Get target
         with torch.no_grad():
-            q_ext_norm = self.ext_online(b_obs, normalized=True)  # [B,D,Bins]
+            q_ext_norm = ( # Change to target network for everything
+                self.ext_target(b_obs, normalized=True)
+                if self.delayed_target
+                else self.ext_online(b_obs, normalized=True)  # [B,D,Bins]
+            )
             q_next_online_norm = self.ext_online(b_next_obs, normalized=True)
             q_next_target_raw = (
                 self.ext_target(b_next_obs, normalized=False)
@@ -574,12 +547,12 @@ class EVRainbowDQN(RainbowBase):
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(
                     -1
                 )  # [B,D]
-                r_kl = torch.clamp(selected_logpi, min=self.l_clip)
+                r_kl = selected_logpi#, min=self.l_clip)
                 if r_kl.ndim > 1:
                     r_kl = r_kl.mean(-1)
                 assert b_r_ext.ndim == r_kl.ndim
                 # Scale by (1-gamma) to match reward scale
-                b_r_ext += current_sigma * (1 - self.gamma) * self.alpha * self.munchausen_constant * r_kl
+                b_r_ext += current_sigma * self.munchausen_constant * torch.clamp(self.alpha * r_kl, min=self.l_clip, max=0.0) #  NEW THING
 
             # Next value with entropy and weighted sum over q values
             if self.munchausen or self.soft:
@@ -590,7 +563,7 @@ class EVRainbowDQN(RainbowBase):
                 # Scale entropy bonus by (1-gamma) to match reward scale
                 next_head_vals = (
                     pi_next
-                    * (q_next_target_raw - current_sigma * (1 - self.gamma) * self.alpha * logpi_next)
+                    * (q_next_target_raw - current_sigma * self.alpha * logpi_next) # * (1 - self.gamma)
                 ).sum(-1)
             # Next value with no entropy or weighted sum, using argmax policy
             else:
@@ -602,7 +575,7 @@ class EVRainbowDQN(RainbowBase):
                 ).squeeze(-1)
             # vdn sum the vals
             if next_head_vals.ndim > 1:
-                next_head_vals = next_head_vals.mean(-1)
+                next_head_vals = next_head_vals.mean(-1) # Changed to sum
             assert (
                 b_r_ext.shape == b_term.shape == next_head_vals.shape
             ), f"Shape mismatch: {b_r_ext.shape}, {b_term.shape}, {next_head_vals.shape}"
@@ -621,14 +594,14 @@ class EVRainbowDQN(RainbowBase):
         )  # [B, D]
         drift_penalty = 0.0
         if q_selected_norm.ndim > 1:
-            drift_penalty = q_selected_norm.pow(2).mean() * 1e-3
-            q_selected_norm = q_selected_norm.mean(-1)
+            # drift_penalty = q_selected_norm.pow(2).mean() * 1e-3
+            q_selected_norm = q_selected_norm.mean(-1) # Changed to sum
         assert (
             q_selected_norm.shape == td_target_norm.shape
         ), f"Shape mismatch: q_selected_norm {q_selected_norm.shape}, td_target_norm {td_target_norm.shape}"
         extrinsic_loss = (
             torch.nn.functional.mse_loss(q_selected_norm, td_target_norm)
-            + drift_penalty
+            #+ drift_penalty
         )
 
         self.optim.zero_grad()
@@ -655,12 +628,14 @@ class EVRainbowDQN(RainbowBase):
                     dtype=current_entropy.dtype,
                 )
             # REMOVED THE NEGATIVE SIGN at the front
-            alpha_loss = (
-                self.log_alpha.exp() * (current_entropy - target_entropy).detach()
-            )
-            self.alpha_optim.zero_grad()
-            alpha_loss.backward()
-            self.alpha_optim.step()
+            alpha_loss = 0.0
+            if self.autotune:
+                alpha_loss = (
+                    self.log_alpha.exp() * (current_entropy - target_entropy).detach()
+                )
+                self.alpha_optim.zero_grad()
+                alpha_loss.backward()
+                self.alpha_optim.step()
             self.alpha = self.log_alpha.exp().item()
 
         # Intrinsic Q update
@@ -681,7 +656,7 @@ class EVRainbowDQN(RainbowBase):
                 -1
             )
             if int_q_next_target.ndim > 1:
-                int_q_next_target = int_q_next_target.mean(-1)
+                int_q_next_target = int_q_next_target.mean(-1) # Changed to sum
             assert (
                 b_r_int.view(-1).shape == int_q_next_target.shape
             ), f"Shape mismatch: b_r_int {b_r_int.view(-1).shape}, int_q_next_target {int_q_next_target.shape}"
@@ -702,14 +677,14 @@ class EVRainbowDQN(RainbowBase):
         )
         drift_penalty_int = 0.0
         if int_q_selected_norm.ndim > 1:
-            drift_penalty_int = int_q_selected_norm.pow(2).mean() * 1e-3
-            int_q_selected_norm = int_q_selected_norm.mean(-1)
+            #drift_penalty_int = int_q_selected_norm.pow(2).mean() * 1e-3
+            int_q_selected_norm = int_q_selected_norm.mean(-1) # Changed to Sum
         assert (
             int_q_selected_norm.shape == int_td_target_norm.shape
         ), f"Shape mismatch: int_q_selected_norm {int_q_selected_norm.shape}, int_td_target_norm {int_td_target_norm.shape}"
         intrinsic_loss = (
             torch.nn.functional.mse_loss(int_q_selected_norm, int_td_target_norm)
-            + drift_penalty_int
+            #+ drift_penalty_int
         )
 
         self.int_optim.zero_grad()
@@ -736,6 +711,7 @@ class EVRainbowDQN(RainbowBase):
                 "intrinsic": float(intrinsic_loss.item()),
                 "rnd": float(rnd_loss),
                 "avg_r_int": r_int_log,
+                "alpha": self.alpha,
                 "alpha_loss": (float(alpha_loss.item()) if isinstance(alpha_loss, torch.Tensor) else float(alpha_loss)),
                 "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
                 "target_mean": float(target_for_stats_ext.mean().item()),
@@ -748,8 +724,9 @@ class EVRainbowDQN(RainbowBase):
                     else 0.0
                 ),
                 "last_eps": float(self.last_eps),
+                "entropy": current_entropy if self.soft else 0.0,
             }
-            #print(self.last_losses)
+            print(self.last_losses)
 
         return float(extrinsic_loss.item())
 
@@ -972,6 +949,11 @@ class IQNRainbowDQN(RainbowBase):
 
         self.n_quantiles = 32
         self.n_target_quantiles = 32
+        if self.munchausen:
+            self.autotune = False
+            self.alpha = 0.03
+        else:
+            self.autotune = True
 
         print(f"self soft {self.soft} selfmunch: {self.munchausen} mc {self.munchausen_constant}")
 
@@ -1128,19 +1110,17 @@ class IQNRainbowDQN(RainbowBase):
                     b_obs, t_expected, normalized=True
                 ).mean(dim=1)
 
-                logpi_now = torch.log_softmax(q_ext_norm_now / self.alpha, dim=-1)
+                logpi_now = torch.clamp(torch.log_softmax(q_ext_norm_now / self.alpha, dim=-1),min=-1e8)
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(-1)
 
                 if selected_logpi.ndim > 1:
                     # Mean over D for MultiDiscrete Munchausen to match Alpha scale
-                    r_kl = torch.clamp(
-                        selected_logpi.mean(dim=-1), min=self.l_clip
-                    ).view(-1)
+                    r_kl = selected_logpi.mean(dim=-1).view(-1)
                 else:
-                    r_kl = torch.clamp(selected_logpi, min=self.l_clip).view(-1)
+                    r_kl = selected_logpi.view(-1)
                 # Scale by (1-gamma) to match reward scale
                 m_r = (
-                    current_sigma * (1 - self.gamma) * self.alpha * self.munchausen_constant * r_kl
+                    current_sigma * self.munchausen_constant * torch.clamp(self.alpha * r_kl, min=self.l_clip, max=0)#* (1 - self.gamma)
                 ).view(-1)
 
             b_r_final = b_r_ext.view(-1) + m_r
@@ -1154,7 +1134,7 @@ class IQNRainbowDQN(RainbowBase):
             # Scale entropy bonus by (1-gamma) to match reward scale
             target_values = b_r_final.unsqueeze(1) + (1 - b_term).unsqueeze(
                 1
-            ) * self.gamma * (mixed_target + current_sigma * (1 - self.gamma) * self.alpha * ent_bonus)
+            ) * self.gamma * (mixed_target + current_sigma * self.alpha * ent_bonus) # * (1 - self.gamma)
         # print(f"We made it past the target calculation br {b_r_final.unsqueeze(1).shape} bterm {(1 - b_term).unsqueeze(1).shape} mix_target {mixed_target.shape}, ")
         # if self.soft:
         #     print(f"ent: {ent_bonus.shape}")
@@ -1182,7 +1162,7 @@ class IQNRainbowDQN(RainbowBase):
         )  # [B, N, D]
         int_drift_penalty = 0.0
         if pred_chosen.ndim > 2:
-            int_drift_penalty = pred_chosen.pow(2).mean() * 1e-3
+            # int_drift_penalty = pred_chosen.pow(2).mean() * 1e-3
             pred_chosen = pred_chosen.mean(dim=-1)  # [B, N]
         assert (
             pred_chosen.shape[0] == target_values_norm.shape[0]
@@ -1191,7 +1171,7 @@ class IQNRainbowDQN(RainbowBase):
 
         extrinsic_loss = (
             self._quantile_huber_loss(pred_chosen, target_values_norm, taus_pred)
-            + int_drift_penalty
+            #+ int_drift_penalty
         )
 
         self.optim.zero_grad()
@@ -1200,8 +1180,7 @@ class IQNRainbowDQN(RainbowBase):
         self.optim.step()
 
         # --- ALPHA AUTO-TUNING UPDATE ---
-        alpha_loss = 0
-        if self.soft:
+        if self.soft and self.autotune:
             alpha_loss = torch.tensor(0.0, device=self.log_alpha.device)
             with torch.no_grad():
                 q_fresh = (
@@ -1226,12 +1205,13 @@ class IQNRainbowDQN(RainbowBase):
                     device=self.log_alpha.device,
                     dtype=current_entropy.dtype,
                 )
-            alpha_loss = (
-                self.log_alpha.exp() * (current_entropy - target_entropy).detach()
-            )
-            self.alpha_optim.zero_grad()
-            alpha_loss.backward()
-            self.alpha_optim.step()
+            if self.autotune:
+                alpha_loss = (
+                    self.log_alpha.exp() * (current_entropy - target_entropy).detach()
+                )
+                self.alpha_optim.zero_grad()
+                alpha_loss.backward()
+                self.alpha_optim.step()
             self.alpha = self.log_alpha.exp().item()
 
         # ========================================================
@@ -1301,7 +1281,7 @@ class IQNRainbowDQN(RainbowBase):
             )  # [B, N, D]
             int_drift_penalty = 0.0
             if int_pred_chosen.ndim > 2:
-                int_drift_penalty = int_pred_chosen.pow(2).mean() * 1e-3
+                # int_drift_penalty = int_pred_chosen.pow(2).mean() * 1e-3
                 int_pred_chosen = int_pred_chosen.mean(dim=-1)  # [B, N]
 
             assert (
@@ -1313,7 +1293,7 @@ class IQNRainbowDQN(RainbowBase):
                 self._quantile_huber_loss(
                     int_pred_chosen, int_target_values_norm, int_taus_pred
                 )
-                + int_drift_penalty
+                #+ int_drift_penalty
             )
 
             self.int_optim.zero_grad()
@@ -1327,7 +1307,7 @@ class IQNRainbowDQN(RainbowBase):
         # if self.delayed_target and self.step % 200 == 0:
         self.update_target()
 
-        if self.step%100==0:
+        if self.step%1000==0:
             # ========================================================
             # Tracking identical to EV
             # ========================================================
@@ -1344,15 +1324,18 @@ class IQNRainbowDQN(RainbowBase):
                 if "quantiles_pred" in locals()
                 else torch.tensor(0.0)
             )
-            if self.soft:
+            if self.soft and self.autotune:
                 alpha_loss = float(alpha_loss.item())
-
+            else:
+                alpha_loss = 0.0
             self.last_losses = {
                 "extrinsic": float(extrinsic_loss.item()),
                 "intrinsic": float(intrinsic_loss.item()),
                 "rnd": float(rnd_loss),
                 "avg_r_int": r_int_log,
                 "alpha_loss": alpha_loss,
+                "alpha":self.alpha,
+                "mr":m_r.mean() if self.munchausen else 0.0,
                 "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
                 "target_mean": (
                     float(target_values.mean().item())
