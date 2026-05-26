@@ -825,11 +825,11 @@ class IQNRainbowDQN(RainbowBase):
         hidden_layer_sizes=[128, 128],
         lr: float = 1e-3,
         gamma: float = 0.99,
-        alpha: float = 0.9,
+        alpha: float = 0.03,
         polyak_tau: float = 0.03,
-        l_clip: float = -10.0,
+        l_clip: float = -1.0,
         soft: bool = False,
-        munchausen_constant: float = 0.1,
+        munchausen_constant: float = 0.9,
         Thompson: bool = False,
         dueling: bool = False,
         Beta: float = 0.0,
@@ -1050,7 +1050,7 @@ class IQNRainbowDQN(RainbowBase):
             )
 
             # Online Next Q -> For action selection
-            online_next_q_norm = self.ext_online(b_next_obs, taus, normalized=True)
+            online_next_q_norm = self.ext_target(b_next_obs, taus, normalized=True) if self.delayed_target else self.ext_online(b_next_obs, taus, normalized=True)
             # print(online_next_q_norm.shape)
             online_next_q_norm = online_next_q_norm.view(dist_q_shape).mean(dim=1)
             # print(f"online next q nrm [0] {online_next_q_norm[0]}")
