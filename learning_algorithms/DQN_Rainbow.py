@@ -939,14 +939,6 @@ class IQNRainbowDQN(RainbowBase):
         self.optim = torch.optim.Adam(self.ext_online.parameters(), lr=lr)
         self.int_optim = torch.optim.Adam(self.int_online.parameters(), lr=intrinsic_lr)
 
-        # --- ALPHA AUTOTUNER SETUP ---
-        if self.soft:
-            max_ent = np.log(self.n_action_bins)  # self.n_action_dims *
-            self.target_entropy = 0.8 * max_ent
-            self.log_alpha = nn.Parameter(torch.tensor([-3.0], device=self.device))
-            self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
-            self.alpha = self.log_alpha.exp().item()
-
         self.n_quantiles = 32
         self.n_target_quantiles = 32
         if self.munchausen:
@@ -954,6 +946,14 @@ class IQNRainbowDQN(RainbowBase):
             self.alpha = 0.03
         else:
             self.autotune = True
+
+        # --- ALPHA AUTOTUNER SETUP ---
+        if self.soft and self.autotune:
+            max_ent = np.log(self.n_action_bins)  # self.n_action_dims *
+            self.target_entropy = 0.8 * max_ent
+            self.log_alpha = nn.Parameter(torch.tensor([-3.0], device=self.device))
+            self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
+            self.alpha = self.log_alpha.exp().item()
 
         print(f"self soft {self.soft} selfmunch: {self.munchausen} mc {self.munchausen_constant}")
 
@@ -977,6 +977,7 @@ class IQNRainbowDQN(RainbowBase):
         )
         I_ = (td < 0).float()
         taus_expanded = taus.unsqueeze(2)  # [B,N,1]
+        # Try loss times action dims to stop it from scaling down. 
         loss = (torch.abs(taus_expanded - I_) * huber).mean()
         return loss
 
@@ -1051,16 +1052,13 @@ class IQNRainbowDQN(RainbowBase):
 
             # Online Next Q -> For action selection
             online_next_q_norm = self.ext_target(b_next_obs, taus, normalized=True) if self.delayed_target else self.ext_online(b_next_obs, taus, normalized=True)
-            # print(online_next_q_norm.shape)
-            online_next_q_norm = online_next_q_norm.view(dist_q_shape).mean(dim=1)
-            # print(f"online next q nrm [0] {online_next_q_norm[0]}")
+            online_next_q_norm = online_next_q_norm.view(dist_q_shape).mean(dim=1) # [B, D, Bins]
 
             # Target Net Quantiles -> For target values
             t_net = self.ext_target if self.delayed_target else self.ext_online
             target_quantiles_all = t_net(
                 b_next_obs, target_taus, normalized=False
             )  # [B, Nt, D, Bins]
-            # print(f"Target quantils shape: {target_quantiles_all.shape}")
 
             m_r = 0.0
             ent_bonus = 0.0
@@ -1071,23 +1069,15 @@ class IQNRainbowDQN(RainbowBase):
                     min=-1e8,
                 )
                 pi_next = torch.exp(logpi_next)
-                # Entropy bonus: sum over bins AND mean over D, scaled to reward scale
-                ent_bonus = -(pi_next * logpi_next).sum(dim=-1)  # sum over bins
-                if ent_bonus.ndim > 1:
-                    ent_bonus = ent_bonus.mean(dim=-1).unsqueeze(
-                        1
-                    )  # mean over D, then [B, 1]
-                else:
-                    ent_bonus = ent_bonus.unsqueeze(1)
+                # Entropy bonus per head: [B, D]
+                ent_bonus = -(pi_next * logpi_next).sum(dim=-1)
 
-                # Mixed target values: sum over bins AND mean over D
+                # Mixed target values per head: [B, Nt, D]
                 mixed_target = (pi_next.unsqueeze(1) * target_quantiles_all).sum(
                     dim=-1
-                )  # sum over bins -> [B, Nt, D]
-                if mixed_target.ndim > 2:
-                    mixed_target = mixed_target.mean(dim=-1)  # mean over D -> [B, Nt]
+                )
             else:
-                target_actions = online_next_q_norm.argmax(dim=-1)
+                target_actions = online_next_q_norm.argmax(dim=-1) # [B, D]
                 action_idx = (
                     target_actions.unsqueeze(1)
                     .unsqueeze(-1)
@@ -1098,8 +1088,6 @@ class IQNRainbowDQN(RainbowBase):
                 ).squeeze(
                     -1
                 )  # [B, Nt, D]
-                if mixed_target.ndim > 2:
-                    mixed_target = mixed_target.mean(dim=-1)  # mean over D -> [B, Nt]
 
             if self.munchausen:
                 t_expected = torch.linspace(
@@ -1108,42 +1096,30 @@ class IQNRainbowDQN(RainbowBase):
                 t_expected = t_expected.unsqueeze(0).expand(batch_size, -1)
                 q_ext_norm_now = self.ext_online(
                     b_obs, t_expected, normalized=True
-                ).mean(dim=1)
+                ).mean(dim=1) # [B, D, Bins]
 
                 logpi_now = torch.clamp(torch.log_softmax(q_ext_norm_now / self.alpha, dim=-1),min=-1e8)
-                selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(-1)
+                selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(-1) # [B, D]
 
-                if selected_logpi.ndim > 1:
-                    # Mean over D for MultiDiscrete Munchausen to match Alpha scale
-                    r_kl = selected_logpi.mean(dim=-1).view(-1)
-                else:
-                    r_kl = selected_logpi.view(-1)
-                # Scale by (1-gamma) to match reward scale
+                # Munchausen reward per head: [B, D]
                 m_r = (
-                    current_sigma * self.munchausen_constant * torch.clamp(self.alpha * r_kl, min=self.l_clip, max=0)#* (1 - self.gamma)
-                ).view(-1)
+                    current_sigma * self.munchausen_constant * torch.clamp(self.alpha * selected_logpi, min=self.l_clip, max=0)
+                )
 
-            b_r_final = b_r_ext.view(-1) + m_r
-            # Target Q-distribution
-            assert (
-                b_r_final.shape == b_term.shape
-            ), f"Shape mismatch: b_r_final {b_r_final.shape}, b_term {b_term.shape}"
-            assert (
-                b_term.ndim == mixed_target.ndim - 1
-            ), "mixed target is going to broadcast bad"
-            # Scale entropy bonus by (1-gamma) to match reward scale
-            target_values = b_r_final.unsqueeze(1) + (1 - b_term).unsqueeze(
-                1
-            ) * self.gamma * (mixed_target + current_sigma * self.alpha * ent_bonus) # * (1 - self.gamma)
-        # print(f"We made it past the target calculation br {b_r_final.unsqueeze(1).shape} bterm {(1 - b_term).unsqueeze(1).shape} mix_target {mixed_target.shape}, ")
-        # if self.soft:
-        #     print(f"ent: {ent_bonus.shape}")
+            # Ensure m_r and ent_bonus are tensors of correct shape for broadcasting
+            if not isinstance(m_r, torch.Tensor):
+                m_r = torch.zeros(batch_size, self.n_action_dims, device=self.device)
+            if not isinstance(ent_bonus, torch.Tensor):
+                ent_bonus = torch.zeros(batch_size, self.n_action_dims, device=self.device)
+
+            b_r_final = b_r_ext.unsqueeze(-1) + m_r # [B, D]
+            
+            # Target Q-distribution: [B, Nt, D]
+            target_values = b_r_final.unsqueeze(1) + (1 - b_term).view(batch_size, 1, 1) * self.gamma * (mixed_target + current_sigma * self.alpha * ent_bonus.unsqueeze(1))
+        
         # Apply PopArt stats tracking over target distributions
-        # Mean to get the expected value and stop popart from thinking taus are
-        self.ext_online.output_layer.update_stats(target_values.detach().mean(-1))
-        # if self.delayed_target:
-        #    self.ext_target.output_layer.sigma.copy_(self.ext_online.output_layer.sigma)
-        #    self.ext_target.output_layer.mu.copy_(self.ext_online.output_layer.mu)
+        self.ext_online.output_layer.update_stats(target_values.detach().mean(dim=1))
+        #self.ext_online.output_layer.update_stats(target_values.detach())
         target_values_norm = self.ext_online.output_layer.normalize(
             target_values.detach()
         )
@@ -1160,19 +1136,13 @@ class IQNRainbowDQN(RainbowBase):
         pred_chosen = torch.gather(quantiles_pred, -1, gather_index_pred).squeeze(
             -1
         )  # [B, N, D]
-        int_drift_penalty = 0.0
-        if pred_chosen.ndim > 2:
-            # int_drift_penalty = pred_chosen.pow(2).mean() * 1e-3
-            pred_chosen = pred_chosen.mean(dim=-1)  # [B, N]
-        assert (
-            pred_chosen.shape[0] == target_values_norm.shape[0]
-            and pred_chosen.ndim == target_values_norm.ndim == 2
-        ), f"Shape mismatch: pred_chosen {pred_chosen.shape}, target_values_norm {target_values_norm.shape}"
+        
+        # Reshape to treat heads as independent samples for quantile loss
+        pred_chosen_flat = pred_chosen.transpose(1, 2).reshape(batch_size * self.n_action_dims, self.n_quantiles)
+        target_values_norm_flat = target_values_norm.transpose(1, 2).reshape(batch_size * self.n_action_dims, self.n_target_quantiles)
+        taus_pred_flat = taus_pred.unsqueeze(1).expand(-1, self.n_action_dims, -1).reshape(batch_size * self.n_action_dims, self.n_quantiles)
 
-        extrinsic_loss = (
-            self._quantile_huber_loss(pred_chosen, target_values_norm, taus_pred)
-            #+ int_drift_penalty
-        )
+        extrinsic_loss = self._quantile_huber_loss(pred_chosen_flat, target_values_norm_flat, taus_pred_flat)
 
         self.optim.zero_grad()
         extrinsic_loss.backward()
@@ -1205,7 +1175,6 @@ class IQNRainbowDQN(RainbowBase):
                     device=self.log_alpha.device,
                     dtype=current_entropy.dtype,
                 )
-            if self.autotune:
                 alpha_loss = (
                     self.log_alpha.exp() * (current_entropy - target_entropy).detach()
                 )
@@ -1227,13 +1196,13 @@ class IQNRainbowDQN(RainbowBase):
 
                 online_next_q_int_norm = self.int_online(
                     b_next_obs, int_taus, normalized=True
-                ).mean(dim=1)
-                target_actions_int = online_next_q_int_norm.argmax(dim=-1)
+                ).mean(dim=1) # [B, D, Bins]
+                target_actions_int = online_next_q_int_norm.argmax(dim=-1) # [B, D]
 
                 t_net_int = self.int_target if self.delayed_target else self.int_online
                 int_target_all = t_net_int(
                     b_next_obs, int_target_taus, normalized=False
-                )
+                ) # [B, Nt, D, Bins]
 
                 action_idx_int = (
                     target_actions_int.unsqueeze(1)
@@ -1246,24 +1215,14 @@ class IQNRainbowDQN(RainbowBase):
                     -1
                 )  # [B, Nt, D]
 
-                if mixed_target_int.ndim > 2:
-                    mixed_target_int = mixed_target_int.mean(dim=-1)  # [B, Nt]
-
                 # No terminal mask for intrinsic reward
-                assert (
-                    b_r_int.unsqueeze(1).shape[0] == mixed_target_int.shape[0]
-                ), f"Shape mismatch: b_r_int {b_r_int.unsqueeze(1).shape}, mixed_target_int {mixed_target_int.shape}"
-                int_target_values = b_r_int.unsqueeze(1) + self.gamma * mixed_target_int
+                int_target_values = b_r_int.unsqueeze(1).unsqueeze(2) + self.gamma * mixed_target_int # [B, Nt, D]
 
             # Mean -1 to get expected value so popart tracks target variance not env varaince
             self.int_online.output_layer.update_stats(
-                int_target_values.detach().mean(-1)
+                int_target_values.detach().mean(dim=1)
             )
-            # if self.delayed_target:
-            # self.int_target.output_layer.sigma.copy_(
-            #     self.int_online.output_layer.sigma
-            # )
-            # self.int_target.output_layer.mu.copy_(self.int_online.output_layer.mu)
+            #self.ext_online.output_layer.update_stats(target_values.detach().mean(dim=1))
             int_target_values_norm = self.int_online.output_layer.normalize(
                 int_target_values.detach()
             )
@@ -1279,21 +1238,14 @@ class IQNRainbowDQN(RainbowBase):
             ).squeeze(
                 -1
             )  # [B, N, D]
-            int_drift_penalty = 0.0
-            if int_pred_chosen.ndim > 2:
-                # int_drift_penalty = int_pred_chosen.pow(2).mean() * 1e-3
-                int_pred_chosen = int_pred_chosen.mean(dim=-1)  # [B, N]
+            
+            # Reshape for head-wise quantile loss
+            int_pred_chosen_flat = int_pred_chosen.transpose(1, 2).reshape(batch_size * self.n_action_dims, self.n_quantiles)
+            int_target_values_norm_flat = int_target_values_norm.transpose(1, 2).reshape(batch_size * self.n_action_dims, self.n_target_quantiles)
+            int_taus_pred_flat = int_taus_pred.unsqueeze(1).expand(-1, self.n_action_dims, -1).reshape(batch_size * self.n_action_dims, self.n_quantiles)
 
-            assert (
-                int_pred_chosen.shape[0] == int_target_values_norm.shape[0]
-                and int_pred_chosen.ndim == int_target_values_norm.ndim == 2
-            ), f"Shape mismatch: int_pred_chosen {int_pred_chosen.shape}, int_target_values_norm {int_target_values_norm.shape}"
-
-            intrinsic_loss = (
-                self._quantile_huber_loss(
-                    int_pred_chosen, int_target_values_norm, int_taus_pred
-                )
-                #+ int_drift_penalty
+            intrinsic_loss = self._quantile_huber_loss(
+                int_pred_chosen_flat, int_target_values_norm_flat, int_taus_pred_flat
             )
 
             self.int_optim.zero_grad()

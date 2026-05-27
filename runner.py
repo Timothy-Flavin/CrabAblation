@@ -241,7 +241,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     update_every = int(getattr(args, "update_every", 2))
     beta_half_life_steps = max(1, (total_steps // update_every) // 5)
     cfg = {
-        "munchausen_constant": 0.1,
+        "munchausen_constant": 0.9,
         "soft": True,
         "Beta": 1.0,  # Start fully intrinsic
         "dueling": True,
@@ -249,7 +249,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         "delayed": True,
         "popart": True,
         "tau": 0.05,
-        "alpha": 0.01,
+        "alpha": 0.03,
         "beta_half_life_steps": beta_half_life_steps,
     }
 
@@ -266,10 +266,10 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
     elif args.ablation == 5:
         cfg["delayed"] = False
     elif args.ablation == 6:
-        cfg["munchausen_constant"] = 0.9
-        cfg["soft"] = True
+        cfg["munchausen_constant"] = 0.0
+        cfg["soft"] = False
         cfg["Beta"] = 0.0
-        cfg["distributional"] = True
+        cfg["distributional"] = False
         cfg["delayed"] = True
         cfg["dueling"] = False
 

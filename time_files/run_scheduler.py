@@ -35,9 +35,9 @@ def solve_scheduling_problem():
         "lab-comp_gpu": "OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 numactl --cpunodebind=1 --membind=1 ", 
     }
 
-    envs = ["minigrid", "cartpole"]#, "mujoco"]
-    models = ["sac"]
-    ablations = [0, 1, 2, 3, 4, 5]
+    envs = ["minigrid", "cartpole", "mujoco"]
+    models = ["dqn"]
+    ablations = [0, 1, 2, 3, 4, 5, 6]
     runs = [1, 2, 3, 4, 5]
 
     # Generate the list of experiments

@@ -55,7 +55,7 @@ class PopArtDuelingIQNLayer(nn.Module):
         if self.adv_head.bias is not None:
             nn.init.zeros_(self.adv_head.bias)
 
-    def forward(self, x, normalized=False):
+    def forward_old(self, x, normalized=False):
         """
         Args:
             x: [Batch, N_Quantiles, Hidden]
@@ -81,6 +81,27 @@ class PopArtDuelingIQNLayer(nn.Module):
 
         # Unnormalize: Q = Q_norm * sigma + mu
         # sigma, mu are scalars, so broadcasting is automatic
+        return q_norm * self.sigma + self.mu
+
+    def forward(self, x, normalized=False):
+        # Value Stream: [B, N, 1]
+        v = self.value_head(x)
+
+        # Advantage Stream: [B, N, D*Bins]
+        a = self.adv_head(x)
+        # Reshape to [B, N, D, Bins]
+        a = a.view(a.shape[0], a.shape[1], self.n_action_dims, self.n_action_bins)
+
+        # Dueling Aggregation: Q = V + (A - mean(A))
+        # Mean over BINS ONLY (dim=3), leaving heads (dim=2) independent
+        a_mean = a.mean(dim=3, keepdim=True) 
+        
+        q_norm = a - a_mean + v.unsqueeze(-1)  # Broadcast V to [B, N, D, Bins]
+
+        if normalized:
+            return q_norm
+
+        # Unnormalize: Q = Q_norm * sigma + mu
         return q_norm * self.sigma + self.mu
 
     @torch.no_grad()
