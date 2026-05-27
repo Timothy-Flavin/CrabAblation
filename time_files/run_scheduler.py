@@ -15,8 +15,8 @@ def solve_scheduling_problem():
         "white-machine_gpu1", 
         "alienware_gpu_0", 
         "alienware_gpu_1", 
-        #"lab-comp_cpu", 
-        #"lab-comp_gpu"
+        "lab-comp_cpu", 
+        "lab-comp_gpu"
     ]
     
     env_activations = {
