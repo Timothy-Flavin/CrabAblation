@@ -1,38 +1,38 @@
 {
     "ablation_0": {
-        "device": "cpu",
-        "num_envs": 128,
-        "steps_per_sec": 282.10975561393224,
-        "updates_per_sec": 70.52743890348306
+        "device": "cuda:0",
+        "num_envs": 8,
+        "steps_per_sec": 290.5035974971579,
+        "updates_per_sec": 72.62589937428947
     },
     "ablation_1": {
-        "device": "cuda:0",
-        "num_envs": 128,
-        "steps_per_sec": 341.9964001028862,
-        "updates_per_sec": 85.49910002572155
+        "device": "cpu",
+        "num_envs": 16,
+        "steps_per_sec": 300.8821298373029,
+        "updates_per_sec": 75.22053245932572
     },
     "ablation_2": {
-        "device": "cpu",
-        "num_envs": 64,
-        "steps_per_sec": 295.50203682804516,
-        "updates_per_sec": 73.87550920701129
+        "device": "cuda:0",
+        "num_envs": 8,
+        "steps_per_sec": 322.61444926935013,
+        "updates_per_sec": 80.65361231733753
     },
     "ablation_3": {
-        "device": "cuda:0",
-        "num_envs": 128,
-        "steps_per_sec": 572.8909233112006,
-        "updates_per_sec": 143.22273082780015
+        "device": "cpu",
+        "num_envs": 16,
+        "steps_per_sec": 536.7105037131046,
+        "updates_per_sec": 134.17762592827614
     },
     "ablation_4": {
         "device": "cpu",
-        "num_envs": 128,
-        "steps_per_sec": 626.4648404116614,
-        "updates_per_sec": 156.61621010291535
+        "num_envs": 16,
+        "steps_per_sec": 594.5143122666517,
+        "updates_per_sec": 148.62857806666293
     },
     "ablation_5": {
-        "device": "cuda:0",
-        "num_envs": 12,
-        "steps_per_sec": 299.24609338782085,
-        "updates_per_sec": 74.81152334695521
+        "device": "cpu",
+        "num_envs": 16,
+        "steps_per_sec": 279.3230461562457,
+        "updates_per_sec": 69.83076153906143
     }
 }
