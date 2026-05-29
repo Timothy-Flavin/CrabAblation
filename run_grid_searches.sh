@@ -9,7 +9,7 @@ if [ -z "$1" ]; then
 fi
 
 MACHINE=$1
-ALGOS=("dqn")
+ALGOS=("dqn" "ppo" "sac")
 ENVS=("cartpole" "minigrid" "mujoco")
 
 # Define the devices, preambles, and search devices based on the machine
