@@ -1,4 +1,6 @@
 #!/bin/bash
+source .venv/bin/activate
+
 
 if [ -z "$1" ]; then
     echo "Usage: $0 <machine_type>"
@@ -7,7 +9,7 @@ if [ -z "$1" ]; then
 fi
 
 MACHINE=$1
-ALGOS=("dqn" "ppo" "sac")
+ALGOS=("dqn")
 ENVS=("cartpole" "minigrid" "mujoco")
 
 # Define the devices, preambles, and search devices based on the machine

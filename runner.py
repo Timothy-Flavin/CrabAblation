@@ -260,6 +260,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         cfg["soft"] = False
     elif args.ablation == 3:
         cfg["Beta"] = 0.0
+        #cfg["distributional"] = False
     elif args.ablation == 4:
         cfg["distributional"] = False
         cfg["dueling"] = False

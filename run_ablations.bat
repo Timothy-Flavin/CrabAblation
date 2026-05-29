@@ -5,7 +5,7 @@ REM Usage: Edit ALGOS, ENVS, ABLATIONS, RUNS, DEVICE_NAME as needed
 REM Set parameters (space-separated lists)
 set "ALGOS=dqn"
 set "ENVS=mujoco"
-set "ABLATIONS=0 1 2 3 4 5"
+set "ABLATIONS=4 6"
 set "RUNS=2"
 set "DEVICE_NAME=laptop"
 

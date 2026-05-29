@@ -302,7 +302,10 @@ class RainbowBase(Agent):
         if ext_layer is not None and rewards.numel() > 0:
             mu_R = float(rewards.mean().item())
             sigma_R = float(rewards.std(unbiased=False).item())
-            ext_layer.set_initial_stats(mu_R * scale_mu, max(sigma_R * scale_sigma, eps))
+            seeded_mu = mu_R * scale_mu
+            seeded_sigma = max(sigma_R * scale_sigma, eps)
+            ext_layer.set_initial_stats(seeded_mu, seeded_sigma)
+            self._seeded_ext_sigma = seeded_sigma
 
         # Intrinsic head: compute RND error stats on a fresh batch and scale.
         if int_layer is not None and self.Beta > 0.0 and rewards.numel() > 0:
@@ -312,7 +315,10 @@ class RainbowBase(Agent):
             rnd_errors = torch.clamp(rnd_errors, -float(self.int_r_clip), float(self.int_r_clip))
             mu_I = float(rnd_errors.mean().item())
             sigma_I = float(rnd_errors.std(unbiased=False).item())
-            int_layer.set_initial_stats(mu_I * scale_mu, max(sigma_I * scale_sigma, eps))
+            seeded_mu_I = mu_I * scale_mu
+            seeded_sigma_I = max(sigma_I * scale_sigma, eps)
+            int_layer.set_initial_stats(seeded_mu_I, seeded_sigma_I)
+            self._seeded_int_sigma = seeded_sigma_I
 
         self._popart_burn_in_seeded = True
 
@@ -360,6 +366,7 @@ class EVRainbowDQN(RainbowBase):
         burn_in_updates: int = 0,
         int_r_clip=5,
         ext_r_clip=5,
+        autotune: bool = True,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
         min_std: float = 0.01,
     ):
@@ -392,6 +399,7 @@ class EVRainbowDQN(RainbowBase):
             burn_in_updates=burn_in_updates,
             encoder_factory=encoder_factory,
         )
+        self.autotune = autotune
 
         def _encoder_kwargs():
             if encoder_factory is None:
@@ -455,18 +463,20 @@ class EVRainbowDQN(RainbowBase):
         if self.soft:
             # Max entropy per dim is ln(bins). Target ~80% of max entropy across all dims.
             max_ent = np.log(self.n_action_bins)
-            self.target_entropy = 0.8 * max_ent
+            self.target_entropy = 0.2 * max_ent
             # Start alpha small so the penalty doesn't immediately crush Q-values
-            self.log_alpha = nn.Parameter(torch.tensor([-3.0], device=self.device))
+            initial_alpha = 0.03 if self.munchausen else 0.05
+            self.log_alpha = nn.Parameter(torch.tensor([np.log(initial_alpha)], device=self.device))
             # Use a slightly lower LR for alpha to prevent temperature whiplash
             self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
             self.alpha = self.log_alpha.exp().item()
 
-        if self.munchausen:
-            self.autotune = False
-            self.alpha = 0.03
-        else:
-            self.autotune = True
+        self.autotune = True
+        # if self.munchausen:
+        #     self.autotune = False
+        #     # self.alpha = 0.03 # This will be set by log_alpha.exp() if soft=True
+        # else:
+        #     self.autotune = True
 
     def update(self, batch_size=None, step=None):
         self.step += 1
@@ -483,7 +493,6 @@ class EVRainbowDQN(RainbowBase):
         if self.step < self.burn_in_updates:
             if self.Beta > 0.0 or getattr(self, "always_update_rnd", False):
                 rnd_errors, rnd_loss = self._update_RND(b_next_obs)
-                return 0.0
             return 0.0
 
         # First post-burn-in step: hard-start PopArt from raw reward stats
@@ -538,7 +547,8 @@ class EVRainbowDQN(RainbowBase):
                 else self.ext_online(b_next_obs, normalized=False)
             )
 
-            # Munchausen loss only for the exploiter
+            # 1. Calculate the Munchausen Penalty separately (Do NOT modify b_r_ext!)
+            m_r = 0.0
             if self.munchausen:
                 if logpi_now is None:
                     logpi_now = torch.clamp(
@@ -547,47 +557,82 @@ class EVRainbowDQN(RainbowBase):
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(
                     -1
                 )  # [B,D]
-                r_kl = selected_logpi#, min=self.l_clip)
-                if r_kl.ndim > 1:
-                    r_kl = r_kl.mean(-1)
-                assert b_r_ext.ndim == r_kl.ndim
-                # Scale by (1-gamma) to match reward scale
-                b_r_ext += current_sigma * self.munchausen_constant * torch.clamp(self.alpha * r_kl, min=self.l_clip, max=0.0) #  NEW THING
+                # Sigma remains outside the clamp for perfect scale-free behavior
+                m_r = current_sigma * self.munchausen_constant * torch.clamp(self.alpha * selected_logpi, min=self.l_clip, max=0.0)
 
-            # Next value with entropy and weighted sum over q values
+            # 2. Split Next Values into Env-Only and Entropy Bonus
             if self.munchausen or self.soft:
                 logpi_next = torch.clamp(
                     torch.log_softmax(q_next_online_norm / self.alpha, dim=-1), min=-1e8
                 )
                 pi_next = torch.exp(logpi_next)
-                # Scale entropy bonus by (1-gamma) to match reward scale
-                next_head_vals = (
-                    pi_next
-                    * (q_next_target_raw - current_sigma * self.alpha * logpi_next) # * (1 - self.gamma)
-                ).sum(-1)
+                
+                # To break the feedback loop, we need an environment-only estimate for Q_next.
+                # Since the network predicts Q_full = Q_env + Q_penalty, we subtract the
+                # immediate next-state penalty to approximate Q_env.
+                # removing the immediate one reduces the loop multiplier below 1.0.
+                
+                # Entropy bonus is -sigma * alpha * logpi.
+                next_ent_bonus_raw = (pi_next * (-self.alpha * logpi_next)).sum(-1) # [B,D]
+                next_ent_bonus = current_sigma * next_ent_bonus_raw
+
+                # Munchausen bonus at the next state
+                if self.munchausen:
+                    next_m_r_raw = (pi_next * (self.munchausen_constant * torch.clamp(self.alpha * logpi_next, min=self.l_clip, max=0.0))).sum(-1)
+                    next_m_r = current_sigma * next_m_r_raw
+                else:
+                    next_m_r = 0.0
+
+                next_q_full = (pi_next * q_next_target_raw).sum(-1)
+                # Subtract BOTH bonuses to get back to environment part (1st order approximation)
+                next_q_env = next_q_full - next_ent_bonus - next_m_r
             # Next value with no entropy or weighted sum, using argmax policy
             else:
                 target_actions_next = q_next_online_norm.argmax(
                     dim=-1, keepdim=True
                 ).detach()
-                next_head_vals = torch.gather(
+                next_q_env = torch.gather(
                     q_next_target_raw, -1, target_actions_next
                 ).squeeze(-1)
-            # vdn sum the vals
-            if next_head_vals.ndim > 1:
-                next_head_vals = next_head_vals.mean(-1) # Changed to sum
-            assert (
-                b_r_ext.shape == b_term.shape == next_head_vals.shape
-            ), f"Shape mismatch: {b_r_ext.shape}, {b_term.shape}, {next_head_vals.shape}"
+                next_ent_bonus = 0.0
+
+            if next_q_env.ndim > 1:
+                next_q_env = next_q_env.mean(-1)
+            if isinstance(next_ent_bonus, torch.Tensor) and next_ent_bonus.ndim > 1:
+                next_ent_bonus = next_ent_bonus.mean(-1)
+
+            # 3. DECOUPLED POPART: Track ONLY the environment returns
+            # To break the geometric feedback loop, we update statistics using a target
+            # that uses a fixed reference scale for the future value contribution.
+            sigma_ref = getattr(self, "_seeded_ext_sigma", 1.0)
+            mu_ref = self.ext_online.output_layer.mu.detach()
+            next_q_stable = mu_ref + sigma_ref * q_next_online_norm.mean(dim=-1)
+            
+            env_target_stats = b_r_ext.unsqueeze(-1) + self.gamma * (1 - b_term).unsqueeze(-1) * next_q_stable
+            self.ext_online.output_layer.update_stats(env_target_stats.detach())
+
+            # 4. Construct Full Target for Network Training
+            if self.munchausen or self.soft:
+                next_v_soft = (pi_next * (q_next_target_raw - current_sigma * self.alpha * logpi_next)).sum(-1)
+            else:
+                next_v_soft = torch.gather(q_next_target_raw, -1, target_actions_next).squeeze(-1)
+            
+            if next_v_soft.ndim > 1:
+                pass # Delay mean to allow per-head PopArt stats
+                
+            m_r_view = m_r
             online_ext_target = (
-                b_r_ext.view(-1) + self.gamma * (1 - b_term).view(-1) * next_head_vals
+                b_r_ext.unsqueeze(-1) + m_r_view + self.gamma * (1 - b_term).unsqueeze(-1) * next_v_soft
             )
 
         target_for_stats_ext = online_ext_target.detach()  # maintain [B, D]
-        self.ext_online.output_layer.update_stats(target_for_stats_ext)
+        # self.ext_online.output_layer.update_stats(target_for_stats_ext) # Removed: already updated with env_target
         # if self.delayed_target:
 
         td_target_norm = self.ext_online.output_layer.normalize(target_for_stats_ext)
+        if td_target_norm.ndim > 1:
+            td_target_norm = td_target_norm.mean(-1)
+
         q_ext_now_norm = self.ext_online(b_obs, normalized=True)
         q_selected_norm = torch.gather(q_ext_now_norm, -1, b_actions_idx).squeeze(
             -1
@@ -656,11 +701,10 @@ class EVRainbowDQN(RainbowBase):
                 -1
             )
             if int_q_next_target.ndim > 1:
-                int_q_next_target = int_q_next_target.mean(-1) # Changed to sum
-            assert (
-                b_r_int.view(-1).shape == int_q_next_target.shape
-            ), f"Shape mismatch: b_r_int {b_r_int.view(-1).shape}, int_q_next_target {int_q_next_target.shape}"
-            int_td_target = b_r_int.view(-1) + self.gamma * int_q_next_target
+                pass # Delay mean to allow per-head PopArt stats
+            # Since b_r_int might be [B] or [B,1] and int_q_next_target might be [B, D]
+            b_r_int_v = b_r_int.view(-1).unsqueeze(-1) if b_r_int.ndim == 1 else b_r_int
+            int_td_target = b_r_int_v + self.gamma * int_q_next_target
 
         target_for_stats_int = int_td_target.detach()
         self.int_online.output_layer.update_stats(target_for_stats_int)
@@ -671,6 +715,9 @@ class EVRainbowDQN(RainbowBase):
         int_td_target_norm = self.int_online.output_layer.normalize(
             target_for_stats_int
         )
+        if int_td_target_norm.ndim > 1:
+            int_td_target_norm = int_td_target_norm.mean(-1)
+            
         int_q_now_norm = self.int_online(b_obs, normalized=True)
         int_q_selected_norm = torch.gather(int_q_now_norm, -1, b_actions_idx).squeeze(
             -1
@@ -715,6 +762,7 @@ class EVRainbowDQN(RainbowBase):
                 "alpha_loss": (float(alpha_loss.item()) if isinstance(alpha_loss, torch.Tensor) else float(alpha_loss)),
                 "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
                 "target_mean": float(target_for_stats_ext.mean().item()),
+                "env_target_stats_std": float(env_target_stats.std().item()),
                 "td_target_norm_mean": float(td_target_norm.abs().mean().detach().item()),
                 "Beta": float(self.Beta),
                 "Q_ext_mean": float(q_ext_now_norm.mean().item()),
@@ -725,6 +773,8 @@ class EVRainbowDQN(RainbowBase):
                 ),
                 "last_eps": float(self.last_eps),
                 "entropy": current_entropy if self.soft else 0.0,
+                "cur_sigma": float(current_sigma.item()),
+                "cur_mu": float(self.ext_target.output_layer.mu.item()),
             }
             print(self.last_losses)
 
@@ -744,6 +794,31 @@ class EVRainbowDQN(RainbowBase):
         is_batched = obs.ndim > self.obs_ndim
         obs_b = obs if is_batched else obs.unsqueeze(0)
         batch_size = obs_b.size(0)
+
+        # Force random actions during burn-in to ensure diverse buffer data
+        if self.step < self.burn_in_updates:
+            if action_mask is not None:
+                mask = action_mask if action_mask.ndim > 1 else action_mask.unsqueeze(0)
+                actions = []
+                for i in range(batch_size):
+                    valid_indices = torch.where(mask[i] == 1)[0]
+                    if valid_indices.numel() > 0:
+                        idx = torch.randint(0, valid_indices.numel(), (1,), device=obs_b.device)
+                        actions.append(valid_indices[idx])
+                    else:
+                        actions.append(torch.tensor([0], device=obs_b.device))
+                actions = torch.cat(actions)
+            else:
+                actions = torch.randint(
+                    0,
+                    self.n_action_bins,
+                    (batch_size, self.n_action_dims),
+                    device=obs_b.device,
+                )
+            if is_batched:
+                return actions.tolist()
+            else:
+                return actions.squeeze(0).tolist()
 
         with torch.no_grad():
             q_ext = self.ext_online(obs_b, normalized=True)  # [B,D,Bins] or [B,n_actions]
@@ -941,17 +1016,19 @@ class IQNRainbowDQN(RainbowBase):
 
         self.n_quantiles = 32
         self.n_target_quantiles = 32
-        if self.munchausen:
-            self.autotune = False
-            self.alpha = 0.03
-        else:
-            self.autotune = True
+        self.autotune = True
+        # if self.munchausen:
+        #     self.autotune = False
+        #     self.alpha = 0.03
+        # else:
+        #     self.autotune = True
 
         # --- ALPHA AUTOTUNER SETUP ---
-        if self.soft and self.autotune:
+        if self.soft:
             max_ent = np.log(self.n_action_bins)  # self.n_action_dims *
-            self.target_entropy = 0.8 * max_ent
-            self.log_alpha = nn.Parameter(torch.tensor([-3.0], device=self.device))
+            self.target_entropy = 0.2 * max_ent
+            initial_alpha = 0.03 if self.munchausen else 0.05
+            self.log_alpha = nn.Parameter(torch.tensor([np.log(initial_alpha)], device=self.device, requires_grad=True))
             self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
             self.alpha = self.log_alpha.exp().item()
 
@@ -978,11 +1055,13 @@ class IQNRainbowDQN(RainbowBase):
         I_ = (td < 0).float()
         taus_expanded = taus.unsqueeze(2)  # [B,N,1]
         # Try loss times action dims to stop it from scaling down. 
-        loss = (torch.abs(taus_expanded - I_) * huber).mean()
+        #loss = (torch.abs(taus_expanded - I_) * huber).mean()
+        loss = (torch.abs(taus_expanded - I_) * huber).sum(dim=1).mean()
         return loss
 
     def update(self, batch_size=None, step=None):
         self.step += 1
+        current_entropy = 0.0
 
         # Get batch data from buffer
         if batch_size is None:
@@ -1033,7 +1112,7 @@ class IQNRainbowDQN(RainbowBase):
                 torch.zeros_like(b_r_ext),
             )
 
-        current_sigma = self.ext_online.output_layer.sigma.detach()
+        current_sigma = self.ext_target.output_layer.sigma.detach()
 
         # ========================================================
         # Extrinsic Q update
@@ -1051,7 +1130,7 @@ class IQNRainbowDQN(RainbowBase):
             )
 
             # Online Next Q -> For action selection
-            online_next_q_norm = self.ext_target(b_next_obs, taus, normalized=True) if self.delayed_target else self.ext_online(b_next_obs, taus, normalized=True)
+            online_next_q_norm = self.ext_online(b_next_obs, taus, normalized=True)#self.ext_target(b_next_obs, taus, normalized=True) if self.delayed_target else self.ext_online(b_next_obs, taus, normalized=True)
             online_next_q_norm = online_next_q_norm.view(dist_q_shape).mean(dim=1) # [B, D, Bins]
 
             # Target Net Quantiles -> For target values
@@ -1070,12 +1149,15 @@ class IQNRainbowDQN(RainbowBase):
                 )
                 pi_next = torch.exp(logpi_next)
                 # Entropy bonus per head: [B, D]
-                ent_bonus = -(pi_next * logpi_next).sum(dim=-1)
+                ent_bonus_raw = -(pi_next * logpi_next).sum(dim=-1)
+                ent_bonus = current_sigma * self.alpha * ent_bonus_raw
+                current_entropy = ent_bonus_raw.mean()
 
-                # Mixed target values per head: [B, Nt, D]
-                mixed_target = (pi_next.unsqueeze(1) * target_quantiles_all).sum(
+                # ENV-ONLY mixed target (Approximation by subtracting immediate next penalty)
+                mixed_target_full = (pi_next.unsqueeze(1) * target_quantiles_all).sum(
                     dim=-1
                 )
+                mixed_target_env = mixed_target_full - ent_bonus.unsqueeze(1)
             else:
                 target_actions = online_next_q_norm.argmax(dim=-1) # [B, D]
                 action_idx = (
@@ -1083,11 +1165,12 @@ class IQNRainbowDQN(RainbowBase):
                     .unsqueeze(-1)
                     .expand(-1, self.n_target_quantiles, -1, 1)
                 )
-                mixed_target = torch.gather(
+                mixed_target_env = torch.gather(
                     target_quantiles_all, -1, action_idx
                 ).squeeze(
                     -1
                 )  # [B, Nt, D]
+                ent_bonus = 0.0
 
             if self.munchausen:
                 t_expected = torch.linspace(
@@ -1096,12 +1179,15 @@ class IQNRainbowDQN(RainbowBase):
                 t_expected = t_expected.unsqueeze(0).expand(batch_size, -1)
                 q_ext_norm_now = self.ext_online(
                     b_obs, t_expected, normalized=True
-                ).mean(dim=1) # [B, D, Bins]
+                ).mean(dim=1) if not self.delayed_target else self.ext_target(
+                    b_obs, t_expected, normalized=True
+                ).mean(dim=1)# [B, D, Bins]
 
                 logpi_now = torch.clamp(torch.log_softmax(q_ext_norm_now / self.alpha, dim=-1),min=-1e8)
                 selected_logpi = torch.gather(logpi_now, -1, b_actions_idx).squeeze(-1) # [B, D]
 
                 # Munchausen reward per head: [B, D]
+                # Sigma remains outside clamp
                 m_r = (
                     current_sigma * self.munchausen_constant * torch.clamp(self.alpha * selected_logpi, min=self.l_clip, max=0)
                 )
@@ -1112,13 +1198,43 @@ class IQNRainbowDQN(RainbowBase):
             if not isinstance(ent_bonus, torch.Tensor):
                 ent_bonus = torch.zeros(batch_size, self.n_action_dims, device=self.device)
 
-            b_r_final = b_r_ext.unsqueeze(-1) + m_r # [B, D]
+            # 2. DECOUPLED POPART: Track ONLY the environment returns
+            # To break the geometric feedback loop, update stats using a stable target
+            # independent of current explosive sigma.
+            sigma_ref = getattr(self, "_seeded_ext_sigma", 1.0)
+            mu_ref = self.ext_online.output_layer.mu.detach()
+            # online_next_q_norm is [B, D, Bins]. Mean over bins for expected value.
+            next_q_stable = mu_ref + sigma_ref * online_next_q_norm.mean(dim=-1) # [B, D]
             
-            # Target Q-distribution: [B, Nt, D]
-            target_values = b_r_final.unsqueeze(1) + (1 - b_term).view(batch_size, 1, 1) * self.gamma * (mixed_target + current_sigma * self.alpha * ent_bonus.unsqueeze(1))
+            env_target_stats = b_r_ext.unsqueeze(-1) + (1 - b_term).unsqueeze(-1) * self.gamma * next_q_stable
+            self.ext_online.output_layer.update_stats(env_target_stats.detach())
+
+            # 3. Compute Full Target & Normalize
+            # Full target = r_env + m_r + gamma * (Q_env_next + Ent_next)
+            # Use the most accurate recursive target for network training.
+            if self.munchausen or self.soft:
+                # Value including entropy: [B, Nt, D]
+                # ent_bonus_raw is -(pi_next * logpi_next).sum(-1) -> [B, D]
+                next_v_soft = target_quantiles_all + current_sigma * self.alpha * (-logpi_next).unsqueeze(1)
+                mixed_target_full = (pi_next.unsqueeze(1) * next_v_soft).sum(dim=-1)
+            else:
+                target_actions = online_next_q_norm.argmax(dim=-1)
+                action_idx = (
+                    target_actions.unsqueeze(1)
+                    .unsqueeze(-1)
+                    .expand(-1, self.n_target_quantiles, -1, 1)
+                )
+                mixed_target_full = torch.gather(
+                    target_quantiles_all, -1, action_idx
+                ).squeeze(-1)
+
+            b_r_final = b_r_ext.unsqueeze(-1) + m_r # [B, D]
+            target_values = b_r_final.unsqueeze(1) + (1 - b_term).view(batch_size, 1, 1) * self.gamma * mixed_target_full
         
         # Apply PopArt stats tracking over target distributions
-        self.ext_online.output_layer.update_stats(target_values.detach().mean(dim=1))
+        # self.ext_online.output_layer.update_stats(target_values.detach().mean(dim=1)) # Removed: already updated with env_target
+        cur_sigma = self.ext_online.output_layer.sigma
+        cur_mu = self.ext_online.output_layer.mu
         #self.ext_online.output_layer.update_stats(target_values.detach())
         target_values_norm = self.ext_online.output_layer.normalize(
             target_values.detach()
@@ -1175,12 +1291,13 @@ class IQNRainbowDQN(RainbowBase):
                     device=self.log_alpha.device,
                     dtype=current_entropy.dtype,
                 )
-                alpha_loss = (
-                    self.log_alpha.exp() * (current_entropy - target_entropy).detach()
-                )
-                self.alpha_optim.zero_grad()
-                alpha_loss.backward()
-                self.alpha_optim.step()
+            
+            alpha_loss = (
+                self.log_alpha.exp() * (current_entropy - target_entropy).detach()
+            )
+            self.alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optim.step()
             self.alpha = self.log_alpha.exp().item()
 
         # ========================================================
@@ -1277,15 +1394,15 @@ class IQNRainbowDQN(RainbowBase):
                 else torch.tensor(0.0)
             )
             if self.soft and self.autotune:
-                alpha_loss = float(alpha_loss.item())
+                alpha_loss_val = float(alpha_loss.item())
             else:
-                alpha_loss = 0.0
+                alpha_loss_val = 0.0
             self.last_losses = {
                 "extrinsic": float(extrinsic_loss.item()),
                 "intrinsic": float(intrinsic_loss.item()),
                 "rnd": float(rnd_loss),
                 "avg_r_int": r_int_log,
-                "alpha_loss": alpha_loss,
+                "alpha_loss": alpha_loss_val,
                 "alpha":self.alpha,
                 "mr":m_r.mean() if self.munchausen else 0.0,
                 "batch_nonzero_r_frac": float((b_r_ext != 0).float().mean().item()),
@@ -1302,6 +1419,9 @@ class IQNRainbowDQN(RainbowBase):
                     else 0.0
                 ),
                 "last_eps": float(self.last_eps),
+                "entropy": current_entropy,
+                "cur_sigma": cur_sigma.item(),
+                "cur_mu": cur_mu.item(),
             }
             print(self.last_losses)
         return float(extrinsic_loss.item())
@@ -1320,6 +1440,31 @@ class IQNRainbowDQN(RainbowBase):
         is_batched = obs.ndim > self.obs_ndim
         obs_b = obs if is_batched else obs.unsqueeze(0)
         batch_size = obs_b.size(0)
+
+        # Force random actions during burn-in to ensure diverse buffer data
+        if self.step < self.burn_in_updates:
+            if action_mask is not None:
+                mask = action_mask if action_mask.ndim > 1 else action_mask.unsqueeze(0)
+                actions = []
+                for i in range(batch_size):
+                    valid_indices = torch.where(mask[i] == 1)[0]
+                    if valid_indices.numel() > 0:
+                        idx = torch.randint(0, valid_indices.numel(), (1,), device=obs_b.device)
+                        actions.append(valid_indices[idx])
+                    else:
+                        actions.append(torch.tensor([0], device=obs_b.device))
+                actions = torch.cat(actions)
+            else:
+                actions = torch.randint(
+                    0,
+                    self.n_action_bins,
+                    (batch_size, self.n_action_dims),
+                    device=obs_b.device,
+                )
+            if is_batched:
+                return actions.tolist()
+            else:
+                return actions.squeeze(0).tolist()
 
         with torch.no_grad():
             taus = self._sample_taus(batch_size, self.n_quantiles, obs_b.device)

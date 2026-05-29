@@ -72,7 +72,7 @@ def get_args():
 
 def run_grid_search(args, total_steps=2000):
     devices = args.search_devices
-    num_envs_list = [1, 4, 8, 12, 16, 64, 128]
+    num_envs_list = [1, 4, 8, 16]
 
     if args.replace_existing:
         best_results = {}
