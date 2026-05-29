@@ -80,7 +80,7 @@ def run_grid_search(args, total_steps=2000):
     else:
         best_results, all_results = load_grid_search_results(args, args.algo)
 
-    for ablation in range(6):
+    for ablation in [6]:#range(7):
         print(f"\n--- Grid Search: Ablation {ablation} ---")
         args.ablation = ablation
 
