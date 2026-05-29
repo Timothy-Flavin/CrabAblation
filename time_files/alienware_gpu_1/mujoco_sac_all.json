@@ -1,518 +1,158 @@
 {
     "ablation_0": [
         {
-            "device": "cpu",
-            "num_envs": 1,
-            "steps_per_sec": 49.39447233603768,
-            "updates_per_sec": 12.34861808400942
-        },
-        {
-            "device": "cpu",
-            "num_envs": 4,
-            "steps_per_sec": 50.577469943362935,
-            "updates_per_sec": 12.644367485840734
-        },
-        {
-            "device": "cpu",
-            "num_envs": 8,
-            "steps_per_sec": 52.611853711342576,
-            "updates_per_sec": 13.152963427835644
-        },
-        {
-            "device": "cpu",
-            "num_envs": 12,
-            "steps_per_sec": 50.257804925192055,
-            "updates_per_sec": 12.564451231298014
-        },
-        {
-            "device": "cpu",
-            "num_envs": 16,
-            "steps_per_sec": 47.19448137388673,
-            "updates_per_sec": 11.798620343471683
-        },
-        {
-            "device": "cpu",
-            "num_envs": 64,
-            "steps_per_sec": 48.24180761755961,
-            "updates_per_sec": 12.060451904389902
-        },
-        {
-            "device": "cpu",
-            "num_envs": 128,
-            "steps_per_sec": 49.69659002968581,
-            "updates_per_sec": 12.424147507421452
-        },
-        {
             "device": "cuda:0",
             "num_envs": 1,
-            "steps_per_sec": 251.09778813752806,
-            "updates_per_sec": 62.774447034382014
+            "steps_per_sec": 252.9329192465038,
+            "updates_per_sec": 63.19989653286389
         },
         {
             "device": "cuda:0",
             "num_envs": 4,
-            "steps_per_sec": 323.7498543394519,
-            "updates_per_sec": 80.93746358486297
+            "steps_per_sec": 322.72906079834127,
+            "updates_per_sec": 80.68226519958532
         },
         {
             "device": "cuda:0",
             "num_envs": 8,
-            "steps_per_sec": 338.51699499686833,
-            "updates_per_sec": 84.62924874921708
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 12,
-            "steps_per_sec": 345.68872186764895,
-            "updates_per_sec": 86.42218046691224
+            "steps_per_sec": 339.7029507239068,
+            "updates_per_sec": 84.9257376809767
         },
         {
             "device": "cuda:0",
             "num_envs": 16,
-            "steps_per_sec": 351.1374399016393,
-            "updates_per_sec": 87.78435997540983
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 64,
-            "steps_per_sec": 357.81677420042826,
-            "updates_per_sec": 89.45419355010706
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 128,
-            "steps_per_sec": 359.75756779381396,
-            "updates_per_sec": 89.93939194845349
+            "steps_per_sec": 348.62701241058613,
+            "updates_per_sec": 87.15675310264653
         }
     ],
     "ablation_1": [
         {
-            "device": "cpu",
-            "num_envs": 1,
-            "steps_per_sec": 51.33274424487202,
-            "updates_per_sec": 12.799853110409646
-        },
-        {
-            "device": "cpu",
-            "num_envs": 4,
-            "steps_per_sec": 48.92196270808739,
-            "updates_per_sec": 12.230490677021848
-        },
-        {
-            "device": "cpu",
-            "num_envs": 8,
-            "steps_per_sec": 49.818542714290906,
-            "updates_per_sec": 12.454635678572727
-        },
-        {
-            "device": "cpu",
-            "num_envs": 12,
-            "steps_per_sec": 53.805875160037616,
-            "updates_per_sec": 13.451468790009404
-        },
-        {
-            "device": "cpu",
-            "num_envs": 16,
-            "steps_per_sec": 51.451346643534485,
-            "updates_per_sec": 12.862836660883621
-        },
-        {
-            "device": "cpu",
-            "num_envs": 64,
-            "steps_per_sec": 52.03170956459303,
-            "updates_per_sec": 13.007927391148257
-        },
-        {
-            "device": "cpu",
-            "num_envs": 128,
-            "steps_per_sec": 54.60952010753643,
-            "updates_per_sec": 13.652380026884108
-        },
-        {
             "device": "cuda:0",
             "num_envs": 1,
-            "steps_per_sec": 264.36181944614805,
-            "updates_per_sec": 66.09045486153701
+            "steps_per_sec": 262.25905899931865,
+            "updates_per_sec": 65.56476474982966
         },
         {
             "device": "cuda:0",
             "num_envs": 4,
-            "steps_per_sec": 335.42263538166463,
-            "updates_per_sec": 83.85565884541616
+            "steps_per_sec": 334.5419523405998,
+            "updates_per_sec": 83.63548808514994
         },
         {
             "device": "cuda:0",
             "num_envs": 8,
-            "steps_per_sec": 352.66940841190427,
-            "updates_per_sec": 88.16735210297607
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 12,
-            "steps_per_sec": 361.0726574865054,
-            "updates_per_sec": 90.26816437162636
+            "steps_per_sec": 352.63374497369097,
+            "updates_per_sec": 88.15843624342274
         },
         {
             "device": "cuda:0",
             "num_envs": 16,
-            "steps_per_sec": 364.00571967420524,
-            "updates_per_sec": 91.00142991855131
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 64,
-            "steps_per_sec": 372.745342987026,
-            "updates_per_sec": 93.1863357467565
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 128,
-            "steps_per_sec": 375.0436747698098,
-            "updates_per_sec": 93.76091869245245
+            "steps_per_sec": 363.7467603194847,
+            "updates_per_sec": 90.93669007987117
         }
     ],
     "ablation_2": [
         {
-            "device": "cpu",
-            "num_envs": 1,
-            "steps_per_sec": 49.08708010815278,
-            "updates_per_sec": 12.271770027038196
-        },
-        {
-            "device": "cpu",
-            "num_envs": 4,
-            "steps_per_sec": 54.59936704135434,
-            "updates_per_sec": 13.649841760338585
-        },
-        {
-            "device": "cpu",
-            "num_envs": 8,
-            "steps_per_sec": 54.19613101725263,
-            "updates_per_sec": 13.549032754313158
-        },
-        {
-            "device": "cpu",
-            "num_envs": 12,
-            "steps_per_sec": 54.12648105828131,
-            "updates_per_sec": 13.531620264570327
-        },
-        {
-            "device": "cpu",
-            "num_envs": 16,
-            "steps_per_sec": 54.07287721723862,
-            "updates_per_sec": 13.518219304309655
-        },
-        {
-            "device": "cpu",
-            "num_envs": 64,
-            "steps_per_sec": 53.705426232515784,
-            "updates_per_sec": 13.426356558128946
-        },
-        {
-            "device": "cpu",
-            "num_envs": 128,
-            "steps_per_sec": 54.72641142464777,
-            "updates_per_sec": 13.681602856161943
-        },
-        {
             "device": "cuda:0",
             "num_envs": 1,
-            "steps_per_sec": 264.2494545258737,
-            "updates_per_sec": 66.06236363146843
+            "steps_per_sec": 270.2323272171406,
+            "updates_per_sec": 67.55808180428515
         },
         {
             "device": "cuda:0",
             "num_envs": 4,
-            "steps_per_sec": 341.7532026148443,
-            "updates_per_sec": 85.43830065371108
+            "steps_per_sec": 342.4328212145065,
+            "updates_per_sec": 85.60820530362662
         },
         {
             "device": "cuda:0",
             "num_envs": 8,
-            "steps_per_sec": 362.0910550293883,
-            "updates_per_sec": 90.52276375734708
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 12,
-            "steps_per_sec": 369.8064481237485,
-            "updates_per_sec": 92.45161203093713
+            "steps_per_sec": 362.02050574498736,
+            "updates_per_sec": 90.50512643624684
         },
         {
             "device": "cuda:0",
             "num_envs": 16,
-            "steps_per_sec": 373.5644424522596,
-            "updates_per_sec": 93.3911106130649
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 64,
-            "steps_per_sec": 385.0072786685353,
-            "updates_per_sec": 96.25181966713383
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 128,
-            "steps_per_sec": 384.109914636545,
-            "updates_per_sec": 96.02747865913625
+            "steps_per_sec": 373.2723183231094,
+            "updates_per_sec": 93.31807958077735
         }
     ],
     "ablation_3": [
         {
-            "device": "cpu",
-            "num_envs": 1,
-            "steps_per_sec": 45.972289992834874,
-            "updates_per_sec": 11.493072498208718
-        },
-        {
-            "device": "cpu",
-            "num_envs": 4,
-            "steps_per_sec": 46.26734860196396,
-            "updates_per_sec": 11.56683715049099
-        },
-        {
-            "device": "cpu",
-            "num_envs": 8,
-            "steps_per_sec": 49.06221465772818,
-            "updates_per_sec": 12.265553664432044
-        },
-        {
-            "device": "cpu",
-            "num_envs": 12,
-            "steps_per_sec": 49.50744250758378,
-            "updates_per_sec": 12.376860626895946
-        },
-        {
-            "device": "cpu",
-            "num_envs": 16,
-            "steps_per_sec": 48.99042437186086,
-            "updates_per_sec": 12.247606092965215
-        },
-        {
-            "device": "cpu",
-            "num_envs": 64,
-            "steps_per_sec": 49.07659386145823,
-            "updates_per_sec": 12.269148465364557
-        },
-        {
-            "device": "cpu",
-            "num_envs": 128,
-            "steps_per_sec": 50.161842325938835,
-            "updates_per_sec": 12.540460581484709
-        },
-        {
             "device": "cuda:0",
             "num_envs": 1,
-            "steps_per_sec": 297.28083689851854,
-            "updates_per_sec": 74.32020922462964
+            "steps_per_sec": 298.2367946211177,
+            "updates_per_sec": 74.55919865527943
         },
         {
             "device": "cuda:0",
             "num_envs": 4,
-            "steps_per_sec": 368.5832774927729,
-            "updates_per_sec": 92.14581937319322
+            "steps_per_sec": 368.2050929104088,
+            "updates_per_sec": 92.0512732276022
         },
         {
             "device": "cuda:0",
             "num_envs": 8,
-            "steps_per_sec": 384.7204861297484,
-            "updates_per_sec": 96.1801215324371
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 12,
-            "steps_per_sec": 391.78458080285844,
-            "updates_per_sec": 97.94614520071461
+            "steps_per_sec": 383.1921721011439,
+            "updates_per_sec": 95.79804302528598
         },
         {
             "device": "cuda:0",
             "num_envs": 16,
-            "steps_per_sec": 394.85191276574835,
-            "updates_per_sec": 98.71297819143709
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 64,
-            "steps_per_sec": 404.89884677023645,
-            "updates_per_sec": 101.22471169255911
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 128,
-            "steps_per_sec": 406.780075921178,
-            "updates_per_sec": 101.6950189802945
+            "steps_per_sec": 396.5670628895905,
+            "updates_per_sec": 99.14176572239762
         }
     ],
     "ablation_4": [
         {
-            "device": "cpu",
-            "num_envs": 1,
-            "steps_per_sec": 251.25717781298187,
-            "updates_per_sec": 62.79762841598008
-        },
-        {
-            "device": "cpu",
-            "num_envs": 4,
-            "steps_per_sec": 290.8828544139148,
-            "updates_per_sec": 72.7207136034787
-        },
-        {
-            "device": "cpu",
-            "num_envs": 8,
-            "steps_per_sec": 299.3554714296958,
-            "updates_per_sec": 74.83886785742395
-        },
-        {
-            "device": "cpu",
-            "num_envs": 12,
-            "steps_per_sec": 305.4960000144909,
-            "updates_per_sec": 76.37400000362273
-        },
-        {
-            "device": "cpu",
-            "num_envs": 16,
-            "steps_per_sec": 307.14027040468216,
-            "updates_per_sec": 76.78506760117054
-        },
-        {
-            "device": "cpu",
-            "num_envs": 64,
-            "steps_per_sec": 313.0384078072639,
-            "updates_per_sec": 78.25960195181598
-        },
-        {
-            "device": "cpu",
-            "num_envs": 128,
-            "steps_per_sec": 298.42050366970847,
-            "updates_per_sec": 74.60512591742712
-        },
-        {
             "device": "cuda:0",
             "num_envs": 1,
-            "steps_per_sec": 312.58826450537424,
-            "updates_per_sec": 78.13040008536971
+            "steps_per_sec": 311.59096644842145,
+            "updates_per_sec": 77.86440924513398
         },
         {
             "device": "cuda:0",
             "num_envs": 4,
-            "steps_per_sec": 416.46642948464074,
-            "updates_per_sec": 104.11660737116019
+            "steps_per_sec": 416.9474896954347,
+            "updates_per_sec": 104.23687242385867
         },
         {
             "device": "cuda:0",
             "num_envs": 8,
-            "steps_per_sec": 445.19546789644517,
-            "updates_per_sec": 111.29886697411129
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 12,
-            "steps_per_sec": 456.0316449092973,
-            "updates_per_sec": 114.00791122732433
+            "steps_per_sec": 451.053867991904,
+            "updates_per_sec": 112.763466997976
         },
         {
             "device": "cuda:0",
             "num_envs": 16,
-            "steps_per_sec": 465.49190224054905,
-            "updates_per_sec": 116.37297556013726
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 64,
-            "steps_per_sec": 480.9500266944236,
-            "updates_per_sec": 120.2375066736059
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 128,
-            "steps_per_sec": 478.52359036938196,
-            "updates_per_sec": 119.63089759234549
+            "steps_per_sec": 465.95511157028153,
+            "updates_per_sec": 116.48877789257038
         }
     ],
     "ablation_5": [
         {
-            "device": "cpu",
-            "num_envs": 1,
-            "steps_per_sec": 44.79629394674313,
-            "updates_per_sec": 11.199073486685782
-        },
-        {
-            "device": "cpu",
-            "num_envs": 4,
-            "steps_per_sec": 44.51563945458983,
-            "updates_per_sec": 11.128909863647458
-        },
-        {
-            "device": "cpu",
-            "num_envs": 8,
-            "steps_per_sec": 44.776807422974045,
-            "updates_per_sec": 11.194201855743511
-        },
-        {
-            "device": "cpu",
-            "num_envs": 12,
-            "steps_per_sec": 44.49706632374572,
-            "updates_per_sec": 11.12426658093643
-        },
-        {
-            "device": "cpu",
-            "num_envs": 16,
-            "steps_per_sec": 45.640067208075244,
-            "updates_per_sec": 11.410016802018811
-        },
-        {
-            "device": "cpu",
-            "num_envs": 64,
-            "steps_per_sec": 45.323332695722385,
-            "updates_per_sec": 11.330833173930596
-        },
-        {
-            "device": "cpu",
-            "num_envs": 128,
-            "steps_per_sec": 49.52237805894968,
-            "updates_per_sec": 12.38059451473742
-        },
-        {
             "device": "cuda:0",
             "num_envs": 1,
-            "steps_per_sec": 261.5415388320192,
-            "updates_per_sec": 65.3853847080048
+            "steps_per_sec": 261.72869486022364,
+            "updates_per_sec": 65.39884097246036
         },
         {
             "device": "cuda:0",
             "num_envs": 4,
-            "steps_per_sec": 334.2051806291012,
-            "updates_per_sec": 83.5512951572753
+            "steps_per_sec": 334.47281302366105,
+            "updates_per_sec": 83.61820325591526
         },
         {
             "device": "cuda:0",
             "num_envs": 8,
-            "steps_per_sec": 350.8379821355099,
-            "updates_per_sec": 87.70949553387747
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 12,
-            "steps_per_sec": 358.22582524626597,
-            "updates_per_sec": 89.55645631156649
+            "steps_per_sec": 351.11195265911397,
+            "updates_per_sec": 87.77798816477849
         },
         {
             "device": "cuda:0",
             "num_envs": 16,
-            "steps_per_sec": 362.75757982767965,
-            "updates_per_sec": 90.68939495691991
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 64,
-            "steps_per_sec": 370.9875187516102,
-            "updates_per_sec": 92.74687968790255
-        },
-        {
-            "device": "cuda:0",
-            "num_envs": 128,
-            "steps_per_sec": 371.55590928370395,
-            "updates_per_sec": 92.88897732092599
+            "steps_per_sec": 361.9137783491752,
+            "updates_per_sec": 90.4784445872938
         }
     ]
 }
