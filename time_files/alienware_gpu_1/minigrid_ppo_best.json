@@ -34,5 +34,11 @@
         "num_envs": 16,
         "steps_per_sec": 3209.049436193875,
         "updates_per_sec": 24.529124969245306
+    },
+    "ablation_6": {
+        "device": "cuda:0",
+        "num_envs": 16,
+        "steps_per_sec": 3385.16987622594,
+        "updates_per_sec": 25.596747646320903
     }
 }

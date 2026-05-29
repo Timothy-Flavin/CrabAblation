@@ -154,5 +154,31 @@
             "steps_per_sec": 367.96218752379525,
             "updates_per_sec": 91.99054688094881
         }
+    ],
+    "ablation_6": [
+        {
+            "device": "cuda:0",
+            "num_envs": 1,
+            "steps_per_sec": 423.4193340909217,
+            "updates_per_sec": 105.85483352273043
+        },
+        {
+            "device": "cuda:0",
+            "num_envs": 4,
+            "steps_per_sec": 547.1369068422454,
+            "updates_per_sec": 136.78422671056134
+        },
+        {
+            "device": "cuda:0",
+            "num_envs": 8,
+            "steps_per_sec": 579.4169564770722,
+            "updates_per_sec": 144.85423911926804
+        },
+        {
+            "device": "cuda:0",
+            "num_envs": 16,
+            "steps_per_sec": 607.8128389020276,
+            "updates_per_sec": 151.9532097255069
+        }
     ]
 }
