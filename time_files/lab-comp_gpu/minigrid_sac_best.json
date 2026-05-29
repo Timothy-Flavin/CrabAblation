@@ -34,5 +34,11 @@
         "num_envs": 16,
         "steps_per_sec": 315.470575569455,
         "updates_per_sec": 78.86764389236374
+    },
+    "ablation_6": {
+        "device": "cpu",
+        "num_envs": 16,
+        "steps_per_sec": 516.6593843721287,
+        "updates_per_sec": 129.16484609303217
     }
 }
