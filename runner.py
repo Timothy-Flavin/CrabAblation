@@ -257,16 +257,15 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         cfg["munchausen_constant"] = 0.0
         cfg["soft"] = False
     elif args.ablation == 2:
-        cfg["soft"] = False
+        cfg["soft"] = False # Takes e-greedy argmax actions
     elif args.ablation == 3:
-        cfg["Beta"] = 0.0
-        #cfg["distributional"] = False
+        cfg["Beta"] = 0.0 
     elif args.ablation == 4:
-        cfg["distributional"] = False
+        cfg["distributional"] = False 
         cfg["dueling"] = False
     elif args.ablation == 5:
         cfg["delayed"] = False
-    elif args.ablation == 6:
+    elif args.ablation == 6: #Default DQN
         cfg["munchausen_constant"] = 0.0
         cfg["soft"] = False
         cfg["Beta"] = 0.0
