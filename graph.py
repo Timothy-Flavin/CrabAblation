@@ -49,14 +49,47 @@ def load_run_arrays(
     return np.load(train_path), np.load(eval_path)
 
 
-def aggregate_runs(
-    runs_data: List[np.ndarray],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if not runs_data:
-        return np.array([]), np.array([]), np.array([])
-    min_len = min(arr.size for arr in runs_data)
-    stacked = np.vstack([arr[:min_len] for arr in runs_data])
-    
+def load_run_step_axes(
+    env_dir: Path,
+    run: int,
+    ablation: int,
+    train_arr: np.ndarray,
+    eval_size: int,
+    eval_every_episodes: int = 25,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Returns (train_steps, eval_steps) for one run.
+
+    Prefers saved per-episode step counts; falls back to cumsum of the
+    reward array (correct when reward == episode length, e.g. CartPole)
+    and to the eval-every-N-episodes schedule for eval_steps.
+    """
+    train_steps_path = env_dir / f"train_steps_{run}_{ablation}.npy"
+    eval_steps_path = env_dir / f"eval_steps_{run}_{ablation}.npy"
+
+    if train_steps_path.exists():
+        train_steps = np.load(train_steps_path).astype(np.float64)
+    else:
+        train_steps = np.cumsum(train_arr.astype(np.float64))
+
+    if eval_steps_path.exists():
+        eval_steps = np.load(eval_steps_path).astype(np.float64)
+        if eval_steps.size < eval_size:
+            eval_size = eval_steps.size
+        eval_steps = eval_steps[:eval_size]
+    elif eval_size > 0 and train_steps.size > 0:
+        idxs = np.clip(
+            np.arange(1, eval_size + 1) * eval_every_episodes - 1,
+            0,
+            train_steps.size - 1,
+        )
+        eval_steps = train_steps[idxs]
+    else:
+        eval_steps = np.array([], dtype=np.float64)
+
+    return train_steps, eval_steps
+
+
+def _iqm_stack(stacked: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     num_runs = stacked.shape[0]
     if num_runs <= 2:
         iqm = stacked.mean(axis=0)
@@ -66,8 +99,37 @@ def aggregate_runs(
         upper_idx = int(np.ceil(num_runs * 0.75))
         trimmed = sorted_stacked[lower_idx:upper_idx, :]
         iqm = trimmed.mean(axis=0)
-        
     return iqm, stacked.min(axis=0), stacked.max(axis=0)
+
+
+def aggregate_runs(
+    runs_data: List[np.ndarray],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if not runs_data:
+        return np.array([]), np.array([]), np.array([])
+    min_len = min(arr.size for arr in runs_data)
+    stacked = np.vstack([arr[:min_len] for arr in runs_data])
+    return _iqm_stack(stacked)
+
+
+def aggregate_runs_on_grid(
+    runs_data: List[np.ndarray],
+    x_arrays: List[np.ndarray],
+    grid: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Interpolate each run onto a shared x grid before stacking."""
+    if not runs_data:
+        return np.array([]), np.array([]), np.array([])
+    interped = []
+    for y, x in zip(runs_data, x_arrays):
+        if y.size == 0 or x.size == 0:
+            continue
+        n = min(y.size, x.size)
+        interped.append(np.interp(grid, x[:n], y[:n]))
+    if not interped:
+        return np.array([]), np.array([]), np.array([])
+    stacked = np.vstack(interped)
+    return _iqm_stack(stacked)
 
 
 def collect_for_algo(
@@ -76,47 +138,92 @@ def collect_for_algo(
     weight: float,
     xaxis: str,
     max_steps: Optional[int],
+    grid_size: int = 1000,
+    eval_weight: Optional[float] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """Collects stats for a specific algorithm + environment pair."""
     ablation_stats: Dict[int, Dict[str, Any]] = {}
+    eval_w = weight if eval_weight is None else eval_weight
 
     for ablation in range(7):
         train_runs, eval_runs, train_times = [], [], []
-        all_ok = True
+        train_step_axes, eval_step_axes = [], []
+        missing_runs: List[int] = []
 
         for run in runs:
             try:
                 train_arr, eval_arr = load_run_arrays(algo_env_dir, run, ablation)
-                train_runs.append(ema(train_arr.astype(np.float32), weight))
-                eval_runs.append(ema(eval_arr.astype(np.float32), weight))
+                train_smoothed = ema(train_arr.astype(np.float32), weight)
+                eval_smoothed = ema(eval_arr.astype(np.float32), eval_w)
+                train_runs.append(train_smoothed)
+                eval_runs.append(eval_smoothed)
 
-                if xaxis == "time":
+                if xaxis == "steps":
+                    train_steps, eval_steps = load_run_step_axes(
+                        algo_env_dir, run, ablation, train_arr, eval_smoothed.size
+                    )
+                    train_step_axes.append(train_steps)
+                    eval_step_axes.append(eval_steps)
+                elif xaxis == "time":
                     time_path = algo_env_dir / f"train_time_{run}_{ablation}.npy"
                     train_times.append(float(np.load(time_path)))
             except (FileNotFoundError, ValueError):
-                all_ok = False
-                break
+                missing_runs.append(run)
+                continue
 
-        if not all_ok or not train_runs:
+        if not train_runs:
+            if missing_runs:
+                print(
+                    f"  [skip] ablation {ablation}: no runs available "
+                    f"(missing runs: {missing_runs})"
+                )
             continue
-
-        t_mean, t_min, t_max = aggregate_runs(train_runs)
-        e_mean, e_min, e_max = aggregate_runs(eval_runs)
+        if missing_runs:
+            print(
+                f"  [warn] ablation {ablation}: using {len(train_runs)} runs, "
+                f"missing {missing_runs}"
+            )
 
         # X-Axis Logic
         if xaxis == "episodes":
-            x_train, x_eval, x_label = (
-                np.arange(t_mean.size),
-                np.linspace(0, t_mean.size, num=e_mean.size),
-                "Episode",
-            )
+            t_mean, t_min, t_max = aggregate_runs(train_runs)
+            e_mean, e_min, e_max = aggregate_runs(eval_runs)
+            x_train = np.arange(t_mean.size)
+            x_eval = np.linspace(0, t_mean.size, num=e_mean.size)
+            x_label = "Episode"
         elif xaxis == "steps":
             if not max_steps:
                 raise ValueError("--xaxis steps requires --max_steps")
-            x_train = np.linspace(0, max_steps, num=t_mean.size)
-            x_eval = np.linspace(0, max_steps, num=e_mean.size)
+            # Cap the grid at the smallest step count any run actually reached,
+            # so we never extrapolate. Bounded above by max_steps.
+            max_reached = min(
+                float(ts[-1]) if ts.size > 0 else 0.0 for ts in train_step_axes
+            )
+            grid_end = min(float(max_steps), max_reached) if max_reached > 0 else float(max_steps)
+            x_train = np.linspace(0.0, grid_end, num=grid_size)
+            t_mean, t_min, t_max = aggregate_runs_on_grid(
+                train_runs, train_step_axes, x_train
+            )
+
+            eval_pairs = [
+                (e, x) for e, x in zip(eval_runs, eval_step_axes) if e.size > 0 and x.size > 0
+            ]
+            if eval_pairs:
+                eval_runs_f = [e for e, _ in eval_pairs]
+                eval_axes_f = [x for _, x in eval_pairs]
+                eval_max_reached = min(float(x[-1]) for x in eval_axes_f)
+                eval_grid_end = min(grid_end, eval_max_reached) if eval_max_reached > 0 else grid_end
+                x_eval = np.linspace(0.0, eval_grid_end, num=grid_size)
+                e_mean, e_min, e_max = aggregate_runs_on_grid(
+                    eval_runs_f, eval_axes_f, x_eval
+                )
+            else:
+                x_eval = np.array([])
+                e_mean = e_min = e_max = np.array([])
             x_label = "Steps"
         else:  # time
+            t_mean, t_min, t_max = aggregate_runs(train_runs)
+            e_mean, e_min, e_max = aggregate_runs(eval_runs)
             max_t = max(train_times) if train_times else 1.0
             x_train = np.linspace(0, max_t, num=t_mean.size)
             x_eval = np.linspace(0, max_t, num=e_mean.size)
@@ -189,6 +296,8 @@ def main():
     parser.add_argument("--env", type=str, required=True)
     parser.add_argument("--runs", type=int, nargs="*", default=[1, 2, 3])
     parser.add_argument("--weight", type=float, default=0.95)
+    parser.add_argument("--eval_weight", type=float, default=0.5,
+                        help="EMA weight for eval curves (default 0.5; lighter than train because eval is sparse)")
     parser.add_argument(
         "--xaxis", type=str, default="episodes", choices=["episodes", "steps", "time"]
     )
@@ -234,7 +343,10 @@ def main():
             max_steps = args.max_steps
 
         print(f"Processing algorithm: {algo_name}...")
-        stats = collect_for_algo(env_dir, args.runs, args.weight, args.xaxis, max_steps)
+        stats = collect_for_algo(
+            env_dir, args.runs, args.weight, args.xaxis, max_steps,
+            eval_weight=args.eval_weight,
+        )
 
         if stats:
             found_any = True

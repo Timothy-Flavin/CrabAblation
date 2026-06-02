@@ -185,6 +185,21 @@ def plot_results(results, args, model_name):
         results["smooth_rhist"],
     )
 
+    ephist = results.get("ephist")
+    if ephist is not None and len(ephist) > 0:
+        train_steps = np.cumsum(np.asarray(ephist, dtype=np.int64))
+        np.save(
+            os.path.join(results_dir, f"train_steps_{args.run}_{args.ablation}.npy"),
+            train_steps,
+        )
+
+    eval_steps_arr = results.get("eval_steps")
+    if eval_steps_arr is not None:
+        np.save(
+            os.path.join(results_dir, f"eval_steps_{args.run}_{args.ablation}.npy"),
+            np.asarray(eval_steps_arr, dtype=np.int64),
+        )
+
     plt.plot(results["rhist"])
     plt.plot(results["smooth_rhist"])
     plt.legend(["R hist", "Smooth R hist"])

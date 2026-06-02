@@ -628,6 +628,8 @@ def rollout_online_rl(
     smooth_rhist = []
     lhist = []
     eval_hist = []
+    ephist = []
+    eval_steps = []
 
     r_ep = np.zeros(args.num_envs)
     ep_len = np.zeros(args.num_envs, dtype=int)
@@ -680,6 +682,7 @@ def rollout_online_rl(
                 )
                 rhist.append(float(r_ep[env_i]))
                 smooth_rhist.append(float(smooth_r))
+                ephist.append(int(ep_len[env_i]))
                 ep += 1
 
                 r_ep[env_i] = 0.0
@@ -691,6 +694,7 @@ def rollout_online_rl(
                 agent, args, device, step=effective_step, n_steps=total_step_budget
             )
             eval_hist.append(eval_res)
+            eval_steps.append(int(global_step + args.num_envs))
 
         obs = next_obs
         global_step += args.num_envs
@@ -732,6 +736,8 @@ def rollout_online_rl(
         "smooth_rhist": smooth_rhist,
         "lhist": lhist,
         "eval_hist": eval_hist,
+        "ephist": ephist,
+        "eval_steps": eval_steps,
         "steps_run": int(global_step),
         "updates_performed": int(updates_performed),
         "steps_per_sec": float(steps_per_sec),
@@ -771,6 +777,7 @@ def rollout_offline_rl(
     benchmark_start_updates = 0
 
     rhist, smooth_rhist, lhist, eval_hist = [], [], [], []
+    ephist, eval_steps = [], []
     r_ep = np.zeros(args.num_envs)
     ep_len = np.zeros(args.num_envs, dtype=int)
     smooth_r = 0.0
@@ -858,12 +865,14 @@ def rollout_offline_rl(
                 rhist.append(float(r_ep[env_i]))
                 smooth_r = float(sum(rhist)/len(rhist)) if len(rhist) < 20 else float(0.05 * rhist[-1] + 0.95 * smooth_r)
                 smooth_rhist.append(smooth_r)
+                ephist.append(int(ep_len[env_i]))
                 ep += 1
                 r_ep[env_i] = 0.0
                 ep_len[env_i] = 0
 
         if (ep // eval_every_episodes) > (old_ep // eval_every_episodes):
              eval_hist.append(evaluate_agent(agent, args, device, step=effective_step, n_steps=total_step_budget))
+             eval_steps.append(int(total_samples))
 
         obs = next_obs
         steps_since_update += args.num_envs
@@ -924,6 +933,8 @@ def rollout_offline_rl(
         "smooth_rhist": smooth_rhist,
         "lhist": lhist,
         "eval_hist": eval_hist,
+        "ephist": ephist,
+        "eval_steps": eval_steps,
         "steps_run": int(total_samples),
         "updates_performed": int(updates_performed),
         "steps_per_sec": float(steps_per_sec),

@@ -6,8 +6,8 @@ set -euo pipefail
 ALGOS=("dqn")
 ENVS=("cartpole") 
 ABLATIONS=(6 0 1 2 3 4 5)
-RUNS=5
-DEVICE_NAME="lab-comp_gpu"
+RUNS=25
+DEVICE_NAME="timpc"
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
