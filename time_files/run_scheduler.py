@@ -11,10 +11,10 @@ def solve_scheduling_problem():
         #"timpc", 
         #"mac", 
         #"laptop", 
-        "white-machine_gpu0", 
-        "white-machine_gpu1", 
-        "alienware_gpu_0", 
-        "alienware_gpu_1", 
+        #"white-machine_gpu0", 
+        #"white-machine_gpu1", 
+        #"alienware_gpu_0", 
+        #"alienware_gpu_1", 
         "lab-comp_cpu", 
         "lab-comp_gpu"
     ]
@@ -36,9 +36,9 @@ def solve_scheduling_problem():
     }
 
     envs = ["minigrid", "cartpole", "mujoco"]
-    models = ["dqn"]
+    models = ["dqn", "sac", "ppo"]
     ablations = [0, 1, 2, 3, 4, 5, 6]
-    runs = [1, 2, 3, 4, 5]
+    runs = [6, 7, 8, 9, 10]
 
     # Generate the list of experiments
     experiments = []

@@ -4,7 +4,7 @@ set -euo pipefail
 
 source .venv/bin/activate
 
-echo "[alienware_gpu_0] Running dqn on cartpole | Ablation 3 | Run 1"
+echo "[alienware_gpu_0] Running dqn on cartpole | Ablation 6 | Run 1"
 OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES=0 taskset -c 0,1,4,5 python runner.py --algo dqn --env_name cartpole --ablation 3 --run 1 --device_name alienware_gpu_0
 
 echo "[alienware_gpu_0] Running dqn on cartpole | Ablation 3 | Run 2"
