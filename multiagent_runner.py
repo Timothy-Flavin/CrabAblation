@@ -22,7 +22,9 @@ def get_ma_args():
     parser.add_argument("--ent_coef_override", type=float, default=None)
     
     # Override some defaults for MA
-    parser.set_defaults(num_envs=1, env_name="tictactoe")
+    # learning_starts of 10k (single-agent default) is far too large for the short
+    # multi-agent runs (e.g. RPS is only ~20k agent_iter steps), so lower it here.
+    parser.set_defaults(num_envs=1, env_name="tictactoe", learning_starts=1000)
     
     args, _ = parser.parse_known_args()
     # Sync env_name with ma_env for build_agent
@@ -269,32 +271,48 @@ class MAAgentWrapper:
             return torch.softmax(logits, dim=-1)[0]
             
         elif self.algo == "sac":
-            # SAC is continuous. For discrete actions via Box proxy, 
-            # we interpret the continuous outputs as logits.
+            # SAC acts by sampling a continuous activation per action (Box proxy) and
+            # taking the argmax over legal actions. The realized discrete policy is
+            # therefore P(argmax of sampled activations == k), which has no closed form.
+            # Estimate it via Monte-Carlo: draw many stochastic action vectors from the
+            # actor, mask illegal dims, argmax, and histogram. This reflects what SAC
+            # actually plays (unlike a softmax of the means, which is arbitrary).
+            n_samples = getattr(self, "sac_mc_samples", 256)
+            n_actions = mask_t_1d.shape[0]
             with torch.no_grad():
-                mean, _ = self.agent.actor(obs_t)
-                # Apply mask to mean before softmax
-                m = mean[0].clone()
-                m[mask_t_1d == 0] = -1e9
-                # Use a temperature to convert continuous 'scores' to a distribution
-                # 0.2 gives a reasonably smooth distribution
-                probs = torch.softmax(m / 0.2, dim=-1)
+                obs_rep = obs_t.expand(n_samples, -1)
+                sampled, _, _ = self.agent.actor.get_action(obs_rep)  # [N, n_actions]
+                sampled = sampled.clone()
+                mask_1d = mask_t_1d.to(sampled.device)
+                sampled[:, mask_1d == 0] = -1e9
+                choices = torch.argmax(sampled, dim=-1)  # [N]
+                probs = torch.bincount(choices, minlength=n_actions).float()
+                total = probs.sum()
+                if total > 0:
+                    probs = probs / total
+                else:
+                    probs = mask_t_1d / mask_t_1d.sum()
             return probs
 
-    def observe(self, obs, action, reward, next_obs, term, trunc, logprob=None):
+    def observe(self, obs, action, reward, next_obs, term, trunc, logprob=None, action_mask=None):
         # Flattened obs
         if self.algo == "ppo":
             # PPO observe expects (obs, action, logprob, reward, next_obs, term, trunc, infos)
-            # all as batches (num_envs, ...)
+            # all as batches (num_envs, ...). Pass the legal-action mask through infos so
+            # the PPO update can recompute log-probs/entropy on the *masked* distribution
+            # (otherwise the importance ratio and entropy bonus include illegal actions).
+            infos = {}
+            if action_mask is not None:
+                infos["action_mask"] = np.asarray(action_mask)[np.newaxis, ...]
             self.agent.observe(
-                obs[np.newaxis, ...], 
-                np.array([action]), 
-                np.array([logprob]), 
-                np.array([reward]), 
-                next_obs[np.newaxis, ...], 
-                np.array([term]), 
-                np.array([trunc]), 
-                {}
+                obs[np.newaxis, ...],
+                np.array([action]),
+                np.array([logprob]),
+                np.array([reward]),
+                next_obs[np.newaxis, ...],
+                np.array([term]),
+                np.array([trunc]),
+                infos
             )
         else:
             # DQN/SAC observe expects (obs, action, reward, next_obs, term, trunc, info)
@@ -403,13 +421,21 @@ def train_ma(args, seed=0):
     
     start_time = time.time()
     eval_interval = max(1, args.total_episodes // 10)
-    
+
+    # Count *real decisions* (steps where an action was actually taken), not raw
+    # agent_iter iterations. The raw counter also ticks on the terminal None-action
+    # visits; in a fixed-length game like RPS (exactly 4 agent_iter steps/episode)
+    # `total_steps % update_every == 0` only ever lands on those terminal steps, so
+    # DQN/SAC would never update. Gating on a decision counter fixes that.
+    update_every = max(1, int(getattr(args, "update_every", 4)))
+    decisions = 0
+
     for ep in range(args.total_episodes):
         env.reset()
         
         current_ep_rewards = {agent_id: 0.0 for agent_id in env.possible_agents}
         last_data = {
-            agent_id: {"obs": None, "action": None, "logprob": None}
+            agent_id: {"obs": None, "action": None, "logprob": None, "mask": None}
             for agent_id in env.possible_agents
         }
         
@@ -430,7 +456,8 @@ def train_ma(args, seed=0):
                     obs.flatten(),
                     termination,
                     truncation,
-                    logprob=last_data[agent_id]["logprob"]
+                    logprob=last_data[agent_id]["logprob"],
+                    action_mask=last_data[agent_id]["mask"]
                 )
             
             if termination or truncation:
@@ -446,17 +473,19 @@ def train_ma(args, seed=0):
                 last_data[agent_id]["obs"] = flat_obs
                 last_data[agent_id]["action"] = raw_act
                 last_data[agent_id]["logprob"] = logprob
-                
+                last_data[agent_id]["mask"] = mask
+
             env.step(env_act)
             total_steps += 1
-            
+
             # Periodic update: only update the agent who just acted to be more efficient
             if env_act is not None:
+                decisions += 1
                 a = agents[agent_id]
                 if args.algo == "ppo":
                     if a.agent.step_idx >= a.agent.num_steps:
                         a.update(total_steps)
-                elif total_steps % 4 == 0:
+                elif decisions % update_every == 0:
                     a.update(total_steps)
         
         for agent_id in env.possible_agents:

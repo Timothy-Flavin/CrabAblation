@@ -11,9 +11,9 @@ def solve_scheduling_problem():
     # 'efficiency': Multiplier for steps_per_sec (e.g., 0.85 = 15% slower per job).
     # 'use_mps': Strictly defines if the bash script should wrap execution in the MPS daemon.
     device_config = {
-        #"timpc_gpu": {"capacity": 2, "efficiency": 1.0, "use_mps": True},
-        "lab-comp_gpu": {"capacity": 4, "efficiency": 0.85, "use_mps": True},
-        "lab-comp_cpu": {"capacity": 1, "efficiency": 1.0, "use_mps": False},
+        "timpc_gpu": {"capacity": 2, "efficiency": 1.0, "use_mps": True},
+        #"lab-comp_gpu": {"capacity": 4, "efficiency": 0.85, "use_mps": True},
+        #"lab-comp_cpu": {"capacity": 1, "efficiency": 1.0, "use_mps": False},
         #"white-machine_gpu": {"capacity": 2, "efficiency": 1.0, "use_mps": False},
         #"alienware_gpu": {"capacity": 2, "efficiency": 1.0, "use_mps": False},
         #"mac_cpu": {"capacity": 1, "efficiency": 1.0, "use_mps": False},

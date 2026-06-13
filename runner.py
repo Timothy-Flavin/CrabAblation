@@ -68,6 +68,11 @@ def get_parser():
     parser.add_argument("--n_quantiles", type=int, default=32)
     parser.add_argument("--n_target_quantiles", type=int, default=32)
     parser.add_argument("--hide_seek_bins_per_dim", type=int, default=3)
+    # SAC discrete-uniform regularizer: for discrete action spaces handled via the
+    # Box proxy, penalize the spread of the per-action activations (sum_i (a_i - mean(a))^2)
+    # to pull the argmax policy toward uniform. 0.0 disables it. Forced to 0 for the
+    # entropy ablation and for continuous-control envs (see _sac_agent_from_args).
+    parser.add_argument("--discrete_entropy", type=float, default=0.0)
     
     return parser
 
@@ -414,6 +419,15 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         cfg["distributional"] = False
         cfg["delayed_critics"] = True
 
+    # Discrete-uniform regularizer (see --discrete_entropy). Only meaningful for
+    # discrete action spaces; disable it for continuous control (mujoco, lander, ...)
+    # and for the entropy ablation.
+    discrete_entropy = float(getattr(args, "discrete_entropy", 0.0))
+    if not isinstance(vec_env.single_action_space, gym.spaces.Discrete):
+        discrete_entropy = 0.0
+    if cfg["entropy_coef_zero"]:
+        discrete_entropy = 0.0
+
     AgentClass = DistSAC if cfg["distributional"] else EVSAC
     agent = AgentClass(
         _agent_spec_from_vec_env(vec_env),
@@ -435,7 +449,9 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         munchausen_constant=0.5,
         beta_rnd=cfg["Beta"],
         beta_half_life_steps=cfg["beta_half_life_steps"],
+        discrete_entropy=discrete_entropy,
     )
+    cfg["discrete_entropy"] = discrete_entropy
     return agent, cfg
 
 
