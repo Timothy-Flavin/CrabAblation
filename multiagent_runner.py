@@ -77,10 +77,18 @@ class MAWrapperPolicy(Policy):
         super().__init__(game, [0, 1])
         self.agent_wrappers = agent_wrappers
         self.game_type = game.get_type()
+        self._cache = {}
 
     def action_probabilities(self, state, player_id=None):
         if player_id is None:
             player_id = state.current_player()
+            
+        if state.is_terminal():
+            return {}
+            
+        infostate = state.information_state_string(player_id)
+        if (player_id, infostate) in self._cache:
+            return self._cache[(player_id, infostate)]
             
         if self.game_type.provides_observation_tensor:
             obs = np.array(state.observation_tensor(player_id), dtype=np.float32)
@@ -112,7 +120,8 @@ class MAWrapperPolicy(Policy):
         else:
             for act in legal_actions:
                 dict_probs[act] = 1.0 / len(legal_actions)
-                
+        
+        self._cache[(player_id, infostate)] = dict_probs
         return dict_probs
 
 def evaluate_vs_random(agent_wrappers, env_name, agent_id_to_eval, num_episodes=50):
@@ -718,6 +727,7 @@ def train_ma(args, seed=0):
                 expl = get_rps_exploitability(agents)
             else:
                 eval_policy = MAWrapperPolicy(game, agents)
+                eval_policy._cache.clear() # Ensure a fresh cache for each eval
                 expl = exploitability(game, eval_policy)
             
             exploitability_hist.append(expl)
