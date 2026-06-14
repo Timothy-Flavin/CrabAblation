@@ -31,9 +31,9 @@ for env in "${ENVS[@]}"; do
             echo "Starting Parallel MA Ablation: Env=$env, Algo=$algo, Ablation=$ablation"
 
             # Default episodes
-            EPISODES=10000
-            if [ "$env" == "leduc" ]; then
-                EPISODES=20000
+            EPISODES=20000
+            if [ "$env" == "rps" ]; then
+                EPISODES=10000
             fi
 
             for run in $(seq 1 $RUNS); do
