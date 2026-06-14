@@ -470,7 +470,10 @@ class EVRainbowDQN(RainbowBase):
             max_ent = np.log(self.n_action_bins)
             self.target_entropy = self._target_entropy_frac * max_ent
             # Start alpha small so the penalty doesn't immediately crush Q-values
-            initial_alpha = 0.03 if self.munchausen else 0.05
+            # Honor the constructor alpha as the starting temperature (was hardcoded
+            # 0.03/0.05). The MA runner passes a higher --dqn_alpha so the soft policy
+            # is actually anchored; single-agent default stays 0.03.
+            initial_alpha = float(alpha)
             self.log_alpha = nn.Parameter(torch.tensor([np.log(initial_alpha)], device=self.device))
             # Use a slightly lower LR for alpha to prevent temperature whiplash
             self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
@@ -1043,7 +1046,10 @@ class IQNRainbowDQN(RainbowBase):
         if self.soft:
             max_ent = np.log(self.n_action_bins)  # self.n_action_dims *
             self.target_entropy = self._target_entropy_frac * max_ent
-            initial_alpha = 0.03 if self.munchausen else 0.05
+            # Honor the constructor alpha as the starting temperature (was hardcoded
+            # 0.03/0.05). The MA runner passes a higher --dqn_alpha so the soft policy
+            # is actually anchored; single-agent default stays 0.03.
+            initial_alpha = float(alpha)
             self.log_alpha = nn.Parameter(torch.tensor([np.log(initial_alpha)], device=self.device, requires_grad=True))
             self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
             self.alpha = self.log_alpha.exp().item()

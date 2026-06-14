@@ -19,24 +19,24 @@ fi
 ENVS=("rps" "leduc")
 ALGOS=("sac" "dqn" "ppo")
 ABLATIONS=(0 1 2 3 4 5 6)
-RUNS=2
+RUNS=5
 EVAL_EPISODES=50
 # Discrete-uniform regularizer strength for SAC on the (discrete) MA games. Pulls the
 # argmax policy toward uniform; auto-disabled for the entropy ablation and continuous envs.
-SAC_DISCRETE_ENTROPY=5.0
+SAC_DISCRETE_ENTROPY=1.0
 
 for env in "${ENVS[@]}"; do
     for algo in "${ALGOS[@]}"; do
         for ablation in "${ABLATIONS[@]}"; do
+            echo "Starting Parallel MA Ablation: Env=$env, Algo=$algo, Ablation=$ablation"
+
+            # Default episodes
+            EPISODES=10000
+            if [ "$env" == "leduc" ]; then
+                EPISODES=20000
+            fi
+
             for run in $(seq 1 $RUNS); do
-                echo "Starting MA Ablation: Env=$env, Algo=$algo, Ablation=$ablation, Run=$run"
-
-                # Default episodes
-                EPISODES=10000
-                if [ "$env" == "leduc" ]; then
-                    EPISODES=20000
-                fi
-
                 # Per-algo extra flags
                 EXTRA_FLAGS=""
                 # Ablation 6 PPO needs high entropy for Nash
@@ -55,8 +55,9 @@ for env in "${ENVS[@]}"; do
                     --run "$run" \
                     --total_episodes "$EPISODES" \
                     --eval_episodes "$EVAL_EPISODES" \
-                    $EXTRA_FLAGS
+                    $EXTRA_FLAGS &
             done
+            wait
         done
     done
 done

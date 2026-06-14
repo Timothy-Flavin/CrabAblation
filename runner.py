@@ -64,6 +64,9 @@ def get_parser():
     parser.add_argument("--policy_frequency", type=int, default=4)
     parser.add_argument("--target_network_frequency", type=int, default=1)
     parser.add_argument("--alpha", type=float, default=0.001)
+    # Soft-DQN entropy temperature (initial value). Single-agent default 0.03; the MA
+    # runner raises it so softmax(Q/alpha) stays anchored instead of collapsing.
+    parser.add_argument("--dqn_alpha", type=float, default=0.03)
     # Fraction of max entropy the soft-DQN alpha autotuner targets (0.2 = exploitative
     # single-agent default; the MA runner raises it toward ~1.0 for Nash/uniform play).
     parser.add_argument("--dqn_target_entropy_frac", type=float, default=0.2)
@@ -254,7 +257,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         "delayed": True,
         "popart": True,
         "tau": 0.05,
-        "alpha": 0.03,
+        "alpha": float(getattr(args, "dqn_alpha", 0.03)),
         "beta_half_life_steps": beta_half_life_steps,
     }
 
