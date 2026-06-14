@@ -64,10 +64,18 @@ def get_parser():
     parser.add_argument("--policy_frequency", type=int, default=4)
     parser.add_argument("--target_network_frequency", type=int, default=1)
     parser.add_argument("--alpha", type=float, default=0.001)
+    # Soft-DQN entropy temperature (initial value). Single-agent default 0.03; the MA
+    # runner raises it so softmax(Q/alpha) stays anchored instead of collapsing.
+    parser.add_argument("--dqn_alpha", type=float, default=0.03)
+    # Fraction of max entropy the soft-DQN alpha autotuner targets (0.2 = exploitative
+    # single-agent default; the MA runner raises it toward ~1.0 for Nash/uniform play).
+    parser.add_argument("--dqn_target_entropy_frac", type=float, default=0.2)
     parser.add_argument("--autotune", action="store_true", default=True)
     parser.add_argument("--n_quantiles", type=int, default=32)
     parser.add_argument("--n_target_quantiles", type=int, default=32)
     parser.add_argument("--hide_seek_bins_per_dim", type=int, default=3)
+    # SAC discrete-uniform regularizer: for discrete action spaces
+    parser.add_argument("--discrete_entropy", type=float, default=0.0)
     
     return parser
 
@@ -249,7 +257,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
         "delayed": True,
         "popart": True,
         "tau": 0.05,
-        "alpha": 0.03,
+        "alpha": float(getattr(args, "dqn_alpha", 0.03)),
         "beta_half_life_steps": beta_half_life_steps,
     }
 
@@ -299,6 +307,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             norm_obs=False,
             burn_in_updates=int(getattr(args, "rnd_burn_in", 1000)),
             encoder_factory=encoder_factory,
+            target_entropy_frac=float(getattr(args, "dqn_target_entropy_frac", 0.2)),
         )
     else:
         agent = AgentClass(
@@ -320,6 +329,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             norm_obs=False,
             encoder_factory=encoder_factory,
             burn_in_updates=int(getattr(args, "rnd_burn_in", 1000)),
+            target_entropy_frac=float(getattr(args, "dqn_target_entropy_frac", 0.2)),
         )
     return agent, cfg
 
@@ -333,7 +343,7 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
     beta_half_life_steps = max(1, (total_steps) // 5)
     cfg = {
         "clip_coef": 0.2,
-        "ent_coef": 0.01,
+        "ent_coef": 0.1,
         "Beta": 1.0,  # Start fully intrinsic
         "distributional": True,
         "use_gae": True,
@@ -414,6 +424,15 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         cfg["distributional"] = False
         cfg["delayed_critics"] = True
 
+    # Discrete-uniform regularizer (see --discrete_entropy). Only meaningful for
+    # discrete action spaces; disable it for continuous control (mujoco, lander, ...)
+    # and for the entropy ablation.
+    discrete_entropy = float(getattr(args, "discrete_entropy", 0.0))
+    if not isinstance(vec_env.single_action_space, gym.spaces.Discrete):
+        discrete_entropy = 0.0
+    if cfg["entropy_coef_zero"]:
+        discrete_entropy = 0.0
+
     AgentClass = DistSAC if cfg["distributional"] else EVSAC
     agent = AgentClass(
         _agent_spec_from_vec_env(vec_env),
@@ -435,7 +454,9 @@ def _sac_agent_from_args(args, vec_env, encoder_factory=None):
         munchausen_constant=0.5,
         beta_rnd=cfg["Beta"],
         beta_half_life_steps=cfg["beta_half_life_steps"],
+        discrete_entropy=discrete_entropy,
     )
+    cfg["discrete_entropy"] = discrete_entropy
     return agent, cfg
 
 

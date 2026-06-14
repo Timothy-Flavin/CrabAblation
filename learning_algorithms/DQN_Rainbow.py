@@ -369,7 +369,12 @@ class EVRainbowDQN(RainbowBase):
         autotune: bool = True,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
         min_std: float = 0.01,
+        target_entropy_frac: float = 0.2,
     ):
+        # Fraction of max entropy (ln(bins)) the soft-Q alpha autotuner targets. 0.2 is
+        # an exploitative single-agent default; multi-agent Nash on symmetric games (e.g.
+        # RPS) needs near-max entropy, so the MA runner raises this toward ~1.0.
+        self._target_entropy_frac = float(target_entropy_frac)
         super().__init__(
             input_dim=input_dim,
             n_action_dims=n_action_dims,
@@ -463,9 +468,12 @@ class EVRainbowDQN(RainbowBase):
         if self.soft:
             # Max entropy per dim is ln(bins). Target ~80% of max entropy across all dims.
             max_ent = np.log(self.n_action_bins)
-            self.target_entropy = 0.2 * max_ent
+            self.target_entropy = self._target_entropy_frac * max_ent
             # Start alpha small so the penalty doesn't immediately crush Q-values
-            initial_alpha = 0.03 if self.munchausen else 0.05
+            # Honor the constructor alpha as the starting temperature (was hardcoded
+            # 0.03/0.05). The MA runner passes a higher --dqn_alpha so the soft policy
+            # is actually anchored; single-agent default stays 0.03.
+            initial_alpha = float(alpha)
             self.log_alpha = nn.Parameter(torch.tensor([np.log(initial_alpha)], device=self.device))
             # Use a slightly lower LR for alpha to prevent temperature whiplash
             self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
@@ -874,7 +882,13 @@ class EVRainbowDQN(RainbowBase):
                             (batch_size, self.n_action_dims),
                             device=obs_b.device,
                         )
-                    
+
+                    # The masked-explore branch builds explore_actions as [B], while
+                    # argmax over a 3D q_ext [B,D,Bins] makes `actions` [B,D]. Align the
+                    # shapes so torch.where doesn't broadcast to [B,B].
+                    if explore_actions.shape != actions.shape:
+                        explore_actions = explore_actions.reshape(actions.shape)
+
                     actions = torch.where(
                         explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask,
                         explore_actions,
@@ -920,7 +934,12 @@ class IQNRainbowDQN(RainbowBase):
         burn_in_updates: int = 0,
         encoder_factory: Optional[Callable[[], nn.Module]] = None,
         min_std: float = 0.01,
+        target_entropy_frac: float = 0.2,
     ):
+        # Fraction of max entropy (ln(bins)) the soft-Q alpha autotuner targets. 0.2 is
+        # an exploitative single-agent default; multi-agent Nash on symmetric games (e.g.
+        # RPS) needs near-max entropy, so the MA runner raises this toward ~1.0.
+        self._target_entropy_frac = float(target_entropy_frac)
         super().__init__(
             input_dim=input_dim,
             n_action_dims=n_action_dims,
@@ -1026,8 +1045,11 @@ class IQNRainbowDQN(RainbowBase):
         # --- ALPHA AUTOTUNER SETUP ---
         if self.soft:
             max_ent = np.log(self.n_action_bins)  # self.n_action_dims *
-            self.target_entropy = 0.2 * max_ent
-            initial_alpha = 0.03 if self.munchausen else 0.05
+            self.target_entropy = self._target_entropy_frac * max_ent
+            # Honor the constructor alpha as the starting temperature (was hardcoded
+            # 0.03/0.05). The MA runner passes a higher --dqn_alpha so the soft policy
+            # is actually anchored; single-agent default stays 0.03.
+            initial_alpha = float(alpha)
             self.log_alpha = nn.Parameter(torch.tensor([np.log(initial_alpha)], device=self.device, requires_grad=True))
             self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr * 0.1)
             self.alpha = self.log_alpha.exp().item()
@@ -1520,6 +1542,11 @@ class IQNRainbowDQN(RainbowBase):
                             (batch_size, self.n_action_dims),
                             device=obs_b.device,
                         )
+                    # The masked-explore branch builds explore_actions as [B], while
+                    # argmax over a 3D ext_q [B,D,Bins] makes `actions` [B,D]. Align the
+                    # shapes so torch.where doesn't broadcast to [B,B].
+                    if explore_actions.shape != actions.shape:
+                        explore_actions = explore_actions.reshape(actions.shape)
                     actions = torch.where(
                         explore_mask.unsqueeze(1) if actions.ndim > 1 else explore_mask,
                         explore_actions,

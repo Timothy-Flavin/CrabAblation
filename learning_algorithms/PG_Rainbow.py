@@ -299,6 +299,12 @@ class BasePPOAgent(Agent):
                 self.last_next_term = torch.zeros((self.num_envs,), device="cpu")
                 self.last_next_trunc = torch.zeros((self.num_envs,), device="cpu")
 
+            self.agent_masks = torch.ones(
+                (self.num_steps, self.num_envs, self.n_action_dims, self.n_action_bins),
+                device="cpu",
+            )
+            self._rollout_has_masks = False
+
             self.trunc_obs_list = []
             self.trunc_indices = []
 
@@ -601,6 +607,11 @@ class BasePPOAgent(Agent):
         b_int_values = self.agent_int_values.reshape(-1)
         b_inds = np.arange(self.batch_size)
         b_obs_next = true_next_obs.reshape((-1,) + self.obs_shape)
+        b_masks = None
+        if getattr(self, "_rollout_has_masks", False):
+            b_masks = self.agent_masks.reshape(
+                (-1, self.n_action_dims, self.n_action_bins)
+            ).to(device)
 
         clipfracs = []
         pg_loss_total, v_loss_ext_total, v_loss_int_total, entropy_loss_total = (
@@ -636,9 +647,15 @@ class BasePPOAgent(Agent):
                 rnd_loss.backward()
                 self.rnd_optim.step()
 
+                mb_masks = None
+                if b_masks is not None:
+                    mb_masks = b_masks[mb_inds]
+                    if self.n_action_dims == 1:
+                        mb_masks = mb_masks.squeeze(1)
+
                 _, newlogprob, entropy, new_ext_value, new_int_value = (
                     self.get_action_and_values(
-                        b_obs[mb_inds], b_actions.long()[mb_inds]
+                        b_obs[mb_inds], b_actions.long()[mb_inds], action_mask=mb_masks
                     )
                 )
 
@@ -743,6 +760,7 @@ class BasePPOAgent(Agent):
         self.step += 1
         # Reset the buffer index directly here
         self.step_idx = 0
+        self._rollout_has_masks = False
         return pg_loss_total
 
     def observe(self, obs, action, logprob, reward, next_obs, term, trunc, infos):
@@ -764,6 +782,17 @@ class BasePPOAgent(Agent):
         self.agent_rewards[self.step_idx].copy_(reward_t)
         self.agent_terminations[self.step_idx].copy_(term_t)
         self.agent_truncations[self.step_idx].copy_(trunc_t)
+
+        # Store the legal-action mask if provided (multi-agent games). Reshaped to
+        # (num_envs, n_action_dims, n_action_bins) to match the actor logits layout.
+        if infos is not None and "action_mask" in infos:
+            mask_t = torch.as_tensor(
+                infos["action_mask"], dtype=torch.float32, device=device
+            )
+            self.agent_masks[self.step_idx].copy_(
+                mask_t.reshape(self.num_envs, self.n_action_dims, self.n_action_bins)
+            )
+            self._rollout_has_masks = True
 
         # Extract actual observations for truncated states cleanly
         if trunc.any() and "final_observation" in infos:

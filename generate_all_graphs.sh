@@ -9,7 +9,7 @@ ENVIRONMENTS=(cartpole minigrid mujoco)
 XAXES=(episodes steps time)
 
 # Default runs and smoothing weight (edit as needed)
-RUNS="1 2 3 4 5"
+RUNS="6 7 8 9 10"
 WEIGHT=0.95
 
 for env in "${ENVIRONMENTS[@]}"; do

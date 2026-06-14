@@ -209,6 +209,7 @@ class Actor(nn.Module):
 
     def get_action(self, x):
         mean, log_std = self(x)
+        self.last_pre_tanh_mean = mean
         std = log_std.exp()
         normal = torch.distributions.Normal(mean, std)
         x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
@@ -262,6 +263,7 @@ class BaseSAC(Agent):
         buffer_device: str = "cpu",
         min_std: float = 0.01,
         burn_in_updates: int = 0,
+        discrete_entropy: float = 0.0,
     ):
         super().__init__()
         self.device = torch.device(device)
@@ -373,6 +375,10 @@ class BaseSAC(Agent):
 
         self.step = 0
         self.timing = {}
+
+        # Discrete-uniform regularizer coefficient. When > 0, the actor loss adds
+        # sum_i (a_i - mean(a))^2 
+        self.discrete_entropy = float(discrete_entropy)
 
         # Munchausen KL penalty
         self.munchausen = munchausen
@@ -790,6 +796,16 @@ class BaseSAC(Agent):
             #     (self.alpha * log_pi)
             #     - (min_qf_pi + self.Beta * min_qf_pi_int)
             # ).mean()
+
+            # Discrete-uniform regularizer: pull the per-action *pre-tanh* means toward
+            # their mean 
+            if self.discrete_entropy > 0.0:
+                pre_mean = self.actor.last_pre_tanh_mean  # [batch, act_dim], pre-tanh
+                if pre_mean.shape[-1] > 1:
+                    spread = (
+                        (pre_mean - pre_mean.mean(dim=-1, keepdim=True)) ** 2
+                    ).sum(dim=-1).mean()
+                    actor_loss = actor_loss + self.discrete_entropy * spread
             self.timing["actor forward and loss"] = self.timing.get(
                 "actor forward and loss", 0.0
             ) + (time.time() - t1)
