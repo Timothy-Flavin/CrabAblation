@@ -209,6 +209,7 @@ class Actor(nn.Module):
 
     def get_action(self, x):
         mean, log_std = self(x)
+        self.last_pre_tanh_mean = mean
         std = log_std.exp()
         normal = torch.distributions.Normal(mean, std)
         x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
@@ -796,12 +797,15 @@ class BaseSAC(Agent):
             #     - (min_qf_pi + self.Beta * min_qf_pi_int)
             # ).mean()
 
-            # Discrete-uniform regularizer: pull the per-action activations toward
-            # their mean so the argmax policy drifts toward uniform. pi is the
-            # (reparameterized) per-action activation vector [batch, act_dim].
-            if self.discrete_entropy > 0.0 and pi.shape[-1] > 1:
-                spread = ((pi - pi.mean(dim=-1, keepdim=True)) ** 2).sum(dim=-1).mean()
-                actor_loss = actor_loss + self.discrete_entropy * spread
+            # Discrete-uniform regularizer: pull the per-action *pre-tanh* means toward
+            # their mean 
+            if self.discrete_entropy > 0.0:
+                pre_mean = self.actor.last_pre_tanh_mean  # [batch, act_dim], pre-tanh
+                if pre_mean.shape[-1] > 1:
+                    spread = (
+                        (pre_mean - pre_mean.mean(dim=-1, keepdim=True)) ** 2
+                    ).sum(dim=-1).mean()
+                    actor_loss = actor_loss + self.discrete_entropy * spread
             self.timing["actor forward and loss"] = self.timing.get(
                 "actor forward and loss", 0.0
             ) + (time.time() - t1)

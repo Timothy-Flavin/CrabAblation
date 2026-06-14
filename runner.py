@@ -64,14 +64,14 @@ def get_parser():
     parser.add_argument("--policy_frequency", type=int, default=4)
     parser.add_argument("--target_network_frequency", type=int, default=1)
     parser.add_argument("--alpha", type=float, default=0.001)
+    # Fraction of max entropy the soft-DQN alpha autotuner targets (0.2 = exploitative
+    # single-agent default; the MA runner raises it toward ~1.0 for Nash/uniform play).
+    parser.add_argument("--dqn_target_entropy_frac", type=float, default=0.2)
     parser.add_argument("--autotune", action="store_true", default=True)
     parser.add_argument("--n_quantiles", type=int, default=32)
     parser.add_argument("--n_target_quantiles", type=int, default=32)
     parser.add_argument("--hide_seek_bins_per_dim", type=int, default=3)
-    # SAC discrete-uniform regularizer: for discrete action spaces handled via the
-    # Box proxy, penalize the spread of the per-action activations (sum_i (a_i - mean(a))^2)
-    # to pull the argmax policy toward uniform. 0.0 disables it. Forced to 0 for the
-    # entropy ablation and for continuous-control envs (see _sac_agent_from_args).
+    # SAC discrete-uniform regularizer: for discrete action spaces
     parser.add_argument("--discrete_entropy", type=float, default=0.0)
     
     return parser
@@ -304,6 +304,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             norm_obs=False,
             burn_in_updates=int(getattr(args, "rnd_burn_in", 1000)),
             encoder_factory=encoder_factory,
+            target_entropy_frac=float(getattr(args, "dqn_target_entropy_frac", 0.2)),
         )
     else:
         agent = AgentClass(
@@ -325,6 +326,7 @@ def _dqn_agent_from_args(args, obs_dim, vec_env, encoder_factory=None):
             norm_obs=False,
             encoder_factory=encoder_factory,
             burn_in_updates=int(getattr(args, "rnd_burn_in", 1000)),
+            target_entropy_frac=float(getattr(args, "dqn_target_entropy_frac", 0.2)),
         )
     return agent, cfg
 
@@ -338,7 +340,7 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
     beta_half_life_steps = max(1, (total_steps) // 5)
     cfg = {
         "clip_coef": 0.2,
-        "ent_coef": 0.01,
+        "ent_coef": 0.1,
         "Beta": 1.0,  # Start fully intrinsic
         "distributional": True,
         "use_gae": True,

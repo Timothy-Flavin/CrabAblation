@@ -12,6 +12,7 @@ from runner_utils import resolve_torch_device
 import gymnasium as gym
 from types import SimpleNamespace
 import os
+import random
 
 def get_ma_args():
     parser = get_parser()
@@ -20,11 +21,45 @@ def get_ma_args():
     parser.add_argument("--eval_every", type=int, default=500)
     parser.add_argument("--eval_episodes", type=int, default=100)
     parser.add_argument("--ent_coef_override", type=float, default=None)
+    # Batch of parallel one-shot RPS games per round (vectorized path; RPS only).
+    parser.add_argument("--rps_batch_size", type=int, default=64)
+    # Gradient steps per round
+    parser.add_argument("--rps_grad_steps", type=int, default=4)
     
     # Override some defaults for MA
     # learning_starts of 10k (single-agent default) is far too large for the short
     # multi-agent runs (e.g. RPS is only ~20k agent_iter steps), so lower it here.
-    parser.set_defaults(num_envs=1, env_name="tictactoe", learning_starts=1000)
+    # rnd_burn_in of 1000 is also a single-agent (1M-step) default: SAC's update() does
+    # ONLY RND for the first rnd_burn_in *update calls*, so with the MA update cadence
+    # the actor never trains on short games. Lower it so the policy actually learns.
+    # num_steps of 2048 (single-agent vectorized rollout) is far too large for MA
+    # self-play: with num_envs=1 each PPO agent collects ~1 transition per decision, so
+    # it takes ~2048 decisions to fill one rollout -> only a handful of PPO updates over
+    # a whole run (exploitability stays frozen). 128 gives frequent updates so PPO
+    # actually learns (verified: Leduc Ext 2.2->1.8 vs frozen 2.07 at 2048).
+    # dqn_target_entropy_frac: the soft-DQN alpha autotuner defaults to 0.2*max_ent
+    # (exploitative single-agent target). Nash on symmetric games (RPS) IS max entropy
+    # (uniform), so 0.2 drives the policy to a peaked 20%-entropy distribution and
+    # exploitability climbs over training. Target near-max entropy for MA instead.
+    # These games are SHORT, so the single-agent (1M-step) defaults are all oversized:
+    #  - learning_starts / rnd_burn_in are in ENV-step units; keep them to a few hundred
+    #    steps so learning actually starts early instead of after most of the run.
+    #  - small batches (32) and a modest buffer are plenty for short horizons and let
+    #    off-policy agents track the (non-stationary) self-play opponent with recent data.
+    #  - PPO rollout (num_steps) kept <=256; with batches of 32 it needs no extra
+    #    stability margin for these short time-horizon games.
+    parser.set_defaults(
+        num_envs=1,
+        env_name="tictactoe",
+        learning_starts=256,
+        rnd_burn_in=100,
+        num_steps=128,
+        batch_size=32,
+        dqn_batch_size=32,
+        buffer_size=20000,
+        dqn_buffer_size=20000,
+        dqn_target_entropy_frac=0.9,
+    )
     
     args, _ = parser.parse_known_args()
     # Sync env_name with ma_env for build_agent
@@ -333,17 +368,78 @@ class MAAgentWrapper:
                 {}
             )
 
+    def get_action_batch(self, obs_t, mask_t, step=0, total_steps=1000000, log_dist=False):
+        """Batched action selection for the vectorized (simultaneous) RPS path.
+        obs_t: (B, obs_dim), mask_t: (B, n_actions), both torch tensors on device.
+        Returns (env_actions[B] long tensor, raw_for_buffer, logprob_or_None)."""
+        if log_dist:
+            with torch.no_grad():
+                probs = self._get_probs(obs_t[:1], mask_t[:1])
+                self.action_dist_log.append(probs.cpu().numpy())
+
+        B = obs_t.shape[0]
+        if self.algo == "dqn":
+            eps = max(0.5 - 2.0 * (step / total_steps), 0.05)
+            actions = self.agent.sample_action(
+                obs_t, eps=eps, step=step, n_steps=total_steps, action_mask=mask_t
+            )
+            act_t = torch.as_tensor(
+                np.asarray(actions), device=obs_t.device
+            ).long().reshape(B)
+            return act_t, act_t, None
+        elif self.algo == "sac":
+            action = self.agent.sample_action(obs_t, deterministic=False)
+            action_np = action if isinstance(action, np.ndarray) else action.detach().cpu().numpy()
+            # Argmax over (all-legal) action dims -> discrete action; store full vector.
+            env_act = torch.as_tensor(np.argmax(action_np, axis=1), device=obs_t.device).long()
+            return env_act, action_np, None
+        elif self.algo == "ppo":
+            action, logprob = self.agent.sample_action(obs_t, action_mask=mask_t)
+            return action.long().reshape(B), action, logprob
+        return None, None, None
+
+    def observe_batch(self, obs, raw, reward, next_obs, term, trunc, logprob=None, mask=None):
+        """Batched transition store for the vectorized RPS path. All array-likes have a
+        leading batch (num_envs) dimension; tensors are moved to CPU numpy at the boundary."""
+        def _np(x):
+            if torch.is_tensor(x):
+                return x.detach().cpu().numpy()
+            return np.asarray(x)
+
+        if self.algo == "ppo":
+            infos = {}
+            if mask is not None:
+                infos["action_mask"] = _np(mask)
+            self.agent.observe(
+                _np(obs), _np(raw), _np(logprob), _np(reward),
+                _np(next_obs), _np(term), _np(trunc), infos,
+            )
+        else:
+            if self.algo == "dqn":
+                act_to_store = _np(raw).reshape(-1, 1)
+            else:
+                act_to_store = _np(raw)
+            self.agent.observe(
+                _np(obs), act_to_store, _np(reward),
+                _np(next_obs), _np(term), _np(trunc), {},
+            )
+
     def update(self, global_step):
         if self.algo == "ppo":
             return self.agent.update(global_step=global_step)
         else:
             batch_size = getattr(self.args, "dqn_batch_size", 64) if self.algo == "dqn" else getattr(self.args, "batch_size", 64)
             learning_starts = getattr(self.args, "learning_starts", 1000)
-            
-            # Safety checks for buffer-based agents (DQN, SAC)
+
+            # Safety checks for buffer-based agents (DQN, SAC). global_step counts ENV
+            # steps (games), so learning_starts is in env-step units. The buffer stores
+            # timesteps of n_envs each, so its transition count is size()*n_envs -- gate
+            # on that, NOT raw size(): with B parallel games, size() (timesteps) would
+            # otherwise need `batch_size` ROUNDS before learning starts.
             if global_step < learning_starts:
                 return None
-            if self.agent.buffer.size() < batch_size:
+            n_envs = int(getattr(self.agent.buffer, "n_envs", 1))
+            if self.agent.buffer.size() * n_envs < batch_size:
                 return None
                 
             if self.algo == "dqn":
@@ -356,13 +452,118 @@ def flatten_obs(obs):
         return obs["observation"].flatten()
     return obs.flatten()
 
+def train_rps_vectorized(args, seed=0):
+    """Vectorized self-play for Rock-Paper-Scissors."""
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+    args.seed = seed
+
+    device = resolve_torch_device(args.device)
+    B = max(1, int(getattr(args, "rps_batch_size", 64)))
+    n_actions = 3
+    args.n_actions = n_actions
+    obs_dim = 1
+
+    mock_env = SimpleNamespace(
+        single_observation_space=gym.spaces.Box(low=0, high=1, shape=(obs_dim,), dtype=np.float32),
+        single_action_space=gym.spaces.Discrete(n_actions),
+        num_envs=B,
+    )
+    args.dqn_buffer_size = min(getattr(args, "dqn_buffer_size", 10000), 10000)
+    args.buffer_size = min(getattr(args, "buffer_size", 10000), 10000)
+
+    agent_raws = []
+    for _ in range(2):
+        a_raw, _ = build_agent(args, mock_env, device)
+        if args.ent_coef_override is not None and args.algo == "ppo":
+            a_raw.ent_coef = args.ent_coef_override
+        agent_raws.append(a_raw)
+    agents = {f"player_{i}": MAAgentWrapper(agent_raws[i], args.algo, device, args) for i in range(2)}
+
+    # Payoff to player_0: rows = P0 action, cols = P1 action (0=R,1=P,2=S). Zero-sum.
+    payoff = torch.tensor(
+        [[0.0, -1.0, 1.0], [1.0, 0.0, -1.0], [-1.0, 1.0, 0.0]], device=device
+    )
+    obs_t = torch.zeros((B, obs_dim), device=device)
+    obs_np = obs_t.detach().cpu().numpy()
+    mask_t = torch.ones((B, n_actions), device=device)
+    term = np.ones(B, dtype=np.float32)   # one-shot game: every step terminates
+    trunc = np.zeros(B, dtype=np.float32)
+
+    total_steps = 0
+    ep_rewards = {aid: [] for aid in ["player_0", "player_1"]}
+    exploitability_hist, rand_scores_0, rand_scores_1 = [], [], []
+
+    rounds = max(1, args.total_episodes // B)
+    eval_interval = max(1, rounds // 10)
+    log_interval = max(1, rounds // 150)
+    # Off-policy agents (DQN/SAC) take several gradient steps per round
+    grad_steps = max(1, int(getattr(args, "rps_grad_steps", 8)))
+    start_time = time.time()
+
+    for rnd in range(rounds):
+        log_this = (rnd % log_interval == 0)
+        a0, raw0, lp0 = agents["player_0"].get_action_batch(
+            obs_t, mask_t, step=total_steps, total_steps=args.total_steps, log_dist=log_this
+        )
+        a1, raw1, lp1 = agents["player_1"].get_action_batch(
+            obs_t, mask_t, step=total_steps, total_steps=args.total_steps, log_dist=log_this
+        )
+        r0 = payoff[a0, a1]          # (B,)
+        r1 = -r0
+        r0_np, r1_np = r0.detach().cpu().numpy(), r1.detach().cpu().numpy()
+
+        agents["player_0"].observe_batch(obs_np, raw0, r0_np, obs_np, term, trunc, lp0, mask_t)
+        agents["player_1"].observe_batch(obs_np, raw1, r1_np, obs_np, term, trunc, lp1, mask_t)
+        total_steps += B
+
+        # Each round collects a fresh batch of B games. PPO updates when its rollout is full
+        for pid in ["player_0", "player_1"]:
+            a = agents[pid]
+            if args.algo == "ppo":
+                if a.agent.step_idx >= a.agent.num_steps:
+                    a.update(total_steps)
+            else:
+                for _ in range(grad_steps):
+                    a.update(total_steps)
+
+        ep_rewards["player_0"].append(float(r0_np.mean()))
+        ep_rewards["player_1"].append(float(r1_np.mean()))
+
+        if (rnd + 1) % eval_interval == 0 or (rnd + 1) == rounds:
+            r0e = evaluate_vs_random(agents, "rps", "player_0", num_episodes=args.eval_episodes)
+            r1e = evaluate_vs_random(agents, "rps", "player_1", num_episodes=args.eval_episodes)
+            rand_scores_0.append(r0e)
+            rand_scores_1.append(r1e)
+            expl = get_rps_exploitability(agents)
+            exploitability_hist.append(expl)
+            fps = total_steps / (time.time() - start_time)
+            print(
+                f"Round {rnd+1}/{rounds} (games {total_steps}): vsRand(P0)={r0e:.2f}, "
+                f"vsRand(P1)={r1e:.2f}, Ext={expl:.4f} | FPS {fps:.0f}"
+            )
+
+    results_dir = os.path.join("results", args.algo, args.env_name)
+    os.makedirs(results_dir, exist_ok=True)
+    for aid, rewards in ep_rewards.items():
+        np.save(os.path.join(results_dir, f"train_scores_{aid}_{args.ablation}_seed{seed}.npy"), np.array(rewards))
+    np.save(os.path.join(results_dir, f"exploitability_{args.ablation}_seed{seed}.npy"), np.array(exploitability_hist))
+    np.save(os.path.join(results_dir, f"evaluate_vs_random_p0_{args.ablation}_seed{seed}.npy"), np.array(rand_scores_0))
+    np.save(os.path.join(results_dir, f"evaluate_vs_random_p1_{args.ablation}_seed{seed}.npy"), np.array(rand_scores_1))
+    for pid, tag in [("player_0", "p0"), ("player_1", "p1")]:
+        dist = agents[pid].action_dist_log
+        if len(dist) > 0:
+            np.save(os.path.join(results_dir, f"action_dist_{tag}_{args.ablation}_seed{seed}.npy"), np.array(dist, dtype=object))
+    return ep_rewards
+
+
 def train_ma(args, seed=0):
     import random
     np.random.seed(seed)
     torch.manual_seed(seed)
     random.seed(seed)
     args.seed = seed
-    
     device = resolve_torch_device(args.device)
     
     if args.ma_env == "tictactoe":
@@ -421,19 +622,17 @@ def train_ma(args, seed=0):
     
     start_time = time.time()
     eval_interval = max(1, args.total_episodes // 10)
-
-    # Count *real decisions* (steps where an action was actually taken), not raw
-    # agent_iter iterations. The raw counter also ticks on the terminal None-action
-    # visits; in a fixed-length game like RPS (exactly 4 agent_iter steps/episode)
-    # `total_steps % update_every == 0` only ever lands on those terminal steps, so
-    # DQN/SAC would never update. Gating on a decision counter fixes that.
+    #
+    # CRITICAL: the counter must be PER-AGENT or some players never update
     update_every = max(1, int(getattr(args, "update_every", 4)))
-    decisions = 0
+    agent_decisions = {agent_id: 0 for agent_id in env.possible_agents}
 
     for ep in range(args.total_episodes):
         env.reset()
         
         current_ep_rewards = {agent_id: 0.0 for agent_id in env.possible_agents}
+        # Reward each agent has earned since its last action
+        pending_reward = {agent_id: 0.0 for agent_id in env.possible_agents}
         last_data = {
             agent_id: {"obs": None, "action": None, "logprob": None, "mask": None}
             for agent_id in env.possible_agents
@@ -443,11 +642,11 @@ def train_ma(args, seed=0):
         log_this_ep = (ep % 10 == 0)
         
         for agent_id in env.agent_iter():
-            obs, reward, termination, truncation, info = env.last()
-            
-            # Accumulate reward for the agent
+            obs, _last_reward, termination, truncation, info = env.last()
+            # Use our own per-agent accrual
+            reward = pending_reward[agent_id]
+            pending_reward[agent_id] = 0.0
             current_ep_rewards[agent_id] += reward
-            
             if last_data[agent_id]["obs"] is not None:
                 agents[agent_id].observe(
                     last_data[agent_id]["obs"],
@@ -478,14 +677,21 @@ def train_ma(args, seed=0):
             env.step(env_act)
             total_steps += 1
 
+            # Accrue the instantaneous per-step rewards into each agent's pending total.
+            # Only on real action steps: the terminal None step re-emits the same
+            # env.rewards, which is a double-count we are avoiding.
+            if env_act is not None:
+                for aid2, rv in env.rewards.items():
+                    pending_reward[aid2] = pending_reward.get(aid2, 0.0) + float(rv)
+
             # Periodic update: only update the agent who just acted to be more efficient
             if env_act is not None:
-                decisions += 1
+                agent_decisions[agent_id] += 1
                 a = agents[agent_id]
                 if args.algo == "ppo":
                     if a.agent.step_idx >= a.agent.num_steps:
                         a.update(total_steps)
-                elif decisions % update_every == 0:
+                elif agent_decisions[agent_id] % update_every == 0:
                     a.update(total_steps)
         
         for agent_id in env.possible_agents:
@@ -545,4 +751,7 @@ if __name__ == "__main__":
     args = get_ma_args()
     seed = args.run - 1
     print(f"--- Running Seed {seed} (Run {args.run}) ---")
-    train_ma(args, seed=seed)
+    if args.ma_env == "rps":
+        train_rps_vectorized(args, seed=seed)
+    else:
+        train_ma(args, seed=seed)

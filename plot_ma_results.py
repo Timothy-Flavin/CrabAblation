@@ -1,7 +1,19 @@
 import os
+import re
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
+
+def _detect_ablations(all_files, prefix):
+    """Pull ablation indices from files named '<prefix><i>.npy' (old, no-seed scheme)
+    or '<prefix><i>_seed<s>.npy' (current scheme). Robust to either."""
+    pat = re.compile(rf"^{re.escape(prefix)}(\d+)(?:_seed\d+)?\.npy$")
+    found = set()
+    for f in all_files:
+        m = pat.match(f)
+        if m:
+            found.add(int(m.group(1)))
+    return sorted(found)
 
 def plot_ma_results(algo, env_name, base_results_dir):
     results_dir = os.path.join(base_results_dir, algo, env_name)
@@ -11,10 +23,10 @@ def plot_ma_results(algo, env_name, base_results_dir):
 
     # Automatically detect ablations and seeds
     all_files = os.listdir(results_dir)
-    ablations = sorted(list(set([int(f.split('_')[-2]) for f in all_files if f.startswith('exploitability_') and f.endswith('.npy')])))
+    ablations = _detect_ablations(all_files, "exploitability_")
     if not ablations:
         # Try another prefix
-        ablations = sorted(list(set([int(f.split('_')[-2]) for f in all_files if f.startswith('train_scores_player_0_') and f.endswith('.npy')])))
+        ablations = _detect_ablations(all_files, "train_scores_player_0_")
     
     if not ablations:
         print(f"No ablation data found in {results_dir}")
@@ -76,6 +88,7 @@ def plot_ma_results(algo, env_name, base_results_dir):
             window = max(1, len(median_data) // 50)
             smoothed = np.convolve(median_data, np.ones(window)/window, mode='valid')
             ax.plot(smoothed, label=f"Ablation {i}", color=colors[i] if i < len(colors) else None, alpha=0.8)
+    ax.legend(fontsize='small', ncol=2)
     ax.grid(True, alpha=0.3)
 
     # 3. vs Random (Player 0)
@@ -101,6 +114,7 @@ def plot_ma_results(algo, env_name, base_results_dir):
             seed_data = [s[:min_len] for s in seed_data]
             median_data = np.median(np.array(seed_data), axis=0)
             ax.plot(median_data, label=f"Ablation {i}", color=colors[i] if i < len(colors) else None)
+    ax.legend(fontsize='small', ncol=2)
     ax.grid(True, alpha=0.3)
 
     # 4. Action Distribution
