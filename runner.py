@@ -33,7 +33,7 @@ def get_parser():
     # conflict_handler='resolve' allows benchmark.py to safely override arguments if needed
     parser = argparse.ArgumentParser(description="Unified RL runner", conflict_handler='resolve')
     parser.add_argument("--algo", type=str, default="dqn", choices=["dqn", "ppo", "sac"])
-    parser.add_argument("--env_name", type=str, default="minigrid", choices=["cartpole", "minigrid", "mujoco", "hide-and-seek-engine"])
+    parser.add_argument("--env_name", type=str, default="minigrid", choices=["cartpole", "minigrid", "mujoco", "nchain", "hide-and-seek-engine"])
     parser.add_argument("--env_id", type=str, default="", help="Optional explicit env id. Defaults to env_name.")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--ablation", type=int, default=0, choices=[0, 1, 2, 3, 4, 5, 6])
@@ -135,7 +135,7 @@ def create_vec_env_old(args, num_envs: int | None = None):
     run = getattr(args, "run", 999) if getattr(args, "run", None) is not None else 999
     n_envs = int(num_envs if num_envs is not None else args.num_envs)
     env_fns = [
-        make_env_thunk(args.fully_obs, args.env_name, seed=run + i, idx=i)
+        make_env_thunk(args.fully_obs, args.env_name, seed=run + i, idx=i, algo=args.algo)
         for i in range(n_envs)
     ]
     return gym.vector.SyncVectorEnv(env_fns)
@@ -193,11 +193,12 @@ def create_vec_env(args, num_envs: int | None = None):
     # 3. Fallback to standard Gymnasium SyncVectorEnv (used natively for minigrid or fallback)
     env_fns = [
         make_env_thunk(
-            args.fully_obs, 
-            args.env_name, 
-            env_id=(env_id if env_id != args.env_name else None), 
-            seed=run + i, 
-            idx=i
+            args.fully_obs,
+            args.env_name,
+            env_id=(env_id if env_id != args.env_name else None),
+            seed=run + i,
+            idx=i,
+            algo=args.algo,
         )
         for i in range(n_envs)
     ]
@@ -562,7 +563,7 @@ def evaluate_agent(agent, args, device, step=0, n_steps=1000000):
         finally:
             vec_env.close()
 
-    env = make_env_thunk(False, args.env_name)()
+    env = make_env_thunk(False, args.env_name, algo=args.algo)()
     obs, _ = env.reset()
     done = False
     reward = 0.0

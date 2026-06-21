@@ -10,7 +10,7 @@ fi
 
 MACHINE=$1
 ALGOS=("dqn" "ppo" "sac")
-ENVS=("cartpole" "minigrid" "mujoco")
+ENVS=("cartpole" "minigrid" "mujoco" "nchain")
 
 # Define the devices, preambles, and search devices based on the machine
 case $MACHINE in
