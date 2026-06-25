@@ -18,3 +18,5 @@ all_results_old
 .claude 
 time_files/OldScheduleBeforeMinigridSACchange
 linuxvenv
+RLBench/LiteratureSummary/BenchmarkPapers
+RLBench/LiteratureSummary/fulltext

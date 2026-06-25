@@ -5,11 +5,11 @@
 set -e
 
 # Environments to process
-ENVIRONMENTS=(cartpole minigrid mujoco)
+ENVIRONMENTS=(cartpole minigrid mujoco nchain)
 XAXES=(episodes steps time)
 
 # Default runs and smoothing weight (edit as needed)
-RUNS="6 7 8 9 10"
+RUNS="6 7 8 9 10 11 12 13 14 15"
 WEIGHT=0.95
 
 for env in "${ENVIRONMENTS[@]}"; do

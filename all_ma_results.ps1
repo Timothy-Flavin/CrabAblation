@@ -1,5 +1,5 @@
 $algos = @("dqn", "ppo", "sac")
-$envs = @("rps", "leduc")#, "tictactoe"
+$envs = @("rps", "leduc", "tictactoe")#, "tictactoe"
 
 foreach ($algo in $algos) {
     foreach ($env in $envs) {
