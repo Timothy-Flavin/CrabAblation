@@ -52,6 +52,7 @@ def get_parser():
     parser.add_argument("--dqn_batch_size", type=int, default=64)
     parser.add_argument("--update_every", type=int, default=4)
     parser.add_argument("--rnd_burn_in", type=int, default=1000)
+    parser.add_argument("--ppo_lr", type=float, default=2.5e-4)
 
     # SAC knobs
     parser.add_argument("--buffer_size", type=int, default=2e4)
@@ -372,6 +373,13 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
         cfg["distributional"] = False
         cfg["use_gae"] = True
 
+    if args.env_name == "nchain":
+        if args.ablation == 0:
+            cfg["Beta"] = 5.0
+            cfg["ent_coef"] = 0.01
+        elif args.ablation == 6:
+            cfg["ent_coef"] = 0.01
+
     rollout_steps = max(1, args.num_steps // int(vec_env.num_envs))
     AgentClass = DistributionalPPOAgent if cfg["distributional"] else StandardPPOAgent
     agent = AgentClass(
@@ -386,6 +394,7 @@ def _ppo_agent_from_args(args, vec_env, encoder_factory=None):
         use_gae=cfg["use_gae"],
         encoder_factory=encoder_factory,
         beta_half_life_steps=cfg["beta_half_life_steps"],
+        learning_rate=getattr(args, "ppo_lr", 2.5e-4),
     )
     return agent, cfg
 

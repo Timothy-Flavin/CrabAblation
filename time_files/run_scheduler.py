@@ -235,7 +235,16 @@ def solve_scheduling_problem():
                 
                 for exp, time_taken in queue_jobs:
                     sh_lines.append(f"  echo \"[{device} - Q{q_idx}] Running {exp['model']} on {exp['env']} | Abl {exp['ablation']} | Run {exp['run']}\"\n")
-                    cmd = f"  {preamble}python runner.py --algo {exp['model']} --env_name {exp['env']} --ablation {exp['ablation']} --run {exp['run']} --device_name {device}\n"
+                    
+                    extra_args = ""
+                    if exp['env'] == "nchain":
+                        extra_args = " --num_envs 1"
+                        if exp['model'] == "dqn":
+                            extra_args += " --rnd_burn_in 20 --update_every 1 --dqn_batch_size 32"
+                        elif exp['model'] == "ppo":
+                            extra_args += " --num_steps 128 --ppo_lr 1e-3"
+                            
+                    cmd = f"  {preamble}python runner.py --algo {exp['model']} --env_name {exp['env']} --ablation {exp['ablation']} --run {exp['run']} --device_name {device}{extra_args}\n"
                     sh_lines.append(cmd)
                 
                 sh_lines.append(") &\n\n")

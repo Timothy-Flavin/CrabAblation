@@ -230,7 +230,7 @@ def main():
     parser.add_argument("--results_root", type=str, default="all_results")
     parser.add_argument("--algos", nargs="+", default=["dqn", "sac", "ppo"])
     parser.add_argument("--envs", nargs="+",
-                        default=["cartpole", "minigrid", "mujoco"])
+                        default=["cartpole", "minigrid", "mujoco", "nchain"])
     parser.add_argument("--runs", type=int, nargs="+",
                         default=list(range(6, 16)))
     parser.add_argument("--ablations", type=int, nargs="+",
