@@ -66,7 +66,11 @@ def get_ma_args():
         dqn_batch_size=32,
         buffer_size=20000,
         dqn_buffer_size=20000,
-        dqn_target_entropy_frac=0.9,
+        # Per-env target entropy is assigned below (None = "user did not override").
+        # RPS Nash IS uniform (0.9), but TTT/Leduc Nash is stochastic yet far from
+        # near-uniform, so 0.9 there pins the played policy to ~random and exploitability
+        # never contracts. Lower it for those games (set after parsing).
+        dqn_target_entropy_frac=None,
         # Higher soft-DQN temperature for MA: at the single-agent default (0.03)
         # softmax(Q/alpha) collapses to a near-deterministic policy (realized entropy
         # ~0.03 vs target ~0.99), so the entropy/Munchausen anchor stops biting and
@@ -82,7 +86,15 @@ def get_ma_args():
         args.env_name = "leduc"
     else:
         args.env_name = "rps"
-        
+
+    # Per-env soft-DQN target entropy. None means the user did not pass
+    # --dqn_target_entropy_frac, so pick a game-appropriate default: RPS Nash is the
+    # uniform (max-entropy) policy, so target near-max (0.9); TTT/Leduc Nash is
+    # stochastic but not near-uniform, so a moderate 0.5 keeps the policy stochastic
+    # without forcing it to ~random play (which kept DQN's exploitability stuck).
+    if args.dqn_target_entropy_frac is None:
+        args.dqn_target_entropy_frac = 0.9 if args.ma_env == "rps" else 0.5
+
     return process_args(args)
 
 class MAWrapperPolicy(Policy):
@@ -409,7 +421,17 @@ class MAAgentWrapper:
                 self.action_dist_log.append(probs.cpu().numpy())
 
         if self.algo == "dqn":
-            eps = max(0.5 - 2.0 * (step / total_steps), 0.05)
+            # get_action is the EVAL path (training uses get_action_batch). The eps
+            # schedule below is keyed off `step`, which defaults to 0 here, so eval was
+            # silently injecting eps=0.5 (max(0.5 - 0, 0.05)) -> 50% random moves, which
+            # flattened the vs-random trend and added huge variance. At eval use eps=0:
+            # hard DQN then plays greedily, while soft/Munchausen DQN still samples its
+            # (stochastic, Nash-appropriate) softmax(Q/alpha) policy since sample_action
+            # ignores eps on that branch.
+            if deterministic:
+                eps = 0.0
+            else:
+                eps = max(0.5 - 2.0 * (step / total_steps), 0.05)
             # Rainbow DQN sample_action expects (obs, eps, step, ...)
             # We added action_mask support to it.
             action = self.agent.sample_action(

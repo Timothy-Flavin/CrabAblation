@@ -18,12 +18,35 @@ def _detect_ablations(all_files, prefix):
 
 
 def _iqm(seed_data):
-    """Interquartile mean across seeds (axis=0): mean of values in [Q1, Q3]."""
+    """Robust across-seed center (axis=0).
+
+    The interquartile mean keeps only values in [Q1, Q3]; with few seeds (the usual
+    case here) that window collapses onto the middle sample, so IQM degenerates to the
+    median of ~1 seed -- i.e. NO averaging, which is why the curves looked as noisy as a
+    single run. Only use the IQM when there are enough seeds for it to be meaningful
+    (>=8); otherwise return the plain mean across seeds."""
     arr = np.array(seed_data)
+    if arr.shape[0] < 8:
+        return np.mean(arr, axis=0)
     q1 = np.percentile(arr, 25, axis=0)
     q3 = np.percentile(arr, 75, axis=0)
     masked = np.where((arr >= q1) & (arr <= q3), arr, np.nan)
     return np.nanmean(masked, axis=0)
+
+
+def _seed_band(seed_data):
+    """Return (center, lo, hi) across seeds, where center is the robust mean from _iqm
+    and [lo, hi] is the +/-1 standard-error-of-the-mean band. The band makes the amount
+    of averaging explicit: it shrinks as more seeds are added, so genuine averaging shows
+    up as a tight band instead of a deceptively jagged single line."""
+    arr = np.array(seed_data)
+    center = _iqm(seed_data)
+    n = arr.shape[0]
+    if n > 1:
+        sem = np.std(arr, axis=0, ddof=1) / np.sqrt(n)
+    else:
+        sem = np.zeros_like(center)
+    return center, center - sem, center + sem
 
 
 def plot_ma_results(algo, env_name, base_results_dir):
@@ -72,12 +95,10 @@ def plot_ma_results(algo, env_name, base_results_dir):
         if seed_data:
             min_len = min(len(s) for s in seed_data)
             seed_data = [s[:min_len] for s in seed_data]
-            median_data = _iqm(seed_data)
-            ax.plot(
-                median_data,
-                label=f"Ablation {i}",
-                color=colors[i] if i < len(colors) else None,
-            )
+            center, lo, hi = _seed_band(seed_data)
+            c = colors[i] if i < len(colors) else None
+            line, = ax.plot(center, label=f"Ablation {i}", color=c)
+            ax.fill_between(range(len(center)), lo, hi, color=line.get_color(), alpha=0.15)
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -102,16 +123,17 @@ def plot_ma_results(algo, env_name, base_results_dir):
         if seed_data:
             min_len = min(len(s) for s in seed_data)
             seed_data = [s[:min_len] for s in seed_data]
-            median_data = _iqm(seed_data)
-            # Smooth data
-            window = max(1, len(median_data) // 50)
-            smoothed = np.convolve(median_data, np.ones(window) / window, mode="valid")
-            ax.plot(
-                smoothed,
-                label=f"Ablation {i}",
-                color=colors[i] if i < len(colors) else None,
-                alpha=0.8,
-            )
+            center, lo, hi = _seed_band(seed_data)
+            # Smooth center and band consistently with the same moving average.
+            window = max(1, len(center) // 50)
+            kernel = np.ones(window) / window
+            center_s = np.convolve(center, kernel, mode="valid")
+            lo_s = np.convolve(lo, kernel, mode="valid")
+            hi_s = np.convolve(hi, kernel, mode="valid")
+            c = colors[i] if i < len(colors) else None
+            line, = ax.plot(center_s, label=f"Ablation {i}", color=c, alpha=0.8)
+            ax.fill_between(range(len(center_s)), lo_s, hi_s,
+                            color=line.get_color(), alpha=0.15)
     ax.legend(fontsize="small", ncol=2)
     ax.grid(True, alpha=0.3)
 
@@ -138,12 +160,10 @@ def plot_ma_results(algo, env_name, base_results_dir):
         if seed_data:
             min_len = min(len(s) for s in seed_data)
             seed_data = [s[:min_len] for s in seed_data]
-            median_data = _iqm(seed_data)
-            ax.plot(
-                median_data,
-                label=f"Ablation {i}",
-                color=colors[i] if i < len(colors) else None,
-            )
+            center, lo, hi = _seed_band(seed_data)
+            c = colors[i] if i < len(colors) else None
+            line, = ax.plot(center, label=f"Ablation {i}", color=c)
+            ax.fill_between(range(len(center)), lo, hi, color=line.get_color(), alpha=0.15)
     ax.legend(fontsize="small", ncol=2)
     ax.grid(True, alpha=0.3)
 
@@ -211,12 +231,11 @@ def plot_ma_results(algo, env_name, base_results_dir):
             if seed_data:
                 min_len = min(len(s) for s in seed_data)
                 seed_data = [s[:min_len] for s in seed_data]
-                median_data = _iqm(seed_data)
-                ax.plot(
-                    median_data,
-                    label=f"Ablation {i}",
-                    color=colors[i] if i < len(colors) else None,
-                )
+                center, lo, hi = _seed_band(seed_data)
+                c = colors[i] if i < len(colors) else None
+                line, = ax.plot(center, label=f"Ablation {i}", color=c)
+                ax.fill_between(range(len(center)), lo, hi,
+                                color=line.get_color(), alpha=0.15)
         ax.legend(fontsize="small", ncol=2)
         ax.grid(True, alpha=0.3)
 
