@@ -31,11 +31,88 @@ def get_env_benchmark_spec(env_name: str):
             "n_action_bins": 2,
             "hidden_layer_sizes": [32, 32],
         }
+    if env_name == "nchain":
+        # Sparse-reward exploration sanity check (binary forward/backward action).
+        return {
+            "n_action_dims": 1,
+            "n_action_bins": 2,
+            "hidden_layer_sizes": [32, 32],
+        }
     return {
         "n_action_dims": 1,
         "n_action_bins": 3,
         "hidden_layer_sizes": [128, 128],
     }
+
+
+class NChainEnv(gym.Env):
+    """Sparse-reward N-Chain exploration sanity check.
+
+    The agent traverses an ``n``-state chain. Choosing 'forward' advances toward
+    a large terminal reward at the far end; choosing 'backward' snaps back to the
+    start for a small distractor reward. A purely greedy agent gets stuck on the
+    distractor, so reaching the end is a direct test of exploration (e.g. RND).
+    Mirrors the env used in ``Unit_Tests/RNDTests/test_rnd_integration.py`` but
+    seeds observation noise from ``self.np_random`` for reproducible runs.
+    """
+
+    metadata = {"render_modes": []}
+
+    def __init__(self, n: int = 10):
+        super().__init__()
+        self.n = int(n)
+        self.action_space = gym.spaces.Discrete(2)
+        self.observation_space = gym.spaces.Box(
+            low=0.0, high=1.0, shape=(self.n,), dtype=np.float32
+        )
+        self.state = 0
+        self.max_steps = self.n + 10
+        self.steps = 0
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.state = 0
+        self.steps = 0
+        return self._get_obs(), {}
+
+    def _get_obs(self):
+        obs = ((self.np_random.random(size=self.n) - 0.5) / 5).astype(np.float32)
+        obs[self.state] = 1.0
+        return obs
+
+    def step(self, action):
+        self.steps += 1
+        reward = 0.0
+
+        if int(action) == 1:  # Forward
+            if self.state < self.n - 1:
+                self.state += 1
+            if self.state == self.n - 1:
+                reward = 10.0  # Big reward at the end
+        else:  # Backward
+            self.state = 0
+            reward = 0.01  # Small reward distraction
+
+        terminated = self.state == self.n - 1
+        truncated = self.steps >= self.max_steps
+        return self._get_obs(), reward, terminated, truncated, {}
+
+
+class ContinuousNChainEnv(NChainEnv):
+    """Continuous-action variant of :class:`NChainEnv`.
+
+    The sign of the (1-D) continuous action selects forward (>0) or backward.
+    """
+
+    def __init__(self, n: int = 10):
+        super().__init__(n)
+        self.action_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(1,), dtype=np.float32
+        )
+
+    def step(self, action):
+        a = 1 if float(np.sum(action)) > 0 else 0
+        return super().step(a)
 
 
 class obs_transformer:
@@ -132,8 +209,13 @@ def make_env_thunk(
     capture_video=False,
     run_name=None,
     random_start_steps=0,
+    algo=None,
 ):
-    """Return a thunk that builds one environment with common wrappers."""
+    """Return a thunk that builds one environment with common wrappers.
+
+    ``algo`` lets families with both discrete and continuous variants pick the
+    right one automatically (e.g. nchain: continuous for SAC, discrete otherwise).
+    """
 
     def thunk():
         if env_name == "minigrid":
@@ -153,6 +235,13 @@ def make_env_thunk(
                 env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
             else:
                 env = gym.make(resolved_env_id)
+        elif env_name == "nchain":
+            n = int(env_id) if (env_id is not None and str(env_id).isdigit()) else 10
+            # SAC trains on the continuous-action variant; DQN/PPO on the discrete one.
+            if algo == "sac":
+                env = ContinuousNChainEnv(n=n)
+            else:
+                env = NChainEnv(n=n)
         else:
             raise ValueError(f"Unsupported env_name: {env_name}")
 
@@ -527,6 +616,7 @@ SUPPORTED_ENVIRONMENTS = (
     "minigrid",
     "mujoco",
     "cartpole",
+    "nchain",
     "hide-and-seek-engine",
     "rps",
     "leduc",
@@ -572,15 +662,15 @@ class ActionTransformHandler:
             if isinstance(self.action_space, (gym.spaces.Discrete, gym.spaces.MultiDiscrete)):
                 return self._continuous_to_discrete_argmax
             
-            if self.env_name == "mujoco":
+            if self.env_name in ("mujoco", "nchain"):
                 return self._continuous_passthrough
-            
+
             if self.env_name == "hide-and-seek-engine":
                 if isinstance(self.action_space, gym.spaces.Box):
                     return self._dummy
                 return self._continuous_to_hybrid_hide_and_seek
 
-        if self.env_name in ("cartpole", "minigrid"):
+        if self.env_name in ("cartpole", "minigrid", "nchain"):
             if self.algo in ("dqn", "ppo"):
                 return self._dummy
 
