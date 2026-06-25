@@ -74,10 +74,10 @@ def solve_scheduling_problem():
         ]
     }
 
-    envs = ["minigrid", "cartpole", "mujoco", "nchain"]
+    envs = ["nchain"] # "minigrid", "cartpole", "mujoco", 
     models = ["dqn", "sac", "ppo"]
     ablations = [0, 1, 2, 3, 4, 5, 6]
-    runs = [11,12,13,14,15]
+    runs = [6,7,8,9,10,11,12,13,14,15]
 
     experiments = [
         {"env": env, "model": model, "ablation": abl, "run": run}

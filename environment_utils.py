@@ -98,6 +98,68 @@ class MinigridRestrictActionWrapper(gym.ActionWrapper):
         return int(act)
 
 
+class NChainEnv(gym.Env):
+    """Discrete chain environment: advance to the end for a large reward,
+    with a small distraction reward for going backward to the start."""
+
+    def __init__(self, n=10, seed=None):
+        super().__init__()
+        self.n = n
+        self.action_space = gym.spaces.Discrete(2)
+        self.observation_space = gym.spaces.Box(
+            low=0, high=1, shape=(n,), dtype=np.float32
+        )
+        self.state = 0
+        self.max_steps = n + 10
+        self.steps = 0
+        self._rng = np.random.default_rng(seed)
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
+        self.state = 0
+        self.steps = 0
+        return self._get_obs(), {}
+
+    def _get_obs(self):
+        obs = (self._rng.random(size=self.n, dtype=np.float32) - 0.5) / 5
+        obs[self.state] = 1.0
+        return obs
+
+    def step(self, action):
+        self.steps += 1
+        reward = 0.0
+
+        if action == 1:  # Forward
+            if self.state < self.n - 1:
+                self.state += 1
+            if self.state == self.n - 1:
+                reward = 10.0  # Big reward at the end
+        else:  # Backward
+            self.state = 0
+            reward = 0.01  # Small reward distraction
+
+        terminated = self.state == self.n - 1
+        truncated = self.steps >= self.max_steps
+
+        return self._get_obs(), reward, terminated, truncated, {}
+
+
+class ContinuousNChainEnv(NChainEnv):
+    """Continuous-action variant of NChainEnv for continuous-control algos."""
+
+    def __init__(self, n=10, seed=None):
+        super().__init__(n, seed=seed)
+        self.action_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(1,), dtype=np.float32
+        )
+
+    def step(self, action):
+        a = 1 if float(np.sum(action)) > 0 else 0
+        return super().step(a)
+
+
 class RandomStartWrapper(gym.Wrapper):
     def __init__(self, env, max_random_start_steps=0, rng_seed=None):
         super().__init__(env)
@@ -132,6 +194,7 @@ def make_env_thunk(
     capture_video=False,
     run_name=None,
     random_start_steps=0,
+    algo=None,
 ):
     """Return a thunk that builds one environment with common wrappers."""
 
@@ -153,6 +216,14 @@ def make_env_thunk(
                 env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
             else:
                 env = gym.make(resolved_env_id)
+        elif env_name == "nchain":
+            # The action space depends on the learning algorithm: continuous
+            # control algos (e.g. sac) need a Box action space, while
+            # value-based / discrete-policy algos (dqn, ppo) use Discrete.
+            if algo == "sac":
+                env = ContinuousNChainEnv(n=10, seed=seed)
+            else:
+                env = NChainEnv(n=10, seed=seed)
         else:
             raise ValueError(f"Unsupported env_name: {env_name}")
 
@@ -527,6 +598,7 @@ SUPPORTED_ENVIRONMENTS = (
     "minigrid",
     "mujoco",
     "cartpole",
+    "nchain",
     "hide-and-seek-engine",
     "rps",
     "leduc",
@@ -572,9 +644,9 @@ class ActionTransformHandler:
             if isinstance(self.action_space, (gym.spaces.Discrete, gym.spaces.MultiDiscrete)):
                 return self._continuous_to_discrete_argmax
             
-            if self.env_name == "mujoco":
+            if self.env_name in ("mujoco", "nchain"):
                 return self._continuous_passthrough
-            
+
             if self.env_name == "hide-and-seek-engine":
                 if isinstance(self.action_space, gym.spaces.Box):
                     return self._dummy
