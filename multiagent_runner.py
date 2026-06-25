@@ -4,6 +4,7 @@ import time
 import numpy as np
 import torch
 import pyspiel
+from collections import deque
 from open_spiel.python.algorithms.exploitability import exploitability
 from open_spiel.python.policy import Policy
 from shimmy.openspiel_compatibility import OpenSpielCompatibilityV0
@@ -27,7 +28,12 @@ def get_ma_args():
     parser.add_argument("--num_ma_envs", type=int, default=32)
     # Gradient steps per round
     parser.add_argument("--rps_grad_steps", type=int, default=4)
-    
+    # Shared model: for PPO, share actor weights between players (each keeps its own
+    # rollout buffer / value function); for DQN/SAC, share the full agent.
+    # For tictactoe, P1's observations are augmented (planes 1↔2 swapped) so the
+    # shared network always receives player-relative [empty|my|opp] inputs.
+    parser.add_argument("--shared_model", action="store_true", default=False)
+
     # Override some defaults for MA
     # learning_starts of 10k (single-agent default) is far too large for the short
     # multi-agent runs (e.g. RPS is only ~20k agent_iter steps), so lower it here.
@@ -93,11 +99,11 @@ class MAWrapperPolicy(Policy):
         player_states = {0: {}, 1: {}}
         
         # Standard BFS to find all reachable info states
-        queue = [self.game.new_initial_state()]
+        queue = deque([self.game.new_initial_state()])
         seen_states = set()
         
         while queue:
-            state = queue.pop(0)
+            state = queue.popleft()
             state_str = state.history_str()
             if state_str in seen_states:
                 continue
@@ -119,7 +125,8 @@ class MAWrapperPolicy(Policy):
                     obs = np.array(state.observation_tensor(player_id), dtype=np.float32)
                 else:
                     obs = np.array(state.information_state_tensor(player_id), dtype=np.float32)
-                
+                wrapper = self.agent_wrappers[f"player_{player_id}"]
+                obs = wrapper._augment_obs(obs)
                 player_states[player_id][infostate] = {
                     "obs": obs,
                     "legal": state.legal_actions(player_id)
@@ -179,17 +186,18 @@ class MAWrapperPolicy(Policy):
             return self._cache[(player_id, infostate)]
             
         # Fallback to single inference if not cached
+        legal_actions = state.legal_actions(player_id)
+        wrapper = self.agent_wrappers[f"player_{player_id}"]
+
         if self.game_type.provides_observation_tensor:
             obs = np.array(state.observation_tensor(player_id), dtype=np.float32)
         else:
             obs = np.array(state.information_state_tensor(player_id), dtype=np.float32)
-            
-        legal_actions = state.legal_actions(player_id)
-        wrapper = self.agent_wrappers[f"player_{player_id}"]
-        
+        obs = wrapper._augment_obs(obs)
+
         mask_t = torch.zeros(wrapper.args.n_actions, dtype=torch.float32, device=wrapper.device)
         mask_t[legal_actions] = 1.0
-        
+
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=wrapper.device).unsqueeze(0)
         mask_t = mask_t.unsqueeze(0)
         
@@ -236,9 +244,13 @@ def evaluate_vs_random(agent_wrappers, env_name, agent_id_to_eval, num_episodes=
             # or they are stepped one by one. Shimmy/OpenSpiel AEC for Matrix games:
             # player_0 acts, then player_1 acts, then both get rewards.
             for agent_id in eval_env.agent_iter():
-                obs, reward, term, trunc, info = eval_env.last()
+                obs, _acc_reward, term, trunc, info = eval_env.last()
+                # Use eval_env.rewards (instantaneous) not env.last() (Shimmy-accumulated).
+                # Shimmy's dead-step env.step(None) re-accumulates the terminal reward for
+                # all remaining agents, so the second dead-step agent always gets a doubled
+                # value from last(). P1 is always second, so P1's scores would be 2× wrong.
                 if agent_id == agent_id_to_eval:
-                    ep_ret += reward
+                    ep_ret += eval_env.rewards.get(agent_id, 0.0)
                 if term or trunc:
                     eval_env.step(None)
                     continue
@@ -251,9 +263,10 @@ def evaluate_vs_random(agent_wrappers, env_name, agent_id_to_eval, num_episodes=
                 eval_env.step(act)
         else:
             for agent_id in eval_env.agent_iter():
-                obs, reward, term, trunc, info = eval_env.last()
+                obs, _acc_reward, term, trunc, info = eval_env.last()
+                # Same Shimmy dead-step doubling fix: use instantaneous rewards.
                 if agent_id == agent_id_to_eval:
-                    ep_ret += reward
+                    ep_ret += eval_env.rewards.get(agent_id, 0.0)
                 if term or trunc:
                     eval_env.step(None)
                     continue
@@ -305,12 +318,20 @@ def get_rps_exploitability(agents):
     return (br0_val - v0 + br1_val - v1) / 2.0
 
 class MAAgentWrapper:
-    def __init__(self, agent, algo, device, args, n_envs=1):
+    def __init__(self, agent, algo, device, args, n_envs=1, player_id="player_0", augment_obs=False, no_learn=False):
         self.agent = agent
         self.algo = algo
         self.device = device
         self.args = args
         self.n_envs = n_envs
+        self.player_id = player_id
+        # When True, swap tic-tac-toe observation planes 1↔2 before any network call
+        # so the shared actor always sees [empty|my_pieces|opp_pieces].
+        self.augment_obs = augment_obs
+        # When True, observe() and observe_batch() are no-ops: the wrapper acts (using
+        # the shared actor) but never stores transitions or triggers gradient updates.
+        # Used for P1 in shared-model PPO to eliminate zero-sum gradient rotation.
+        self.no_learn = no_learn
         self.last_update_info = None  # latest update() info dict (for MMD diagnostics)
         self.action_dist_log = [] # List of policy distributions for Tic-Tac-Toe
         # One FIFO per parallel env. The underlying agent buffers are vectorized
@@ -322,10 +343,62 @@ class MAAgentWrapper:
         # next_obs shift relies on; off-policy replay (DQN/SAC) samples across both
         # dims so it is correct either way.
         self._env_queues = [[] for _ in range(n_envs)]
-        
+
+    def _augment_obs(self, obs):
+        """Player-relative observation augmentation for shared-model P1.
+        TTT: swap planes 1↔2 (obs[9:18] ↔ obs[18:27]).
+          Converts absolute [empty|P0_pieces|P1_pieces] to relative [empty|my|opp].
+        Leduc: swap player indicator (obs[0]↔obs[1]) and chip totals (obs[14]↔obs[15]).
+          Converts absolute [P0_id, P1_id, ..., P0_chips, P1_chips] to
+          player-relative [my_id=1, opp_id=0, ..., my_chips, opp_chips].
+        No-op when augment_obs is False (player_0, non-shared model, or RPS)."""
+        if not self.augment_obs:
+            return obs
+        env = getattr(self.args, "ma_env", "tictactoe")
+        if isinstance(obs, torch.Tensor):
+            obs = obs.clone()
+            if env == "tictactoe":
+                if obs.ndim == 1:
+                    tmp = obs[9:18].clone()
+                    obs[9:18] = obs[18:27]
+                    obs[18:27] = tmp
+                else:
+                    tmp = obs[:, 9:18].clone()
+                    obs[:, 9:18] = obs[:, 18:27]
+                    obs[:, 18:27] = tmp
+            elif env == "leduc":
+                if obs.ndim == 1:
+                    tmp0 = obs[0].clone()
+                    obs[0] = obs[1]; obs[1] = tmp0
+                    tmp14 = obs[14].clone()
+                    obs[14] = obs[15]; obs[15] = tmp14
+                else:
+                    tmp0 = obs[:, 0].clone()
+                    obs[:, 0] = obs[:, 1]; obs[:, 1] = tmp0
+                    tmp14 = obs[:, 14].clone()
+                    obs[:, 14] = obs[:, 15]; obs[:, 15] = tmp14
+        else:
+            obs = np.array(obs, copy=True)
+            if env == "tictactoe":
+                if obs.ndim == 1:
+                    tmp = obs[9:18].copy()
+                    obs[9:18] = obs[18:27]
+                    obs[18:27] = tmp
+                else:
+                    tmp = obs[:, 9:18].copy()
+                    obs[:, 9:18] = obs[:, 18:27]
+                    obs[:, 18:27] = tmp
+            elif env == "leduc":
+                if obs.ndim == 1:
+                    obs[[0, 1]] = obs[[1, 0]]
+                    obs[[14, 15]] = obs[[15, 14]]
+                else:
+                    obs[:, [0, 1]] = obs[:, [1, 0]]
+                    obs[:, [14, 15]] = obs[:, [15, 14]]
+        return obs
+
     def get_action(self, obs, mask, deterministic=False, step=0, total_steps=1000000, log_dist=False):
-        # We now use the agent's built-in sample_action
-        # Prepare inputs
+        obs = self._augment_obs(obs)
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
         mask_t = torch.as_tensor(mask, dtype=torch.float32, device=self.device)
         
@@ -439,12 +512,14 @@ class MAAgentWrapper:
             return probs
 
     def observe(self, env_idx, obs, action, reward, next_obs, term, trunc, logprob=None, action_mask=None):
+        if self.no_learn:
+            return
         # Queue the transition in its env's column, then emit any full rows.
         self._env_queues[env_idx].append({
-            "obs": obs,
+            "obs": self._augment_obs(obs),
             "action": action,
             "reward": reward,
-            "next_obs": next_obs,
+            "next_obs": self._augment_obs(next_obs),
             "term": term,
             "trunc": trunc,
             "logprob": logprob,
@@ -480,6 +555,7 @@ class MAAgentWrapper:
         """Batched action selection for the vectorized (simultaneous) RPS path.
         obs_t: (B, obs_dim), mask_t: (B, n_actions), both torch tensors on device.
         Returns (env_actions[B] long tensor, raw_for_buffer, logprob_or_None)."""
+        obs_t = self._augment_obs(obs_t)
         if log_dist:
             with torch.no_grad():
                 probs = self._get_probs(obs_t[:1], mask_t[:1])
@@ -513,6 +589,8 @@ class MAAgentWrapper:
     def observe_batch(self, obs, raw, reward, next_obs, term, trunc, logprob=None, mask=None):
         """Batched transition store for the vectorized RPS path. All array-likes have a
         leading batch (num_envs) dimension; tensors are moved to CPU numpy at the boundary."""
+        if self.no_learn:
+            return
         def _np(x):
             if torch.is_tensor(x):
                 return x.detach().cpu().numpy()
@@ -642,13 +720,33 @@ def train_rps_vectorized(args, seed=0):
     args.dqn_buffer_size = min(getattr(args, "dqn_buffer_size", 10000), 10000)
     args.buffer_size = min(getattr(args, "buffer_size", 10000), 10000)
 
-    agent_raws = []
-    for _ in range(2):
-        a_raw, _ = build_agent(args, mock_env, device)
-        if args.ent_coef_override is not None and args.algo == "ppo":
-            a_raw.ent_coef = args.ent_coef_override
-        agent_raws.append(a_raw)
-    agents = {f"player_{i}": MAAgentWrapper(agent_raws[i], args.algo, device, args) for i in range(2)}
+    shared_model = getattr(args, "shared_model", False)
+    if shared_model and args.algo == "ppo":
+        a0, _ = build_agent(args, mock_env, device)
+        if args.ent_coef_override is not None:
+            a0.ent_coef = args.ent_coef_override
+        a1, _ = build_agent(args, mock_env, device)
+        if args.ent_coef_override is not None:
+            a1.ent_coef = args.ent_coef_override
+        lr = a1.optimizer.param_groups[0]["lr"]
+        eps_adam = a1.optimizer.param_groups[0]["eps"]
+        a1.actor = a0.actor
+        a1.optimizer = torch.optim.Adam(
+            list(a0.actor.parameters()) + a1._get_ext_critic_params(),
+            lr=lr, eps=eps_adam,
+        )
+        agent_raws = [a0, a1]
+    elif shared_model:
+        a0, _ = build_agent(args, mock_env, device)
+        agent_raws = [a0, a0]
+    else:
+        agent_raws = []
+        for _ in range(2):
+            a_raw, _ = build_agent(args, mock_env, device)
+            if args.ent_coef_override is not None and args.algo == "ppo":
+                a_raw.ent_coef = args.ent_coef_override
+            agent_raws.append(a_raw)
+    agents = {f"player_{i}": MAAgentWrapper(agent_raws[i], args.algo, device, args, player_id=f"player_{i}") for i in range(2)}
 
     # Payoff to player_0: rows = P0 action, cols = P1 action (0=R,1=P,2=S). Zero-sum.
     payoff = torch.tensor(
@@ -687,15 +785,31 @@ def train_rps_vectorized(args, seed=0):
         agents["player_1"].observe_batch(obs_np, raw1, r1_np, obs_np, term, trunc, lp1, mask_t)
         total_steps += B
 
-        # Each round collects a fresh batch of B games. PPO updates when its rollout is full
+        # Each round collects a fresh batch of B games.
         for pid in ["player_0", "player_1"]:
             a = agents[pid]
             if args.algo == "ppo":
-                if a.agent.step_idx >= a.agent.num_steps:
-                    a.update(total_steps)
+                if not shared_model:
+                    if a.agent.step_idx >= a.agent.num_steps:
+                        a.update(total_steps)
+                # Shared-model PPO: synchronized block below.
             else:
-                for _ in range(grad_steps):
-                    a.update(total_steps)
+                # DQN/SAC with shared model: only P0 drives gradient steps
+                if not (shared_model and pid == "player_1"):
+                    for _ in range(grad_steps):
+                        a.update(total_steps)
+
+        # Synchronized PPO update for shared-model RPS
+        if args.algo == "ppo" and shared_model:
+            all_full = all(
+                agents[pid].agent.step_idx >= agents[pid].agent.num_steps
+                for pid in ["player_0", "player_1"]
+            )
+            if all_full:
+                update_order = ["player_0", "player_1"]
+                random.shuffle(update_order)
+                for pid in update_order:
+                    agents[pid].update(total_steps)
 
         ep_rewards["player_0"].append(float(r0_np.mean()))
         ep_rewards["player_1"].append(float(r1_np.mean()))
@@ -713,7 +827,8 @@ def train_rps_vectorized(args, seed=0):
                 f"vsRand(P1)={r1e:.2f}, Ext={expl:.4f} | FPS {fps:.0f}"
             )
 
-    results_dir = os.path.join("results", args.algo, args.env_name)
+    results_base = "results_shared" if getattr(args, "shared_model", False) else "results"
+    results_dir = os.path.join(results_base, args.algo, args.env_name)
     os.makedirs(results_dir, exist_ok=True)
     for aid, rewards in ep_rewards.items():
         np.save(os.path.join(results_dir, f"train_scores_{aid}_{args.ablation}_seed{seed}.npy"), np.array(rewards))
@@ -768,17 +883,45 @@ def train_ma(args, seed=0):
         args.dqn_buffer_size = min(getattr(args, "dqn_buffer_size", 10000), 10000)
         args.buffer_size = min(getattr(args, "buffer_size", 10000), 10000)
 
-    # Build agents
-    agent_raws = []
-    for _ in range(len(possible_agents)):
-        a_raw, _ = build_agent(args, mock_env, device)
-        if args.ent_coef_override is not None and args.algo == "ppo":
-            a_raw.ent_coef = args.ent_coef_override
-        agent_raws.append(a_raw)
-    
+    # Build agents (optionally sharing weights between players)
+    shared_model = getattr(args, "shared_model", False)
+    if shared_model and args.algo == "ppo":
+        # PPO: two separate agents (separate rollout buffers + critics) but shared actor.
+        # Both optimizers reference the same actor parameters so gradient updates from
+        # either player propagate through the shared weights.
+        a0, _ = build_agent(args, mock_env, device)
+        if args.ent_coef_override is not None:
+            a0.ent_coef = args.ent_coef_override
+        a1, _ = build_agent(args, mock_env, device)
+        if args.ent_coef_override is not None:
+            a1.ent_coef = args.ent_coef_override
+        lr = a1.optimizer.param_groups[0]["lr"]
+        eps_adam = a1.optimizer.param_groups[0]["eps"]
+        a1.actor = a0.actor
+        a1.optimizer = torch.optim.Adam(
+            list(a0.actor.parameters()) + a1._get_ext_critic_params(),
+            lr=lr, eps=eps_adam,
+        )
+        agent_raws = [a0, a1]
+    elif shared_model:
+        # DQN/SAC: share the full agent (one replay buffer, one network).
+        a0, _ = build_agent(args, mock_env, device)
+        agent_raws = [a0, a0]
+    else:
+        agent_raws = []
+        for _ in range(len(possible_agents)):
+            a_raw, _ = build_agent(args, mock_env, device)
+            if args.ent_coef_override is not None and args.algo == "ppo":
+                a_raw.ent_coef = args.ent_coef_override
+            agent_raws.append(a_raw)
+
     num_envs = args.num_ma_envs
     agents = {
-        agent_id: MAAgentWrapper(agent_raws[i], args.algo, device, args, n_envs=num_envs)
+        agent_id: MAAgentWrapper(
+            agent_raws[i], args.algo, device, args, n_envs=num_envs,
+            player_id=agent_id,
+            augment_obs=(shared_model and args.ma_env in ["tictactoe", "leduc"] and agent_id == "player_1"),
+        )
         for i, agent_id in enumerate(possible_agents)
     }
 
@@ -817,13 +960,15 @@ def train_ma(args, seed=0):
     eval_interval = max(1, args.total_episodes // 10)
     next_eval_at = eval_interval
 
+    primary_player = possible_agents[0]  # P0 drives DQN/SAC updates for shared model
+
     while episodes_done < args.total_episodes:
         # Group environments by the player who needs to act
         player_to_envs = {aid: [] for aid in possible_agents}
         for env_idx, aid in enumerate(active_agents):
             if aid is not None:
                 player_to_envs[aid].append(env_idx)
-        
+
         # Step each player who has active environments
         for acting_player, env_indices in player_to_envs.items():
             if not env_indices:
@@ -944,8 +1089,11 @@ def train_ma(args, seed=0):
             agent_decisions[acting_player] += B_real
             a = agents[acting_player]
             if args.algo == "ppo":
-                if a.agent.step_idx >= a.agent.num_steps:
-                    a.update(total_steps)
+                if not shared_model:
+                    # Independent agents: each player updates its own actor when buffer full.
+                    if a.agent.step_idx >= a.agent.num_steps:
+                        a.update(total_steps)
+                # Shared-model PPO update is handled in the synchronized block below.
             else:
                 # Off-policy (DQN/SAC): keep the SAME gradient-step-to-experience ratio
                 # as the single-env runner, i.e. one update per `update_every` decisions.
@@ -953,11 +1101,28 @@ def train_ma(args, seed=0):
                 # floor(decisions / update_every) updates and carry the remainder.
                 # (Gating on `update_every * num_envs` did only ONE update per ~128
                 #  decisions -> num_envs x too few updates, so the agents barely learned.)
-                n_updates = agent_decisions[acting_player] // update_every
-                if n_updates > 0:
-                    agent_decisions[acting_player] -= n_updates * update_every
-                    for _ in range(n_updates):
-                        a.update(total_steps)
+                # With a shared model, ONLY the primary player drives gradient steps so the
+                # shared network does not get 2× updates (one per player per round).
+                if not (shared_model and acting_player != primary_player):
+                    n_updates = agent_decisions[acting_player] // update_every
+                    if n_updates > 0:
+                        agent_decisions[acting_player] -= n_updates * update_every
+                        for _ in range(n_updates):
+                            a.update(total_steps)
+
+        # Synchronized PPO update for shared model: only update when BOTH players'
+        # rollout buffers are full so neither player's logprobs are stale relative to
+        # the other's update. Randomize order so neither player is systematically first.
+        if args.algo == "ppo" and shared_model:
+            all_full = all(
+                agents[pid].agent.step_idx >= agents[pid].agent.num_steps
+                for pid in possible_agents
+            )
+            if all_full:
+                update_order = list(possible_agents)
+                random.shuffle(update_order)
+                for pid in update_order:
+                    agents[pid].update(total_steps)
 
         # Periodic Logging & Eval (threshold-based; robust to bursty episodes_done)
         if episodes_done >= next_eval_at:
@@ -1009,8 +1174,9 @@ def train_ma(args, seed=0):
                 print(msg)
 
     for e in envs: e.close()
-    
-    results_dir = os.path.join("results", args.algo, args.env_name)
+
+    results_base = "results_shared" if getattr(args, "shared_model", False) else "results"
+    results_dir = os.path.join(results_base, args.algo, args.env_name)
     os.makedirs(results_dir, exist_ok=True)
     for agent_id, rewards in ep_rewards.items():
         np.save(os.path.join(results_dir, f"train_scores_{agent_id}_{args.ablation}_seed{seed}.npy"), np.array(rewards))

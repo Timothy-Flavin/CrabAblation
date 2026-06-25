@@ -58,7 +58,7 @@ def get_parser():
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.001 * 0.003)
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--learning_starts", type=int, default=10000)
+    parser.add_argument("--learning_starts", type=int, default=None)
     parser.add_argument("--policy_lr", type=float, default=3e-4)
     parser.add_argument("--q_lr", type=float, default=1e-3)
     parser.add_argument("--policy_frequency", type=int, default=4)
@@ -93,6 +93,11 @@ def process_args(args):
         args.dqn_buffer_size = int(env_cfg.get("buffer_size", 100000))
     if getattr(args, "buffer_size", None) is None:
         args.buffer_size = int(env_cfg.get("buffer_size", 200000))
+
+    # learning_starts must be well below total_steps or no learning/updates ever
+    # happen (e.g. short toy envs like nchain). Allow a per-env override.
+    if getattr(args, "learning_starts", None) is None:
+        args.learning_starts = int(env_cfg.get("learning_starts", 10000))
 
     if not getattr(args, "skip_best_params", False):
         _maybe_load_best_params(args)

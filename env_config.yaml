@@ -43,3 +43,17 @@ rps:
   buffer_size: 5000
   n_action_dims: 1
   n_action_bins: 3
+nchain:
+  # Small/quick toy task mirroring Unit_Tests/RNDTests/test_rnd_integration.py
+  # (10-state chain, ~300 short episodes, 10k buffer). Without this entry the
+  # runner falls back to 1,000,000 steps and oversized nets, which is why the
+  # scheduler's estimate was off by hours.
+  hidden_layer_sizes: [64, 64]
+  max_steps:
+    dqn: 10000
+    sac: 10000
+    ppo: 20000
+  buffer_size: 10000
+  learning_starts: 500
+  n_action_dims: 1
+  n_action_bins: 2
